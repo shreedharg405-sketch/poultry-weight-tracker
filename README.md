@@ -166,8 +166,9 @@ Contains models for:
 - `GET /healthz`: Render health probe endpoint
 
 ### C. Frontend React Components (`frontend/src/components/`)
-- `WeighingGrid.tsx`: Direct digital clone of Suguna 20g/50g tally grid with live uniformity, CV%, and instant bird tally buttons
-- `ShedSummaryDashboard.tsx`: Executive dashboard featuring 5 KPI Cards, Pen Comparative Table, Combined Multi-Pen Histogram, and Growth Chart
+- `MobilePoultryDashboard.tsx`: Mobile-first dashboard engineered for handheld screens (360px–430px) with thumb-friendly tally pad (+/- and +1/+5/+10 chips), auto-scroll to standard target weight, sticky summary metrics (Sample/100, Live Avg, Uniformity %, CV%), multi-pen shed aggregation, daily feed requirement calculator, and WhatsApp/SMS 1-click sharing
+- `WeighingGrid.tsx` / `DigitalTallyMatrix.tsx`: Direct digital clone of Suguna 20g/50g tally grid with live uniformity, CV%, and instant bird tally buttons
+- `ShedSummaryDashboard.tsx` / `ShedDashboard.tsx`: Executive dashboard featuring 5 KPI Cards, Pen Comparative Table, Combined Multi-Pen Histogram, and Growth Chart
 - `GrowthChart.tsx`: Weeks 1–23 actual shed weight vs. seasonal target curve with female/male toggles and daily feed overlay
 - `PaperSheetReplica.tsx`: Authentic printable Suguna Foods recording sheet with pen tally matrix and shed executive summary
 
