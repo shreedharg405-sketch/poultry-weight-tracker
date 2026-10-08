@@ -1,14 +1,16 @@
 import React from 'react';
-import { Volume2, VolumeX, ShieldCheck, Wifi, WifiOff, FileText, Home, PlusCircle, Scale, Layers } from 'lucide-react';
+import { Volume2, VolumeX, ShieldCheck, Wifi, WifiOff, FileText, Home, PlusCircle, Scale, Smartphone } from 'lucide-react';
 import { soundEffects } from '../services/audioFeedback';
 
 interface NavbarProps {
-  activeTab: 'shed' | 'tally' | 'paper' | 'history';
-  setActiveTab: (tab: 'shed' | 'tally' | 'paper' | 'history') => void;
+  activeTab: 'shed' | 'tally' | 'paper' | 'history' | 'mobile';
+  setActiveTab: (tab: 'shed' | 'tally' | 'paper' | 'history' | 'mobile') => void;
   onOpenShedSetup: () => void;
   isBackendConnected: boolean;
   soundEnabled: boolean;
   setSoundEnabled: (val: boolean) => void;
+  isMobileView: boolean;
+  setIsMobileView: (val: boolean) => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -18,6 +20,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   isBackendConnected,
   soundEnabled,
   setSoundEnabled,
+  isMobileView,
+  setIsMobileView,
 }) => {
   const toggleSound = () => {
     soundEffects.enabled = !soundEnabled;
@@ -101,6 +105,19 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Action Tools */}
           <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              onClick={() => setIsMobileView(!isMobileView)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                isMobileView
+                  ? 'bg-sky-500/20 text-sky-300 border-sky-500/40 shadow-sm shadow-sky-500/20'
+                  : 'bg-slate-850 text-slate-300 hover:text-white border-slate-700 hover:bg-slate-800'
+              }`}
+              title={isMobileView ? 'Switch to Desktop Matrix' : 'Switch to Mobile Field View'}
+            >
+              <Smartphone className="w-3.5 h-3.5 text-sky-400" />
+              <span>{isMobileView ? 'Desktop' : 'Mobile View'}</span>
+            </button>
+
             <button
               onClick={onOpenShedSetup}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-all shadow-md shadow-emerald-700/20"

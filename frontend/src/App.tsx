@@ -5,11 +5,18 @@ import { DigitalTallyMatrix } from './components/DigitalTallyMatrix';
 import { PaperSheetReplica } from './components/PaperSheetReplica';
 import { HistoryLog } from './components/HistoryLog';
 import { ShedPenSetupModal } from './components/ShedPenSetupModal';
+import { MobilePoultryDashboard } from './components/MobilePoultryDashboard';
 import { Shed, Flock, WeighingRecord, ShedSummaryData } from './types';
 import { api } from './services/api';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'shed' | 'tally' | 'paper' | 'history'>('shed');
+  const [activeTab, setActiveTab] = useState<'shed' | 'tally' | 'paper' | 'history' | 'mobile'>('shed');
+  const [isMobileView, setIsMobileView] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth <= 768;
+    }
+    return false;
+  });
 
   // Hierarchy States
   const [sheds, setSheds] = useState<Shed[]>([]);
@@ -125,6 +132,45 @@ export const App: React.FC = () => {
     setActiveTab('paper');
   };
 
+  const handleSwitchToDesktop = () => {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('preferred_desktop', '1');
+    }
+    setIsMobileView(false);
+  };
+
+  const handleSwitchToMobile = (val: boolean) => {
+    if (val && typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('preferred_desktop');
+    }
+    setIsMobileView(val);
+  };
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth <= 640 && !sessionStorage.getItem('preferred_desktop')) {
+        setIsMobileView(true);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  if (isMobileView) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+        <MobilePoultryDashboard
+          sheds={sheds}
+          flocks={flocks}
+          activeShed={activeShed}
+          activeFlock={activeFlock}
+          onSwitchToDesktop={handleSwitchToDesktop}
+          onSaveRecord={handleSavedWeighing}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Top Navigation */}
@@ -135,6 +181,8 @@ export const App: React.FC = () => {
         isBackendConnected={isBackendConnected}
         soundEnabled={soundEnabled}
         setSoundEnabled={setSoundEnabled}
+        isMobileView={isMobileView}
+        setIsMobileView={handleSwitchToMobile}
       />
 
       {/* Main Container */}
