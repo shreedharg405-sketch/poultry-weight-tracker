@@ -10,6 +10,7 @@ import { Shed, Flock, WeighingRecord, ShedSummaryData } from './types';
 import { api } from './services/api';
 
 export const App: React.FC = () => {
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [activeTab, setActiveTab] = useState<'shed' | 'tally' | 'paper' | 'history' | 'mobile'>('shed');
   const [isMobileView, setIsMobileView] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -158,7 +159,7 @@ export const App: React.FC = () => {
 
   if (isMobileView) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      <div className={`min-h-screen ${theme === 'light' ? 'bg-slate-100 text-slate-900' : 'bg-slate-950 text-slate-100'} flex flex-col font-sans transition-colors`}>
         <MobilePoultryDashboard
           sheds={sheds}
           flocks={flocks}
@@ -166,13 +167,14 @@ export const App: React.FC = () => {
           activeFlock={activeFlock}
           onSwitchToDesktop={handleSwitchToDesktop}
           onSaveRecord={handleSavedWeighing}
+          initialTheme={theme}
         />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className={`min-h-screen ${theme === 'light' ? 'bg-slate-100 text-slate-900' : 'bg-slate-950 text-slate-100'} flex flex-col font-sans transition-colors`}>
       {/* Top Navigation */}
       <Navbar
         activeTab={activeTab}
@@ -183,6 +185,8 @@ export const App: React.FC = () => {
         setSoundEnabled={setSoundEnabled}
         isMobileView={isMobileView}
         setIsMobileView={handleSwitchToMobile}
+        theme={theme}
+        setTheme={setTheme}
       />
 
       {/* Main Container */}
@@ -252,10 +256,12 @@ export const App: React.FC = () => {
       />
 
       {/* Footer */}
-      <footer className="border-t border-slate-900 bg-slate-950 py-6 text-center text-xs text-slate-500 no-print">
+      <footer className={`border-t py-6 text-center text-xs no-print transition-colors ${
+        theme === 'light' ? 'border-slate-200 bg-white text-slate-600' : 'border-slate-900 bg-slate-950 text-slate-500'
+      }`}>
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p>© {new Date().getFullYear()} AVISYNC (Shed Edition) • Suguna Foods Standard Bodyweight & Seasonal Uniformity Matrix</p>
-          <p className="font-mono text-[11px] text-slate-600">
+          <p className={`font-mono text-[11px] ${theme === 'light' ? 'text-slate-500' : 'text-slate-600'}`}>
             Shed Mean (X̄shed) • Pen CV% via F-Factor • Shed Uniformity ±10% • Multi-Pen Feed Allocation
           </p>
         </div>

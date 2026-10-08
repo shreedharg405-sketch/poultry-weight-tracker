@@ -12,10 +12,10 @@ import {
   Check,
   Wheat,
   Monitor,
-  Calendar,
-  Save,
   Crosshair,
-  ArrowRight
+  Sun,
+  Moon,
+  Save
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -31,7 +31,7 @@ import {
 } from 'recharts';
 import { soundEffects } from '../services/audioFeedback';
 import { WINTER_BROOD_STANDARDS, SUMMER_BROOD_STANDARDS } from '../services/benchmarks';
-import { Shed, Flock, WeighingRecord } from '../types';
+import { Shed, Flock } from '../types';
 
 // Suguna Foods Standard F-Value Table for CV% Calculation
 const F_TABLE: Record<number, number> = {
@@ -62,20 +62,25 @@ interface MobilePoultryDashboardProps {
   activeFlock?: Flock | null;
   onSwitchToDesktop?: () => void;
   onSaveRecord?: (recordData: any) => Promise<void> | void;
+  initialTheme?: 'light' | 'dark';
 }
 
 export const MobilePoultryDashboard: React.FC<MobilePoultryDashboardProps> = ({
   sheds = [],
   flocks = [],
   activeShed: initialShed,
-  activeFlock: initialFlock,
   onSwitchToDesktop,
   onSaveRecord,
+  initialTheme = 'light',
 }) => {
+  // Theme state: defaults to 'light' for high daytime farm visibility
+  const [theme, setTheme] = useState<'light' | 'dark'>(initialTheme);
+  const isLight = theme === 'light';
+
   // Navigation & View states
   const [activeTab, setActiveTab] = useState<'tally' | 'summary' | 'curve' | 'share'>('tally');
   const [selectedWeek, setSelectedWeek] = useState<number>(12);
-  const [selectedSeason, setSelectedSeason] = useState<'SUMMER_BROOD' | 'WINTER_BROOD'>('SUMMER_BROOD');
+  const [selectedSeason] = useState<'SUMMER_BROOD' | 'WINTER_BROOD'>('SUMMER_BROOD');
   const [selectedGender, setSelectedGender] = useState<'FEMALE' | 'MALE'>('FEMALE');
 
   // Hierarchy selections
@@ -220,7 +225,7 @@ export const MobilePoultryDashboard: React.FC<MobilePoultryDashboardProps> = ({
     }
   };
 
-  // Ensure weight bins cover a span
+  // Add bucket above or below
   const addWeightBucket = (weight: number) => {
     if (!tallies[weight]) {
       setTallies(prev => ({ ...prev, [weight]: 0 }));
@@ -254,7 +259,7 @@ export const MobilePoultryDashboard: React.FC<MobilePoultryDashboardProps> = ({
     });
   }, [standardsData, selectedGender, selectedWeek, stats.avg]);
 
-  // Multi-Pen Shed Feed Calculation (5000 birds default estimation)
+  // Multi-Pen Shed Feed Calculation (5,000 birds default estimation)
   const estimatedShedBirds = 5000;
   const dailyFeedKg = Math.round((estimatedShedBirds * targetDailyFeed) / 1000);
   const bags50kg = (dailyFeedKg / 50).toFixed(1);
@@ -316,522 +321,719 @@ export const MobilePoultryDashboard: React.FC<MobilePoultryDashboardProps> = ({
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-slate-950 text-slate-100 max-w-md mx-auto shadow-2xl relative select-none pb-24 border-x border-slate-900">
-      
-      {/* Top Mobile App Header */}
-      <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-3.5 py-2.5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center">
-              <Building2 className="w-4 h-4 text-emerald-400" />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="font-extrabold text-sm text-white tracking-tight">Sai Farm</span>
-                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-1.5 py-0.2 rounded border border-emerald-500/30">
-                  W{selectedWeek}
-                </span>
+    <div className={`min-h-screen ${isLight ? 'bg-slate-100' : 'bg-slate-950'} transition-colors duration-200 select-none`}>
+      <div className={`flex flex-col min-h-screen ${
+        isLight ? 'bg-slate-50 text-slate-900 border-x border-slate-200 shadow-xl' : 'bg-slate-950 text-slate-100 border-x border-slate-900 shadow-2xl'
+      } max-w-md mx-auto relative pb-24`}>
+        
+        {/* Top Mobile App Header */}
+        <header className={`sticky top-0 z-30 ${
+          isLight ? 'bg-white/95 border-b border-slate-200 shadow-xs' : 'bg-slate-900/95 border-b border-slate-800'
+        } backdrop-blur-md px-3.5 py-2.5 transition-colors`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                isLight ? 'bg-emerald-100 border border-emerald-300 text-emerald-700' : 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-400'
+              }`}>
+                <Building2 className="w-4 h-4" />
               </div>
-              <span className="text-[10px] text-slate-400 block -mt-0.5 font-medium">Field Operator Mode</span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            {/* Week Selector Dropdown */}
-            <select
-              aria-label="Select Age Week"
-              value={selectedWeek}
-              onChange={(e) => setSelectedWeek(Number(e.target.value))}
-              className="bg-slate-800 border border-slate-700 text-xs font-bold text-emerald-400 rounded-lg px-2 py-1.5 outline-none"
-            >
-              {Array.from({ length: 23 }, (_, i) => i + 1).map(wk => (
-                <option key={wk} value={wk}>W{wk}</option>
-              ))}
-            </select>
-
-            {/* Quick Share */}
-            <button 
-              onClick={handleCopyShare}
-              title="Share report via WhatsApp"
-              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition active:scale-95 border border-slate-700/60"
-            >
-              {copiedShare ? <Check className="w-4 h-4 text-emerald-400" /> : <Share2 className="w-4 h-4" />}
-            </button>
-
-            {/* Switch to Desktop View */}
-            {onSwitchToDesktop && (
-              <button
-                onClick={onSwitchToDesktop}
-                title="Switch to Full Desktop Matrix"
-                className="p-1.5 bg-slate-800 hover:bg-slate-700 text-sky-400 rounded-lg transition active:scale-95 border border-slate-700/60"
-              >
-                <Monitor className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Shed & Pen Horizontal Swipe Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar mt-2 pt-1 pb-1">
-          {shedList.map(shed => (
-            <button
-              key={shed}
-              onClick={() => setSelectedShed(shed)}
-              className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all shadow-sm ${
-                selectedShed === shed 
-                  ? 'bg-emerald-500 text-slate-950 font-black ring-2 ring-emerald-400/50' 
-                  : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700/50'
-              }`}
-            >
-              {shed}
-            </button>
-          ))}
-          <div className="w-[1px] bg-slate-700 mx-1 my-auto h-4 shrink-0" />
-          {penList.map(pen => (
-            <button
-              key={pen.name}
-              onClick={() => {
-                setSelectedPen(pen.name);
-                setSelectedGender(pen.sex);
-              }}
-              className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all shadow-sm ${
-                selectedPen === pen.name 
-                  ? 'bg-sky-500 text-slate-950 font-black ring-2 ring-sky-400/50' 
-                  : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700/50'
-              }`}
-            >
-              {pen.name}
-            </button>
-          ))}
-        </div>
-      </header>
-
-      {/* Sticky Metric Dashboard Banner */}
-      <section className="bg-gradient-to-b from-slate-900 to-slate-850 mx-3 mt-2.5 p-3 rounded-2xl border border-slate-800 shadow-xl relative overflow-hidden">
-        {/* Sample Progress bar */}
-        <div className="w-full bg-slate-800 h-1.5 rounded-full mb-2.5 overflow-hidden">
-          <div 
-            className={`h-full transition-all duration-300 ${
-              stats.total >= 100 ? 'bg-emerald-400' : stats.total >= 80 ? 'bg-sky-400' : 'bg-amber-400'
-            }`}
-            style={{ width: `${Math.min(100, (stats.total / 100) * 100)}%` }}
-          />
-        </div>
-
-        <div className="grid grid-cols-4 gap-1 text-center divide-x divide-slate-800">
-          <div>
-            <div className="text-[10px] text-slate-400 font-semibold tracking-wider">WEIGHED</div>
-            <div className="text-xl font-black text-white">{stats.total}</div>
-            <div className="text-[10px] text-slate-500 font-mono">Target 100</div>
-          </div>
-          <div className="pl-1">
-            <div className="text-[10px] text-slate-400 font-semibold tracking-wider">AVG WT</div>
-            <div className="text-xl font-black text-emerald-400">{stats.avg}g</div>
-            <div className="text-[10px] text-slate-400 font-medium">Std: {targetWeight}g</div>
-          </div>
-          <div className="pl-1">
-            <div className="text-[10px] text-slate-400 font-semibold tracking-wider">UNIFORM</div>
-            <div className={`text-xl font-black ${
-              stats.uniformity >= 80 ? 'text-emerald-400' : stats.uniformity >= 70 ? 'text-amber-400' : 'text-rose-400'
-            }`}>
-              {stats.uniformity}%
-            </div>
-            <div className="text-[10px] text-slate-500">±10% band</div>
-          </div>
-          <div className="pl-1">
-            <div className="text-[10px] text-slate-400 font-semibold tracking-wider">CV %</div>
-            <div className={`text-xl font-black ${stats.cv <= 8 ? 'text-emerald-400' : stats.cv <= 10 ? 'text-amber-400' : 'text-rose-400'}`}>
-              {stats.cv}%
-            </div>
-            <div className="text-[10px] text-slate-500 font-mono">F: {stats.fVal}</div>
-          </div>
-        </div>
-
-        {/* Live Band Range Indicator */}
-        <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 px-1">
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-            Uniform Range (±10%):
-          </span>
-          <span className="font-bold font-mono text-sky-400 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800">
-            {stats.rangeLow}g — {stats.rangeHigh}g
-          </span>
-        </div>
-      </section>
-
-      {/* Main Tab Body */}
-      <main className="flex-1 px-3 mt-3">
-        {/* TAB 1: THUMB-FRIENDLY TALLY PAD */}
-        {activeTab === 'tally' && (
-          <div className="space-y-2.5">
-            {/* Quick Increment Chip Bar for Active Bin */}
-            <div className="bg-slate-900/90 border border-slate-800 p-2.5 rounded-xl shadow-md">
-              <div className="flex items-center justify-between mb-1.5">
+              <div>
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Active Bin:</span>
-                  <span className="text-xs font-extrabold text-sky-400 font-mono bg-sky-950/50 px-2 py-0.5 rounded border border-sky-800/40">
-                    {activeWeightBin ? `${activeWeightBin}g` : 'Select a weight below'}
+                  <span className={`font-black text-sm tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                    Sai Farm
+                  </span>
+                  <span className={`text-[10px] font-black px-1.5 py-0.2 rounded border ${
+                    isLight ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                  }`}>
+                    W{selectedWeek}
                   </span>
                 </div>
-                <button
-                  onClick={scrollToTargetWeight}
-                  className="flex items-center gap-1 text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-500/30"
-                >
-                  <Crosshair className="w-3 h-3" /> Target ({targetWeight}g)
-                </button>
+                <span className={`text-[10px] block -mt-0.5 font-medium ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Field Daylight Mode
+                </span>
               </div>
+            </div>
 
-              {/* Quick Increment Chips (+1, +5, +10) */}
-              <div className="grid grid-cols-4 gap-1.5">
-                {[1, 5, 10].map(val => (
-                  <button
-                    key={val}
-                    disabled={!activeWeightBin}
-                    onClick={() => activeWeightBin && updateCount(activeWeightBin, val)}
-                    className="py-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-black text-sm active:scale-95 transition disabled:opacity-30 disabled:pointer-events-none shadow-sm flex items-center justify-center gap-0.5"
-                  >
-                    <Plus className="w-3.5 h-3.5" />{val}
-                  </button>
+            <div className="flex items-center gap-1.5">
+              {/* Week Selector Dropdown */}
+              <select
+                aria-label="Select Age Week"
+                value={selectedWeek}
+                onChange={(e) => setSelectedWeek(Number(e.target.value))}
+                className={`text-xs font-black rounded-lg px-2 py-1.5 outline-none border transition-colors ${
+                  isLight 
+                    ? 'bg-white border-slate-300 text-emerald-700 shadow-xs focus:border-emerald-500' 
+                    : 'bg-slate-800 border-slate-700 text-emerald-400'
+                }`}
+              >
+                {Array.from({ length: 23 }, (_, i) => i + 1).map(wk => (
+                  <option key={wk} value={wk}>W{wk}</option>
                 ))}
+              </select>
+
+              {/* Theme Switcher Toggle (☀️ Light / 🌙 Dark) */}
+              <button
+                onClick={() => setTheme(isLight ? 'dark' : 'light')}
+                title={isLight ? 'Switch to Dark Mode' : 'Switch to Light Theme'}
+                className={`p-1.5 rounded-lg transition active:scale-95 border ${
+                  isLight 
+                    ? 'bg-slate-100 hover:bg-slate-200 text-amber-600 border-slate-200 shadow-xs' 
+                    : 'bg-slate-800 hover:bg-slate-700 text-amber-400 border-slate-700'
+                }`}
+              >
+                {isLight ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+              </button>
+
+              {/* Quick Share */}
+              <button 
+                onClick={handleCopyShare}
+                title="Share report via WhatsApp"
+                className={`p-1.5 rounded-lg transition active:scale-95 border ${
+                  isLight 
+                    ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200 shadow-xs' 
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                }`}
+              >
+                {copiedShare ? <Check className="w-4 h-4 text-emerald-600" /> : <Share2 className="w-4 h-4" />}
+              </button>
+
+              {/* Switch to Desktop View */}
+              {onSwitchToDesktop && (
                 <button
-                  disabled={!activeWeightBin || !(tallies[activeWeightBin] > 0)}
-                  onClick={() => activeWeightBin && updateCount(activeWeightBin, -1)}
-                  className="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold text-sm active:scale-95 transition disabled:opacity-30 disabled:pointer-events-none shadow-sm flex items-center justify-center gap-0.5"
+                  onClick={onSwitchToDesktop}
+                  title="Switch to Full Desktop Matrix"
+                  className={`p-1.5 rounded-lg transition active:scale-95 border ${
+                    isLight 
+                      ? 'bg-slate-100 hover:bg-slate-200 text-sky-700 border-slate-200 shadow-xs' 
+                      : 'bg-slate-800 hover:bg-slate-700 text-sky-400 border-slate-700'
+                  }`}
                 >
-                  <Minus className="w-3.5 h-3.5" />1
+                  <Monitor className="w-4 h-4" />
                 </button>
+              )}
+            </div>
+          </div>
+
+          {/* Shed & Pen Horizontal Swipe Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar mt-2 pt-1 pb-1">
+            {shedList.map(shed => (
+              <button
+                key={shed}
+                onClick={() => setSelectedShed(shed)}
+                className={`px-3 py-1 rounded-full text-xs whitespace-nowrap transition-all shadow-xs ${
+                  selectedShed === shed 
+                    ? 'bg-emerald-600 text-white font-black ring-2 ring-emerald-300 shadow-sm' 
+                    : isLight
+                      ? 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200 font-semibold'
+                      : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700/50'
+                }`}
+              >
+                {shed}
+              </button>
+            ))}
+            <div className={`w-[1px] mx-1 my-auto h-4 shrink-0 ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
+            {penList.map(pen => (
+              <button
+                key={pen.name}
+                onClick={() => {
+                  setSelectedPen(pen.name);
+                  setSelectedGender(pen.sex);
+                }}
+                className={`px-3 py-1 rounded-full text-xs whitespace-nowrap transition-all shadow-xs ${
+                  selectedPen === pen.name 
+                    ? 'bg-sky-600 text-white font-black ring-2 ring-sky-300 shadow-sm' 
+                    : isLight
+                      ? 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200 font-semibold'
+                      : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700/50'
+                }`}
+              >
+                {pen.name}
+              </button>
+            ))}
+          </div>
+        </header>
+
+        {/* Sticky Metric Dashboard Banner */}
+        <section className={`mx-3 mt-2.5 p-3 rounded-2xl border shadow-md relative overflow-hidden transition-colors ${
+          isLight ? 'bg-white border-slate-200' : 'bg-gradient-to-b from-slate-900 to-slate-850 border-slate-800'
+        }`}>
+          {/* Sample Progress bar */}
+          <div className={`w-full h-1.5 rounded-full mb-2.5 overflow-hidden ${isLight ? 'bg-slate-100' : 'bg-slate-800'}`}>
+            <div 
+              className={`h-full transition-all duration-300 ${
+                stats.total >= 100 ? 'bg-emerald-500' : stats.total >= 80 ? 'bg-sky-500' : 'bg-amber-500'
+              }`}
+              style={{ width: `${Math.min(100, (stats.total / 100) * 100)}%` }}
+            />
+          </div>
+
+          <div className={`grid grid-cols-4 gap-1 text-center divide-x ${isLight ? 'divide-slate-200' : 'divide-slate-800'}`}>
+            <div>
+              <div className={`text-[10px] font-bold tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                WEIGHED
+              </div>
+              <div className={`text-xl font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                {stats.total}
+              </div>
+              <div className={`text-[10px] font-mono ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+                Target 100
               </div>
             </div>
-
-            {/* List Header & Controls */}
-            <div className="flex items-center justify-between px-1">
-              <span className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">
-                Weight Grid (20g Steps)
-              </span>
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={() => {
-                    const minW = Math.min(...Object.keys(tallies).map(Number));
-                    addWeightBucket(minW - 20);
-                  }}
-                  className="text-[11px] font-medium text-slate-400 hover:text-slate-200 bg-slate-850 px-2 py-0.5 rounded border border-slate-800"
-                >
-                  -20g
-                </button>
-                <button 
-                  onClick={() => {
-                    const maxW = Math.max(...Object.keys(tallies).map(Number));
-                    addWeightBucket(maxW + 20);
-                  }}
-                  className="text-[11px] font-medium text-slate-400 hover:text-slate-200 bg-slate-850 px-2 py-0.5 rounded border border-slate-800"
-                >
-                  +20g
-                </button>
-                <button 
-                  onClick={() => {
-                    if (window.confirm('Reset all weight tallies for this pen?')) {
-                      setTallies(prev => {
-                        const cleared: Record<number, number> = {};
-                        Object.keys(prev).forEach(k => cleared[Number(k)] = 0);
-                        return cleared;
-                      });
-                    }
-                  }} 
-                  className="text-[11px] text-rose-400 hover:text-rose-300 flex items-center gap-1 active:opacity-70 bg-rose-950/30 px-2 py-0.5 rounded border border-rose-900/40"
-                >
-                  <RotateCcw className="w-3 h-3" /> Reset
-                </button>
+            <div className="pl-1">
+              <div className={`text-[10px] font-bold tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                AVG WT
+              </div>
+              <div className="text-xl font-black text-emerald-600">
+                {stats.avg}g
+              </div>
+              <div className={`text-[10px] font-medium ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                Std: {targetWeight}g
               </div>
             </div>
+            <div className="pl-1">
+              <div className={`text-[10px] font-bold tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                UNIFORM
+              </div>
+              <div className={`text-xl font-black ${
+                stats.uniformity >= 80 ? 'text-emerald-600' : stats.uniformity >= 70 ? 'text-amber-600' : 'text-rose-600'
+              }`}>
+                {stats.uniformity}%
+              </div>
+              <div className={`text-[10px] ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+                ±10% band
+              </div>
+            </div>
+            <div className="pl-1">
+              <div className={`text-[10px] font-bold tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                CV %
+              </div>
+              <div className={`text-xl font-black ${
+                stats.cv <= 8 ? 'text-emerald-600' : stats.cv <= 10 ? 'text-amber-600' : 'text-rose-600'
+              }`}>
+                {stats.cv}%
+              </div>
+              <div className={`text-[10px] font-mono ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+                F: {stats.fVal}
+              </div>
+            </div>
+          </div>
 
-            {/* Touch Tally Item Rows */}
-            <div ref={tallyListRef} className="space-y-1.5 max-h-[50vh] overflow-y-auto pr-1 no-scrollbar">
-              {Object.keys(tallies).map(Number).sort((a,b)=>a-b).map(weight => {
-                const count = tallies[weight] || 0;
-                const isInRange = weight >= stats.rangeLow && weight <= stats.rangeHigh;
-                const isTarget = Math.abs(weight - targetWeight) < 10;
-                const isActive = activeWeightBin === weight;
+          {/* Live Band Range Indicator */}
+          <div className={`mt-2.5 pt-2 border-t flex items-center justify-between text-[11px] px-1 ${
+            isLight ? 'border-slate-100 text-slate-600' : 'border-slate-800/80 text-slate-400'
+          }`}>
+            <span className="flex items-center gap-1 font-medium">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              Uniform Band (±10%):
+            </span>
+            <span className={`font-black font-mono px-2 py-0.5 rounded border ${
+              isLight 
+                ? 'text-sky-700 bg-sky-50 border-sky-200' 
+                : 'text-sky-400 bg-slate-900/80 border-slate-800'
+            }`}>
+              {stats.rangeLow}g — {stats.rangeHigh}g
+            </span>
+          </div>
+        </section>
 
-                return (
-                  <div 
-                    key={weight}
-                    ref={isTarget ? targetRowRef : null}
-                    onClick={() => setActiveWeightBin(weight)}
-                    className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer ${
-                      isActive
-                        ? 'ring-2 ring-emerald-500 shadow-lg'
-                        : ''
-                    } ${
-                      count > 0 
-                        ? isInRange 
-                          ? 'bg-slate-900/95 border-emerald-500/50 shadow-sm shadow-emerald-950/30' 
-                          : 'bg-slate-900/95 border-amber-500/40 shadow-sm shadow-amber-950/30'
-                        : 'bg-slate-900/60 border-slate-850'
+        {/* Main Tab Body */}
+        <main className="flex-1 px-3 mt-3">
+          {/* TAB 1: THUMB-FRIENDLY TALLY PAD */}
+          {activeTab === 'tally' && (
+            <div className="space-y-2.5">
+              {/* Quick Increment Chip Bar for Active Bin */}
+              <div className={`p-2.5 rounded-xl border shadow-sm transition-colors ${
+                isLight ? 'bg-white border-slate-200' : 'bg-slate-900/90 border-slate-800'
+              }`}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-[11px] font-bold uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                      Active Bin:
+                    </span>
+                    <span className={`text-xs font-black font-mono px-2 py-0.5 rounded border ${
+                      isLight 
+                        ? 'text-sky-800 bg-sky-50 border-sky-200' 
+                        : 'text-sky-400 bg-sky-950/50 border-sky-800/40'
+                    }`}>
+                      {activeWeightBin ? `${activeWeightBin}g` : 'Select a weight below'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={scrollToTargetWeight}
+                    className={`flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded border transition active:scale-95 ${
+                      isLight 
+                        ? 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-300' 
+                        : 'text-emerald-400 bg-emerald-950/40 hover:bg-emerald-900/50 border-emerald-500/30'
                     }`}
                   >
-                    {/* Weight Label & Badge */}
-                    <div className="flex items-center gap-2">
-                      <div className="text-base font-black tracking-tight text-white font-mono">
-                        {weight}g
-                      </div>
-                      {isTarget && (
-                        <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">
-                          Target
-                        </span>
-                      )}
-                      {isInRange && count > 0 && (
-                        <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50" />
-                      )}
-                    </div>
+                    <Crosshair className="w-3 h-3" /> Target ({targetWeight}g)
+                  </button>
+                </div>
 
-                    {/* Touch Action Buttons */}
-                    <div className="flex items-center gap-2.5">
-                      <button
-                        aria-label={`Decrement count for ${weight} grams`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          updateCount(weight, -1);
-                        }}
-                        disabled={count === 0}
-                        className="w-10 h-10 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center active:scale-90 disabled:opacity-20 disabled:pointer-events-none border border-slate-700/80 transition shadow"
-                      >
-                        <Minus className="w-5 h-5" />
-                      </button>
+                {/* Quick Increment Chips (+1, +5, +10, -1) */}
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[1, 5, 10].map(val => (
+                    <button
+                      key={val}
+                      disabled={!activeWeightBin}
+                      onClick={() => activeWeightBin && updateCount(activeWeightBin, val)}
+                      className={`py-2 rounded-lg font-black text-sm active:scale-95 transition disabled:opacity-30 disabled:pointer-events-none shadow-xs flex items-center justify-center gap-0.5 border ${
+                        isLight
+                          ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                          : 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
+                      }`}
+                    >
+                      <Plus className="w-3.5 h-3.5" />{val}
+                    </button>
+                  ))}
+                  <button
+                    disabled={!activeWeightBin || !(tallies[activeWeightBin] > 0)}
+                    onClick={() => activeWeightBin && updateCount(activeWeightBin, -1)}
+                    className={`py-2 rounded-lg font-bold text-sm active:scale-95 transition disabled:opacity-30 disabled:pointer-events-none shadow-xs flex items-center justify-center gap-0.5 border ${
+                      isLight 
+                        ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300' 
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                    }`}
+                  >
+                    <Minus className="w-3.5 h-3.5" />1
+                  </button>
+                </div>
+              </div>
 
-                      <span className="w-8 text-center font-black text-xl text-emerald-300 font-mono">
-                        {count}
-                      </span>
-
-                      <button
-                        aria-label={`Increment count for ${weight} grams`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          updateCount(weight, 1);
-                        }}
-                        className="w-11 h-11 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center font-black active:scale-90 shadow-lg shadow-emerald-900/60 transition"
-                      >
-                        <Plus className="w-6 h-6 stroke-[3]" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 2: SHED SUMMARY & BELL CURVE */}
-        {activeTab === 'summary' && (
-          <div className="space-y-3">
-            {/* Shed-Wise Aggregation Card */}
-            <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 shadow-lg">
-              <div className="flex items-center justify-between mb-2.5">
-                <h3 className="font-bold text-sm text-slate-100 flex items-center gap-1.5">
-                  <Building2 className="w-4 h-4 text-emerald-400" />
-                  Shed Aggregation ({selectedShed})
-                </h3>
-                <span className="text-[10px] font-bold bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-slate-700">
-                  Week {selectedWeek}
+              {/* List Header & Range Extenders */}
+              <div className="flex items-center justify-between px-1">
+                <span className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
+                  Weight Grid (20g Steps)
                 </span>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex justify-between items-center p-2.5 bg-slate-850/80 rounded-xl text-xs border border-slate-800">
-                  <span className="text-slate-300 font-semibold">Pen A (Female)</span>
-                  <span className="font-mono font-bold text-emerald-400">1290g • 86.0% Unif • CV 7.1%</span>
-                </div>
-                <div className="flex justify-between items-center p-2.5 bg-slate-850/80 rounded-xl text-xs border border-slate-800">
-                  <span className="text-slate-300 font-semibold">Pen B (Male)</span>
-                  <span className="font-mono font-bold text-emerald-400">1760g • 84.5% Unif • CV 7.4%</span>
-                </div>
-                <div className="flex justify-between items-center p-2.5 bg-sky-950/30 rounded-xl text-xs border border-sky-800/40">
-                  <span className="text-sky-300 font-semibold">Shed Mean (X̄shed):</span>
-                  <span className="font-mono font-black text-sky-300">1385g • 85.3% Shed Unif</span>
-                </div>
-              </div>
-
-              {/* Feed Requirement Calculator */}
-              <div className="mt-3 p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl space-y-1.5">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-emerald-300 font-bold flex items-center gap-1">
-                    <Wheat className="w-3.5 h-3.5" /> Daily Feed Requirement:
-                  </span>
-                  <span className="text-emerald-400 font-mono font-bold">{targetDailyFeed}g / bird / day</span>
-                </div>
-                <div className="flex items-center justify-between text-xs pt-1 border-t border-emerald-500/20">
-                  <span className="text-slate-400">Total Flock Feed (5,000 birds):</span>
-                  <span className="font-black text-white font-mono">{dailyFeedKg} kg / day</span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400">50kg Bags Required:</span>
-                  <span className="font-black text-emerald-300 font-mono bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-700/50">
-                    {bags50kg} Bags (~{Math.ceil(Number(bags50kg))} Bags)
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Bell Curve Histogram */}
-            <div className="bg-slate-900 rounded-2xl p-3 border border-slate-800 shadow-lg">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="font-bold text-xs text-slate-200">Pen Sample Bell Curve Distribution</h3>
-                <span className="text-[10px] text-emerald-400 font-mono">Mean: {stats.avg}g</span>
-              </div>
-              <div className="h-44 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
-                    <XAxis dataKey="weight" tick={{ fontSize: 9, fill: '#94a3b8' }} />
-                    <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', fontSize: '11px' }} 
-                    />
-                    <ReferenceLine x={`${stats.avg}g`} stroke="#10b981" strokeDasharray="3 3" />
-                    <Bar dataKey="count" fill="#38bdf8" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: GROWTH CURVE CHART */}
-        {activeTab === 'curve' && (
-          <div className="space-y-3">
-            <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 shadow-lg">
-              <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-1.5">
-                  <TrendingUp className="w-4 h-4 text-emerald-400" />
-                  <h3 className="font-bold text-sm text-slate-100">Growth Standard vs Actual</h3>
+                  <button 
+                    onClick={() => {
+                      const minW = Math.min(...Object.keys(tallies).map(Number));
+                      addWeightBucket(minW - 20);
+                    }}
+                    className={`text-[11px] font-semibold px-2 py-0.5 rounded border transition ${
+                      isLight 
+                        ? 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300' 
+                        : 'bg-slate-850 hover:bg-slate-800 text-slate-400 border-slate-800'
+                    }`}
+                  >
+                    -20g
+                  </button>
+                  <button 
+                    onClick={() => {
+                      const maxW = Math.max(...Object.keys(tallies).map(Number));
+                      addWeightBucket(maxW + 20);
+                    }}
+                    className={`text-[11px] font-semibold px-2 py-0.5 rounded border transition ${
+                      isLight 
+                        ? 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300' 
+                        : 'bg-slate-850 hover:bg-slate-800 text-slate-400 border-slate-800'
+                    }`}
+                  >
+                    +20g
+                  </button>
+                  <button 
+                    onClick={() => {
+                      if (window.confirm('Reset all weight tallies for this pen?')) {
+                        setTallies(prev => {
+                          const cleared: Record<number, number> = {};
+                          Object.keys(prev).forEach(k => cleared[Number(k)] = 0);
+                          return cleared;
+                        });
+                      }
+                    }} 
+                    className={`text-[11px] font-semibold flex items-center gap-1 active:opacity-70 px-2 py-0.5 rounded border transition ${
+                      isLight 
+                        ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200' 
+                        : 'bg-rose-950/30 hover:bg-rose-900/40 text-rose-400 border-rose-900/40'
+                    }`}
+                  >
+                    <RotateCcw className="w-3 h-3" /> Reset
+                  </button>
                 </div>
-                <span className="text-[10px] font-bold text-sky-400 bg-sky-950/40 px-2 py-0.5 rounded border border-sky-800/40">
-                  {selectedGender === 'FEMALE' ? 'Female' : 'Male'} Standard
-                </span>
               </div>
 
-              <div className="h-52 w-full mt-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={growthCurveData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                    <XAxis dataKey="week" tick={{ fontSize: 9, fill: '#94a3b8' }} />
-                    <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', fontSize: '11px' }} 
-                    />
-                    <Line type="monotone" dataKey="standard" stroke="#94a3b8" strokeDasharray="4 4" dot={false} name="Suguna Std" />
-                    <Line type="monotone" dataKey="actual" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Actual Weight" connectNulls />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
+              {/* Touch Tally Item Rows */}
+              <div ref={tallyListRef} className="space-y-1.5 max-h-[50vh] overflow-y-auto pr-1 no-scrollbar">
+                {Object.keys(tallies).map(Number).sort((a,b)=>a-b).map(weight => {
+                  const count = tallies[weight] || 0;
+                  const isInRange = weight >= stats.rangeLow && weight <= stats.rangeHigh;
+                  const isTarget = Math.abs(weight - targetWeight) < 10;
+                  const isActive = activeWeightBin === weight;
 
-              <div className="grid grid-cols-2 gap-2 mt-3 text-center text-xs">
-                <div className="p-2 bg-slate-850 rounded-xl border border-slate-800">
-                  <span className="text-slate-400 block text-[10px]">W{selectedWeek} Standard:</span>
-                  <span className="font-bold text-slate-200 font-mono text-sm">{targetWeight}g</span>
-                </div>
-                <div className="p-2 bg-slate-850 rounded-xl border border-slate-800">
-                  <span className="text-slate-400 block text-[10px]">Current Pen Mean:</span>
-                  <span className="font-bold text-emerald-400 font-mono text-sm">
-                    {stats.avg}g ({stats.avg - targetWeight >= 0 ? '+' : ''}{stats.avg - targetWeight}g)
+                  return (
+                    <div 
+                      key={weight}
+                      ref={isTarget ? targetRowRef : null}
+                      onClick={() => setActiveWeightBin(weight)}
+                      className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        isActive
+                          ? 'ring-2 ring-emerald-500 shadow-md'
+                          : ''
+                      } ${
+                        count > 0 
+                          ? isInRange 
+                            ? isLight 
+                              ? 'bg-emerald-50/80 border-emerald-300 shadow-xs' 
+                              : 'bg-slate-900/95 border-emerald-500/50 shadow-sm shadow-emerald-950/30' 
+                            : isLight 
+                              ? 'bg-amber-50/80 border-amber-300 shadow-xs' 
+                              : 'bg-slate-900/95 border-amber-500/40 shadow-sm shadow-amber-950/30'
+                          : isLight 
+                            ? 'bg-white border-slate-200 hover:border-slate-300 shadow-xs' 
+                            : 'bg-slate-900/60 border-slate-850'
+                      }`}
+                    >
+                      {/* Weight Label & Badge */}
+                      <div className="flex items-center gap-2">
+                        <div className={`text-base font-black tracking-tight font-mono ${
+                          isLight ? 'text-slate-900' : 'text-white'
+                        }`}>
+                          {weight}g
+                        </div>
+                        {isTarget && (
+                          <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded border ${
+                            isLight ? 'bg-sky-100 text-sky-800 border-sky-300' : 'bg-sky-500/20 text-sky-400 border-sky-500/30'
+                          }`}>
+                            Target
+                          </span>
+                        )}
+                        {isInRange && count > 0 && (
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm" />
+                        )}
+                      </div>
+
+                      {/* Touch Action Buttons */}
+                      <div className="flex items-center gap-2.5">
+                        <button
+                          aria-label={`Decrement count for ${weight} grams`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateCount(weight, -1);
+                          }}
+                          disabled={count === 0}
+                          className={`w-10 h-10 rounded-xl flex items-center justify-center active:scale-90 disabled:opacity-20 disabled:pointer-events-none border transition shadow-xs ${
+                            isLight 
+                              ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300' 
+                              : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700/80'
+                          }`}
+                        >
+                          <Minus className="w-5 h-5" />
+                        </button>
+
+                        <span className={`w-8 text-center font-black text-xl font-mono ${
+                          isLight ? 'text-emerald-800' : 'text-emerald-300'
+                        }`}>
+                          {count}
+                        </span>
+
+                        <button
+                          aria-label={`Increment count for ${weight} grams`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateCount(weight, 1);
+                          }}
+                          className={`w-11 h-11 rounded-xl text-white flex items-center justify-center font-black active:scale-90 transition shadow-md ${
+                            isLight 
+                              ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/30' 
+                              : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-900/60'
+                          }`}
+                        >
+                          <Plus className="w-6 h-6 stroke-[3]" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: SHED SUMMARY & BELL CURVE */}
+          {activeTab === 'summary' && (
+            <div className="space-y-3">
+              {/* Shed-Wise Aggregation Card */}
+              <div className={`p-4 rounded-2xl border shadow-md ${
+                isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+              }`}>
+                <div className="flex items-center justify-between mb-2.5">
+                  <h3 className={`font-black text-sm flex items-center gap-1.5 ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+                    <Building2 className="w-4 h-4 text-emerald-600" />
+                    Shed Aggregation ({selectedShed})
+                  </h3>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                    isLight ? 'bg-slate-100 text-slate-700 border-slate-300' : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}>
+                    Week {selectedWeek}
                   </span>
                 </div>
+
+                <div className="space-y-2">
+                  <div className={`flex justify-between items-center p-2.5 rounded-xl text-xs border ${
+                    isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-slate-850/80 border-slate-800'
+                  }`}>
+                    <span className="font-semibold text-slate-700">Pen A (Female)</span>
+                    <span className="font-mono font-black text-emerald-700">1290g • 86.0% Unif • CV 7.1%</span>
+                  </div>
+                  <div className={`flex justify-between items-center p-2.5 rounded-xl text-xs border ${
+                    isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-slate-850/80 border-slate-800'
+                  }`}>
+                    <span className="font-semibold text-slate-700">Pen B (Male)</span>
+                    <span className="font-mono font-black text-emerald-700">1760g • 84.5% Unif • CV 7.4%</span>
+                  </div>
+                  <div className={`flex justify-between items-center p-2.5 rounded-xl text-xs border ${
+                    isLight ? 'bg-sky-50 border-sky-200 text-sky-900' : 'bg-sky-950/30 border-sky-800/40 text-sky-300'
+                  }`}>
+                    <span className="font-bold">Shed Mean (X̄shed):</span>
+                    <span className="font-mono font-black">1385g • 85.3% Shed Unif</span>
+                  </div>
+                </div>
+
+                {/* Feed Requirement Calculator */}
+                <div className={`mt-3 p-3 rounded-xl border space-y-1.5 ${
+                  isLight 
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-950' 
+                    : 'bg-emerald-950/30 border-emerald-500/30 text-slate-100'
+                }`}>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold flex items-center gap-1 text-emerald-800">
+                      <Wheat className="w-3.5 h-3.5" /> Daily Feed Requirement:
+                    </span>
+                    <span className="font-mono font-black text-emerald-800">{targetDailyFeed}g / bird / day</span>
+                  </div>
+                  <div className={`flex items-center justify-between text-xs pt-1 border-t ${
+                    isLight ? 'border-emerald-200' : 'border-emerald-500/20'
+                  }`}>
+                    <span className={isLight ? 'text-slate-600' : 'text-slate-400'}>Flock Feed (5,000 birds):</span>
+                    <span className={`font-black font-mono ${isLight ? 'text-slate-900' : 'text-white'}`}>{dailyFeedKg} kg / day</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className={isLight ? 'text-slate-600' : 'text-slate-400'}>50kg Bags Required:</span>
+                    <span className={`font-black font-mono px-2 py-0.5 rounded border shadow-xs ${
+                      isLight 
+                        ? 'bg-emerald-700 text-white border-emerald-800' 
+                        : 'bg-emerald-900/60 text-emerald-300 border-emerald-700/50'
+                    }`}>
+                      {bags50kg} Bags (~{Math.ceil(Number(bags50kg))} Bags)
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Bell Curve Histogram */}
+              <div className={`p-3 rounded-2xl border shadow-md ${
+                isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+              }`}>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className={`font-black text-xs ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>
+                    Pen Sample Bell Curve Distribution
+                  </h3>
+                  <span className="text-[10px] text-emerald-600 font-mono font-bold">Mean: {stats.avg}g</span>
+                </div>
+                <div className="h-44 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+                      <XAxis dataKey="weight" tick={{ fontSize: 9, fill: isLight ? '#64748b' : '#94a3b8' }} />
+                      <YAxis tick={{ fontSize: 9, fill: isLight ? '#64748b' : '#94a3b8' }} />
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: isLight ? '#ffffff' : '#0f172a', 
+                          borderColor: isLight ? '#cbd5e1' : '#334155', 
+                          color: isLight ? '#0f172a' : '#f8fafc',
+                          borderRadius: '8px', 
+                          fontSize: '11px',
+                          boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'
+                        }} 
+                      />
+                      <ReferenceLine x={`${stats.avg}g`} stroke="#059669" strokeDasharray="3 3" />
+                      <Bar dataKey="count" fill="#0284c7" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* TAB 4: SHARE & EXPORT */}
-        {activeTab === 'share' && (
-          <div className="space-y-3">
-            <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 shadow-lg space-y-3">
-              <h3 className="font-bold text-sm text-slate-100 flex items-center gap-1.5">
-                <Share2 className="w-4 h-4 text-emerald-400" />
-                Export & Field Communication
-              </h3>
-              
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-[11px] text-slate-300 leading-relaxed max-h-48 overflow-y-auto no-scrollbar whitespace-pre-line">
-                {generateShareReport()}
+          {/* TAB 3: GROWTH CURVE CHART */}
+          {activeTab === 'curve' && (
+            <div className="space-y-3">
+              <div className={`p-4 rounded-2xl border shadow-md ${
+                isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+              }`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5">
+                    <TrendingUp className="w-4 h-4 text-emerald-600" />
+                    <h3 className={`font-black text-sm ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+                      Growth Standard vs Actual
+                    </h3>
+                  </div>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded border ${
+                    isLight ? 'text-sky-800 bg-sky-50 border-sky-200' : 'text-sky-400 bg-sky-950/40 border-sky-800/40'
+                  }`}>
+                    {selectedGender === 'FEMALE' ? 'Female' : 'Male'} Standard
+                  </span>
+                </div>
+
+                <div className="h-52 w-full mt-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={growthCurveData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={isLight ? '#f1f5f9' : '#1e293b'} />
+                      <XAxis dataKey="week" tick={{ fontSize: 9, fill: isLight ? '#64748b' : '#94a3b8' }} />
+                      <YAxis tick={{ fontSize: 9, fill: isLight ? '#64748b' : '#94a3b8' }} />
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: isLight ? '#ffffff' : '#0f172a', 
+                          borderColor: isLight ? '#cbd5e1' : '#334155', 
+                          color: isLight ? '#0f172a' : '#f8fafc',
+                          borderRadius: '8px', 
+                          fontSize: '11px',
+                          boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'
+                        }} 
+                      />
+                      <Line type="monotone" dataKey="standard" stroke="#94a3b8" strokeDasharray="4 4" dot={false} name="Suguna Std" />
+                      <Line type="monotone" dataKey="actual" stroke="#059669" strokeWidth={2.5} dot={{ r: 3 }} name="Actual Weight" connectNulls />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 mt-3 text-center text-xs">
+                  <div className={`p-2 rounded-xl border ${
+                    isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-850 border-slate-800'
+                  }`}>
+                    <span className={`block text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                      W{selectedWeek} Standard:
+                    </span>
+                    <span className={`font-black font-mono text-sm ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>
+                      {targetWeight}g
+                    </span>
+                  </div>
+                  <div className={`p-2 rounded-xl border ${
+                    isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-850 border-slate-800'
+                  }`}>
+                    <span className={`block text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                      Current Pen Mean:
+                    </span>
+                    <span className="font-black text-emerald-600 font-mono text-sm">
+                      {stats.avg}g ({stats.avg - targetWeight >= 0 ? '+' : ''}{stats.avg - targetWeight}g)
+                    </span>
+                  </div>
+                </div>
               </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={handleCopyShare}
-                  className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition shadow-lg shadow-emerald-950"
-                >
-                  {copiedShare ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  {copiedShare ? 'Copied!' : 'Copy WhatsApp Report'}
-                </button>
-
-                <button
-                  onClick={handleSaveToSystem}
-                  disabled={isSaving}
-                  className="py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition shadow-lg shadow-sky-950 disabled:opacity-50"
-                >
-                  <Save className="w-4 h-4" />
-                  {isSaving ? 'Saving...' : 'Sync to Database'}
-                </button>
-              </div>
-
-              <button
-                onClick={() => window.print()}
-                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-700 flex items-center justify-center gap-1.5 active:scale-95 transition"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" /> Print Suguna Recording Sheet
-              </button>
             </div>
-          </div>
-        )}
-      </main>
+          )}
 
-      {/* Floating Bottom Touch Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-slate-900/95 backdrop-blur-md border-t border-slate-800 p-2 flex justify-around items-center z-40 shadow-2xl">
-        <button
-          onClick={() => setActiveTab('tally')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-bold py-1 px-3 rounded-xl transition-all ${
-            activeTab === 'tally' 
-              ? 'text-emerald-400 bg-slate-800 shadow-inner' 
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <Layers className="w-5 h-5" />
-          Tally
-        </button>
+          {/* TAB 4: SHARE & EXPORT */}
+          {activeTab === 'share' && (
+            <div className="space-y-3">
+              <div className={`p-4 rounded-2xl border shadow-md space-y-3 ${
+                isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+              }`}>
+                <h3 className={`font-black text-sm flex items-center gap-1.5 ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
+                  <Share2 className="w-4 h-4 text-emerald-600" />
+                  Field Communication & Sync
+                </h3>
+                
+                <div className={`p-3 rounded-xl border font-mono text-[11px] leading-relaxed max-h-48 overflow-y-auto no-scrollbar whitespace-pre-line shadow-xs ${
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-800 text-slate-300'
+                }`}>
+                  {generateShareReport()}
+                </div>
 
-        <button
-          onClick={() => setActiveTab('summary')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-bold py-1 px-3 rounded-xl transition-all ${
-            activeTab === 'summary' 
-              ? 'text-emerald-400 bg-slate-800 shadow-inner' 
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <FileSpreadsheet className="w-5 h-5" />
-          Shed View
-        </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={handleCopyShare}
+                    className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition shadow-sm"
+                  >
+                    {copiedShare ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    {copiedShare ? 'Copied!' : 'Copy WhatsApp Report'}
+                  </button>
 
-        <button
-          onClick={() => setActiveTab('curve')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-bold py-1 px-3 rounded-xl transition-all ${
-            activeTab === 'curve' 
-              ? 'text-emerald-400 bg-slate-800 shadow-inner' 
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <TrendingUp className="w-5 h-5" />
-          Curve
-        </button>
+                  <button
+                    onClick={handleSaveToSystem}
+                    disabled={isSaving}
+                    className="py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition shadow-sm disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    {isSaving ? 'Saving...' : 'Sync to Database'}
+                  </button>
+                </div>
 
-        <button
-          onClick={() => setActiveTab('share')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-bold py-1 px-3 rounded-xl transition-all ${
-            activeTab === 'share' 
-              ? 'text-emerald-400 bg-slate-800 shadow-inner' 
-              : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <Share2 className="w-5 h-5" />
-          Share
-        </button>
-      </nav>
+                <button
+                  onClick={() => window.print()}
+                  className={`w-full py-2.5 rounded-xl font-semibold text-xs border flex items-center justify-center gap-1.5 active:scale-95 transition ${
+                    isLight 
+                      ? 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300 shadow-xs' 
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600" /> Print Suguna Recording Sheet
+                </button>
+              </div>
+            </div>
+          )}
+        </main>
+
+        {/* Floating Bottom Touch Bar */}
+        <nav className={`fixed bottom-0 left-0 right-0 max-w-md mx-auto p-2 flex justify-around items-center z-40 border-t backdrop-blur-md shadow-lg transition-colors ${
+          isLight ? 'bg-white/95 border-slate-200 text-slate-600' : 'bg-slate-900/95 border-slate-800 text-slate-400'
+        }`}>
+          <button
+            onClick={() => setActiveTab('tally')}
+            className={`flex flex-col items-center gap-1 text-[11px] font-black py-1 px-3 rounded-xl transition-all ${
+              activeTab === 'tally' 
+                ? isLight 
+                  ? 'text-emerald-700 bg-emerald-50 border border-emerald-200 shadow-xs' 
+                  : 'text-emerald-400 bg-slate-800 shadow-inner' 
+                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Layers className="w-5 h-5" />
+            Tally
+          </button>
+
+          <button
+            onClick={() => setActiveTab('summary')}
+            className={`flex flex-col items-center gap-1 text-[11px] font-black py-1 px-3 rounded-xl transition-all ${
+              activeTab === 'summary' 
+                ? isLight 
+                  ? 'text-emerald-700 bg-emerald-50 border border-emerald-200 shadow-xs' 
+                  : 'text-emerald-400 bg-slate-800 shadow-inner' 
+                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <FileSpreadsheet className="w-5 h-5" />
+            Shed View
+          </button>
+
+          <button
+            onClick={() => setActiveTab('curve')}
+            className={`flex flex-col items-center gap-1 text-[11px] font-black py-1 px-3 rounded-xl transition-all ${
+              activeTab === 'curve' 
+                ? isLight 
+                  ? 'text-emerald-700 bg-emerald-50 border border-emerald-200 shadow-xs' 
+                  : 'text-emerald-400 bg-slate-800 shadow-inner' 
+                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <TrendingUp className="w-5 h-5" />
+            Curve
+          </button>
+
+          <button
+            onClick={() => setActiveTab('share')}
+            className={`flex flex-col items-center gap-1 text-[11px] font-black py-1 px-3 rounded-xl transition-all ${
+              activeTab === 'share' 
+                ? isLight 
+                  ? 'text-emerald-700 bg-emerald-50 border border-emerald-200 shadow-xs' 
+                  : 'text-emerald-400 bg-slate-800 shadow-inner' 
+                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Share2 className="w-5 h-5" />
+            Share
+          </button>
+        </nav>
+      </div>
     </div>
   );
 };
