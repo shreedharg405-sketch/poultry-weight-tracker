@@ -1,7 +1,13 @@
 name = "poultry-weight-tracker"
 account_id = "607a4c8239664450331ee2c9de563318"
 compatibility_date = "2026-01-01"
+main = "worker.ts"
 pages_build_output_dir = "frontend/dist"
+
+[assets]
+directory = "./frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
 
 [vars]
 ENVIRONMENT = "production"

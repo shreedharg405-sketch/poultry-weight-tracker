@@ -2,11 +2,8 @@
 node_modules/
 */node_modules/
 
-# Production build artifacts
-dist/
-*/dist/
-build/
-*/build/
+# Backend compiled output
+backend/dist/
 
 # Environment and sensitive keys
 .env
