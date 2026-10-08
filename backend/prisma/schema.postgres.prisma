@@ -1,0 +1,91 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Farm {
+  id        String   @id @default(uuid())
+  name      String
+  location  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sheds     Shed[]
+}
+
+model Shed {
+  id        String   @id @default(uuid())
+  farmId    String
+  farm      Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  shedName  String   // "Shed 1", "Shed 2"
+  season    String   @default("WINTER_BROOD_SUMMER_LAY") // "WINTER_BROOD_SUMMER_LAY" | "SUMMER_BROOD_WINTER_LAY"
+  hatchDate DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  pens      Pen[]
+}
+
+model Pen {
+  id            String           @id @default(uuid())
+  shedId        String
+  shed          Shed             @relation(fields: [shedId], references: [id], onDelete: Cascade)
+  penNumber     String           // "Pen A", "Pen B", "Pen 1"
+  sex           String           // "FEMALE" | "MALE"
+  breed         String           @default("Cobb 500")
+  liveBirdCount Int              @default(4800)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  weighings     WeighingRecord[]
+}
+
+model WeighingRecord {
+  id                 String        @id @default(uuid())
+  penId              String
+  pen                Pen           @relation(fields: [penId], references: [id], onDelete: Cascade)
+  flockId            String?
+  ageWeeks           Int
+  weighDate          DateTime      @default(now())
+  targetWeight       Float
+  actualAvgWeight    Float
+  sampleSize         Int
+  uniformityPercent  Float
+  cvPercent          Float
+  stdDev             Float
+  lightestWeight     Float
+  heaviestWeight     Float
+  weightRange        Float
+  fValue             Float
+  underCount         Int
+  uniformCount       Int
+  overCount          Int
+  status             String        // "EXCELLENT" | "ACCEPTABLE" | "POOR"
+  suggestedFeedGrams Float
+  targetFeedGrams    Float
+  weighedBy          String?
+  notes              String?
+  createdAt          DateTime      @default(now())
+  tallies            WeightTally[]
+}
+
+model WeightTally {
+  id               String         @id @default(uuid())
+  weighingRecordId String
+  weighingRecord   WeighingRecord @relation(fields: [weighingRecordId], references: [id], onDelete: Cascade)
+  weightGrams      Float
+  birdCount        Int
+}
+
+model SeasonalBenchmark {
+  id                  String   @id @default(uuid())
+  season              String   // "WINTER_BROOD_SUMMER_LAY" | "SUMMER_BROOD_WINTER_LAY"
+  sex                 String   // "FEMALE" | "MALE"
+  week                Int
+  targetWeight        Float
+  weightGain          Float
+  feedGramsPerBirdDay Float
+  minWeight           Float
+  maxWeight           Float
+}

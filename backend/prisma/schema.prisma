@@ -1,0 +1,174 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 1. Farm Model
+model Farm {
+  id        String   @id @default(uuid())
+  name      String
+  location  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sheds     Shed[]
+  flocks    Flock[]
+}
+
+// 2. Shed / House Model
+model Shed {
+  id        String   @id @default(uuid())
+  farmId    String
+  farm      Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  shedName  String   // e.g., "Shed 1", "Shed 2", "Grower House 01"
+  season    String   @default("WINTER_BROOD_SUMMER_LAY") // "WINTER_BROOD_SUMMER_LAY" | "SUMMER_BROOD_WINTER_LAY"
+  hatchDate DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  pens      Pen[]
+  flocks    Flock[]
+}
+
+// 3. Pen Model (Subdivided Shed Compartments)
+model Pen {
+  id               String            @id @default(uuid())
+  shedId           String
+  shed             Shed              @relation(fields: [shedId], references: [id], onDelete: Cascade)
+  penNumber        String            // e.g., "Pen A", "Pen B", "Pen 1"
+  sex              String            // "FEMALE" | "MALE"
+  breed            String            @default("Cobb 500")
+  liveBirdCount    Int               @default(4800)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  weighingSessions WeighingSession[]
+  weighings        WeighingRecord[]
+  flocks           Flock[]
+}
+
+// 4. Flock / Batch Model
+model Flock {
+  id               String            @id @default(uuid())
+  farmId           String?
+  farm             Farm?             @relation(fields: [farmId], references: [id], onDelete: SetNull)
+  shedId           String?
+  shed             Shed?             @relation(fields: [shedId], references: [id], onDelete: SetNull)
+  penId            String?
+  pen              Pen?              @relation(fields: [penId], references: [id], onDelete: SetNull)
+  flockCode        String?
+  farmName         String?
+  houseNo          String?
+  penNo            String?
+  breed            String            @default("Cobb 500")
+  sex              String            @default("FEMALE")
+  season           String            @default("WINTER_BROOD_SUMMER_LAY")
+  hatchDate        DateTime?
+  initialBirdCount Int               @default(4800)
+  currentBirdCount Int               @default(4800)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  weighingSessions WeighingSession[]
+  weighings        WeighingRecord[]
+}
+
+// 5. BenchmarkStandard Model (Suguna Foods Seasonal Curve Standard)
+model BenchmarkStandard {
+  id                  String   @id @default(uuid())
+  season              String   // "WINTER_BROOD_SUMMER_LAY" | "SUMMER_BROOD_WINTER_LAY"
+  gender              String   // "FEMALE" | "MALE"
+  week                Int      // 1 to 23
+  targetWeight        Float    // Standard weight in grams
+  weightGain          Float    // Target weekly gain in grams
+  feedGramsPerBirdDay Float    // Daily feed allocation in grams/bird/day
+  minWeight           Float    // -10% threshold
+  maxWeight           Float    // +10% threshold
+  createdAt           DateTime @default(now())
+}
+
+// Backwards-compatible SeasonalBenchmark model
+model SeasonalBenchmark {
+  id                  String   @id @default(uuid())
+  season              String   // "WINTER_BROOD_SUMMER_LAY" | "SUMMER_BROOD_WINTER_LAY"
+  sex                 String   // "FEMALE" | "MALE"
+  week                Int
+  targetWeight        Float
+  weightGain          Float
+  feedGramsPerBirdDay Float
+  minWeight           Float
+  maxWeight           Float
+}
+
+// 6. WeighingSession Model (Sample Weighing Records Weeks 1 to 23)
+model WeighingSession {
+  id                 String        @id @default(uuid())
+  penId              String?
+  pen                Pen?          @relation(fields: [penId], references: [id], onDelete: Cascade)
+  flockId            String?
+  flock              Flock?        @relation(fields: [flockId], references: [id], onDelete: SetNull)
+  ageWeeks           Int           // 1 to 23
+  weighDate          DateTime      @default(now())
+  sampleSize         Int           // N birds weighed
+  actualAvgWeight    Float         // x̄ sample mean
+  targetWeight       Float         // Benchmark target
+  uniformityPercent  Float         // % birds within ±10% of mean
+  cvPercent          Float         // CV% calculated via Suguna F-Factor
+  stdDev             Float         // Standard deviation
+  lightestWeight     Float         // Minimum recorded bucket
+  heaviestWeight     Float         // Maximum recorded bucket
+  weightRange        Float         // Heaviest - Lightest
+  fValue             Float         // F-factor looked up from sample count
+  underCount         Int           // Birds < 90% of mean
+  uniformCount       Int           // Birds within 90%-110%
+  overCount          Int           // Birds > 110% of mean
+  status             String        // "EXCELLENT" | "ACCEPTABLE" | "POOR"
+  suggestedFeedGrams Float
+  targetFeedGrams    Float
+  weighedBy          String?
+  notes              String?
+  createdAt          DateTime      @default(now())
+  tallies            WeightTally[]
+}
+
+// Backwards-compatible WeighingRecord model
+model WeighingRecord {
+  id                 String        @id @default(uuid())
+  penId              String?
+  pen                Pen?          @relation(fields: [penId], references: [id], onDelete: Cascade)
+  flockId            String?
+  flock              Flock?        @relation(fields: [flockId], references: [id], onDelete: SetNull)
+  ageWeeks           Int
+  weighDate          DateTime      @default(now())
+  targetWeight       Float
+  actualAvgWeight    Float
+  sampleSize         Int
+  uniformityPercent  Float
+  cvPercent          Float
+  stdDev             Float
+  lightestWeight     Float
+  heaviestWeight     Float
+  weightRange        Float
+  fValue             Float
+  underCount         Int
+  uniformCount       Int
+  overCount          Int
+  status             String
+  suggestedFeedGrams Float
+  targetFeedGrams    Float
+  weighedBy          String?
+  notes              String?
+  createdAt          DateTime      @default(now())
+  tallies            WeightTally[]
+}
+
+// 7. WeightTally Model (Histogram Bins / Buckets)
+model WeightTally {
+  id                String           @id @default(uuid())
+  weighingSessionId String?
+  weighingSession   WeighingSession? @relation(fields: [weighingSessionId], references: [id], onDelete: Cascade)
+  weighingRecordId  String?
+  weighingRecord    WeighingRecord?  @relation(fields: [weighingRecordId], references: [id], onDelete: Cascade)
+  weightGrams       Float
+  birdCount         Int
+}

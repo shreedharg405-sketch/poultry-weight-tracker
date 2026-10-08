@@ -1,0 +1,31 @@
+services:
+  # 1. Backend Web Service on Render
+  - type: web
+    name: poultry-weight-backend
+    env: node
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: "npm install && node -e \"const fs=require('fs'); const s=fs.readFileSync('prisma/schema.prisma','utf8').replace('provider = \\\"sqlite\\\"', 'provider = \\\"postgresql\\\"'); fs.writeFileSync('prisma/schema.prisma', s);\" && npm run prisma:generate && npm run build && npx prisma db push && npm run seed"
+    startCommand: "npm start"
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: CORS_ORIGIN
+        value: "https://poultry-weight-tracker.pages.dev,https://*.workers.dev,https://shreedharg405.workers.dev"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: poultry-weight-db
+          property: connectionString
+
+# 2. Managed PostgreSQL Database on Render
+databases:
+  - name: poultry-weight-db
+    plan: free
+    region: oregon
+    databaseName: poultry_flocks
+    user: poultry_admin

@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Production build artifacts
+dist/
+*/dist/
+build/
+*/build/
+
+# Environment and sensitive keys
+.env
+.env.local
+.env.*.local
+*/.env
+*/.env.local
+
+# Databases and SQLite files
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor directories and system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
