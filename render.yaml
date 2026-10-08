@@ -16,7 +16,7 @@ services:
       - key: PORT
         value: 10000
       - key: CORS_ORIGIN
-        value: "https://poultry-weight-tracker.pages.dev,https://*.workers.dev,https://shreedharg405.workers.dev"
+        value: "https://poultry-weight-tracker.pages.dev,https://*.workers.dev"
       - key: DATABASE_URL
         fromDatabase:
           name: poultry-weight-db

@@ -35,9 +35,8 @@ fs.copyFileSync(path.join(tempDir, 'index.html'), path.join(tempDir, '404.html')
 console.log('Initializing git in temp directory...');
 const run = (cmd) => execSync(cmd, { cwd: tempDir, stdio: 'inherit' });
 
-run('git init -b gh-pages');
-run('git config user.name "Shreedhar G"');
-run('git config user.email "shreedharg405@gmail.com"');
+run('git config user.name "Avisync CI"');
+run('git config user.email "bot@avisync.local"');
 run('git add .');
 run('git commit -m "deploy: live production deployment to GitHub Pages"');
 run('git remote add origin https://github.com/shreedharg405-sketch/poultry-weight-tracker.git');

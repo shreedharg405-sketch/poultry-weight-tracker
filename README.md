@@ -8,14 +8,19 @@ An enterprise-grade cloud system digitizing manual breeder and broiler growth ch
 
 ### A. Cloudflare Pages / Workers (Frontend & Edge Layer)
 - **Account ID:** `607a4c8239664450331ee2c9de563318`
-- **Workers/Pages Subdomain:** `shreedharg405.workers.dev`
 - **Framework:** Vite + React 19 + TypeScript + Tailwind CSS (bundled to static `dist/`)
 - **Wrangler Configuration:** `wrangler.toml` pre-configured:
   ```toml
   name = "poultry-weight-tracker"
   account_id = "607a4c8239664450331ee2c9de563318"
   compatibility_date = "2026-01-01"
-  pages_build_output_dir = "dist"
+
+  [assets]
+  directory = "./frontend/dist"
+  not_found_handling = "single-page-application"
+
+  [vars]
+  ENVIRONMENT = "production"
   ```
 - **Deploy to Cloudflare CLI:**
   ```bash
@@ -30,7 +35,7 @@ An enterprise-grade cloud system digitizing manual breeder and broiler growth ch
 - **Infrastructure Blueprint (`render.yaml`):**
   - Web Service pointing to `backend/` directory (`PORT=10000`)
   - Managed PostgreSQL database resource (`poultry-weight-db`)
-  - Environment variables: `DATABASE_URL` (dynamic connection string), `PORT=10000`, `CORS_ORIGIN="https://poultry-weight-tracker.pages.dev,https://*.workers.dev,https://shreedharg405.workers.dev"`
+  - Environment variables: `DATABASE_URL` (dynamic connection string), `PORT=10000`, `CORS_ORIGIN="https://poultry-weight-tracker.pages.dev,https://*.workers.dev"`
 - **Git Push to Render:**
   ```bash
   git init
