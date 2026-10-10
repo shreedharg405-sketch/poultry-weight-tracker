@@ -153,10 +153,10 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isLiveClock]);
 
-  // Formatted date-month-year | 12-hour time (e.g. 11-10-2026 | 02:30:45 pm)
+  // Formatted date-month-year - 12-hour time (e.g. Date(11-10-2026) - Time(02:30:45 pm))
   const formattedDateTime = useMemo(() => {
     const sec = (isLiveClock && showLiveSeconds) ? liveSeconds : undefined;
-    return `${formatDateDMY(date)} | ${format12HourTime(recordTime, sec)}`;
+    return `Date(${formatDateDMY(date)}) - Time(${format12HourTime(recordTime, sec)})`;
   }, [date, recordTime, isLiveClock, showLiveSeconds, liveSeconds]);
 
   // Weighing & Line State
@@ -809,32 +809,32 @@ export default function App() {
               </div>
             </div>
 
-            {/* Manual Entry Form */}
-            <form onSubmit={e => { e.preventDefault(); handleAddWeight(); }} className="flex gap-2 mb-3">
+            {/* Manual Entry Form - Compact, Fits On-Screen */}
+            <form onSubmit={e => { e.preventDefault(); handleAddWeight(); }} className="flex gap-1.5 mb-2">
               <input
                 type="number"
-                placeholder={`Type weight for ${activeLine.name}...`}
+                placeholder="Enter weight in grams..."
                 value={inputWeight}
                 onChange={e => setInputWeight(e.target.value)}
                 autoFocus
-                className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-lg font-black text-white focus:outline-none focus:border-emerald-500 font-mono"
+                className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-black text-white focus:outline-none focus:border-emerald-500 font-mono"
               />
               <button
                 type="submit"
-                className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-slate-950 font-black px-5 rounded-xl text-sm"
+                className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-slate-950 font-black px-4 py-2 rounded-xl text-xs shrink-0 whitespace-nowrap shadow-md shadow-emerald-950"
               >
-                Add
+                Add / Save
               </button>
             </form>
 
-            {/* Quick Weight Pad Chips */}
-            <div className="grid grid-cols-4 gap-1.5 mb-3.5">
+            {/* Reduced Compact Quick Weight Pad Chips */}
+            <div className="grid grid-cols-4 gap-1 mb-2">
               {[1250, 1300, 1350, 1400, 1450, 1500, 1550, 1600].map(w => (
                 <button
                   key={w}
                   type="button"
                   onClick={() => handleAddWeight(w)}
-                  className="bg-slate-800 hover:bg-slate-750 active:bg-slate-700 py-2 rounded-lg text-xs font-mono font-bold text-slate-200 border border-slate-700"
+                  className="bg-slate-800 hover:bg-slate-750 active:bg-slate-700 py-1.5 rounded-lg text-[11px] font-mono font-bold text-slate-200 border border-slate-700 transition"
                 >
                   +{w}
                 </button>
@@ -842,7 +842,7 @@ export default function App() {
             </div>
 
             {/* Weighed Birds List with Live Grading */}
-            <div className="flex-1 bg-slate-950 rounded-2xl border border-slate-800 p-3 overflow-y-auto max-h-[290px]">
+            <div className="flex-1 bg-slate-950 rounded-xl border border-slate-800 p-2.5 overflow-y-auto max-h-[230px]">
               <div className="flex justify-between items-center text-xs text-slate-400 pb-2 mb-2 border-b border-slate-800">
                 <div className="flex items-center gap-2">
                   <span className="font-semibold text-slate-300">Birds in {activeLine.name} ({activeLine.weights.length})</span>
