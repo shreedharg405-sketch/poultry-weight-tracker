@@ -91,16 +91,15 @@ const formatDateDMY = (dStr: string): string => {
   return dStr;
 };
 
-// Helper to format time into 12-hour format with lowercase am/pm: '02:30 pm' or with seconds '02:30:15 pm'
+// Helper to format time into 12-hour format with uppercase AM/PM: '02:49:34 AM'
 const format12HourTime = (tStr: string, seconds?: string): string => {
-  if (!tStr) return '02:30 pm';
-  if (/am|pm/i.test(tStr)) return tStr.toLowerCase();
+  if (!tStr) return '02:30:00 AM';
   const parts = tStr.split(':');
   if (parts.length < 2) return tStr;
   let hours = parseInt(parts[0], 10);
   const minutes = parts[1].padStart(2, '0');
-  if (isNaN(hours)) return '02:30 pm';
-  const ampm = hours >= 12 ? 'pm' : 'am';
+  if (isNaN(hours)) return '02:30:00 AM';
+  const ampm = hours >= 12 ? 'AM' : 'PM';
   hours = hours % 12;
   if (hours === 0) hours = 12;
   const hoursStr = String(hours).padStart(2, '0');
@@ -153,11 +152,12 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isLiveClock]);
 
-  // Formatted date-month-year - 12-hour time (e.g. Date(11-10-2026) - Time(02:30:45 pm))
+  // Formatted date-month-year - 12-hour time
+  const liveDateString = formatDateDMY(date);
+  const liveTimeString = format12HourTime(recordTime, isLiveClock ? liveSeconds : undefined);
   const formattedDateTime = useMemo(() => {
-    const sec = (isLiveClock && showLiveSeconds) ? liveSeconds : undefined;
-    return `Date(${formatDateDMY(date)}) - Time(${format12HourTime(recordTime, sec)})`;
-  }, [date, recordTime, isLiveClock, showLiveSeconds, liveSeconds]);
+    return `${liveDateString} - ${liveTimeString}`;
+  }, [liveDateString, liveTimeString]);
 
   // Weighing & Line State
   const [selectedShedId, setSelectedShedId] = useState('1');
@@ -544,8 +544,8 @@ export default function App() {
   const lineStats = activeLine ? computeStats(activeLine.weights, activeStd) : computeStats([], activeStd);
 
   return (
-    <div className="flex justify-center bg-slate-950 min-h-screen text-slate-100 font-sans antialiased selection:bg-emerald-500 selection:text-slate-950">
-      <div className="w-full max-w-md min-h-screen bg-slate-900 border-x border-slate-800 flex flex-col shadow-2xl relative pb-8">
+    <div className="flex justify-center bg-slate-100 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
+      <div className="w-full max-w-md min-h-screen bg-slate-50 border-x border-slate-200 flex flex-col shadow-xl relative pb-8 text-slate-800">
         
         {/* ========================================================= */}
         {/* 1. APP HOME DASHBOARD                                     */}
@@ -553,82 +553,84 @@ export default function App() {
         {currentScreen === 'home' && (
           <div className="flex-1 flex flex-col p-4 animate-in fade-in duration-150">
             
-            {/* Top Quick Profile Card */}
-            <div className="bg-gradient-to-br from-slate-850 to-slate-800 p-4 rounded-2xl border border-slate-700/80 shadow-md mb-5">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
-                  Poultry Flock Live
-                </span>
-                <span className="text-xs text-slate-200 font-mono font-bold flex items-center gap-1.5 bg-slate-950/80 px-2.5 py-1 rounded-xl border border-slate-700/80 shadow-inner" title="Live Running Date & Time (Background real-time)">
-                  {isLiveClock ? (
-                    <span className="relative flex h-2 w-2 shrink-0">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                    </span>
-                  ) : (
-                    <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  )}
-                  <span>{formattedDateTime}</span>
-                </span>
+            {/* Top Quick Profile Card with Stacked Date & Time */}
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm mb-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 inline-block">
+                    Poultry Flock Live
+                  </span>
+                  <h1 className="text-xl font-black text-slate-900 mt-2 tracking-tight flex items-center gap-2">
+                    <Building2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                    <span className="truncate">{farmName}</span>
+                  </h1>
+                </div>
+
+                {/* Stacked Date & Time Box (Requested Format: Date / --- / Time AM/PM) */}
+                <div className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-center font-mono shadow-xs shrink-0 min-w-[125px]">
+                  <div className="text-xs font-bold text-slate-900 tracking-wider">
+                    {liveDateString}
+                  </div>
+                  <div className="border-t border-dashed border-slate-300 my-1 w-full"></div>
+                  <div className="text-xs font-black text-amber-600 tracking-wider">
+                    {liveTimeString}
+                  </div>
+                </div>
               </div>
-              <h1 className="text-xl font-black text-white mt-2.5 tracking-tight flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                <span className="truncate">{farmName}</span>
-              </h1>
-              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-700/50 text-xs">
-                <span className="bg-slate-700/60 px-2.5 py-1 rounded-lg font-bold text-slate-200">Age: {ageWeek}</span>
-                <span className="bg-slate-700/60 px-2.5 py-1 rounded-lg text-slate-300">{season}</span>
-                <span className="bg-slate-700/60 px-2.5 py-1 rounded-lg text-slate-300 font-mono ml-auto">{sheds.length} Sheds</span>
+              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 text-xs">
+                <span className="bg-slate-100 px-2.5 py-1 rounded-lg font-bold text-slate-700">Age: {ageWeek}</span>
+                <span className="bg-slate-100 px-2.5 py-1 rounded-lg text-slate-600">{season}</span>
+                <span className="bg-slate-100 px-2.5 py-1 rounded-lg text-slate-600 font-mono ml-auto">{sheds.length} Sheds</span>
               </div>
             </div>
 
             {/* Quick Stats Banner */}
             <div className="grid grid-cols-2 gap-2.5 mb-5">
-              <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700 text-center">
-                <span className="text-[10px] text-pink-400 uppercase font-semibold">Female Avg (♀)</span>
-                <div className="text-lg font-black text-emerald-400 mt-0.5">{consolidated.fStats.avg}g</div>
+              <div className="bg-white p-3 rounded-xl border border-slate-200 text-center shadow-xs">
+                <span className="text-[10px] text-pink-600 uppercase font-semibold">Female Avg (♀)</span>
+                <div className="text-lg font-black text-emerald-600 mt-0.5">{consolidated.fStats.avg}g</div>
                 <span className="text-[10px] text-slate-500 font-mono">Target: {stdWeightFemale}g</span>
               </div>
-              <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700 text-center">
-                <span className="text-[10px] text-blue-400 uppercase font-semibold">Male Avg (♂)</span>
-                <div className="text-lg font-black text-blue-400 mt-0.5">{consolidated.mStats.avg}g</div>
+              <div className="bg-white p-3 rounded-xl border border-slate-200 text-center shadow-xs">
+                <span className="text-[10px] text-blue-600 uppercase font-semibold">Male Avg (♂)</span>
+                <div className="text-lg font-black text-blue-600 mt-0.5">{consolidated.mStats.avg}g</div>
                 <span className="text-[10px] text-slate-500 font-mono">Target: {stdWeightMale}g</span>
               </div>
             </div>
 
             {/* Main Action Buttons */}
             <div className="space-y-3 flex-1">
-              <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 px-1">Select Task</p>
+              <p className="text-[11px] font-black uppercase tracking-wider text-slate-500 px-1">Select Task</p>
 
               {/* 1. Enter Weights */}
               <button
                 onClick={() => setCurrentScreen('weigh')}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-lg shadow-emerald-950 border border-emerald-400/30 group"
+                className="w-full bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-md shadow-emerald-600/20 border border-emerald-500 group"
               >
                 <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-emerald-950/40 rounded-xl text-emerald-300">
+                  <div className="p-3 bg-white/20 rounded-xl text-white">
                     <Scale className="w-6 h-6" />
                   </div>
                   <div>
                     <h2 className="font-black text-base text-white">Enter Bird Weights</h2>
-                    <p className="text-xs text-emerald-100/70">Weigh line-by-line & auto-grade</p>
+                    <p className="text-xs text-emerald-100">Weigh line-by-line & auto-grade</p>
                   </div>
                 </div>
-                <ChevronRight className="w-5 h-5 text-emerald-200 group-hover:translate-x-1 transition" />
+                <ChevronRight className="w-5 h-5 text-white group-hover:translate-x-1 transition" />
               </button>
 
               {/* 2. Consolidated Report */}
               <button
                 onClick={() => setCurrentScreen('conclusion')}
-                className="w-full bg-slate-800 hover:bg-slate-750 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-md border border-slate-700 group"
+                className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group"
               >
                 <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-amber-500/10 rounded-xl text-amber-400">
+                  <div className="p-3 bg-amber-50 rounded-xl text-amber-600 border border-amber-200">
                     <Sparkles className="w-6 h-6" />
                   </div>
                   <div>
-                    <h2 className="font-black text-base text-white">Consolidated Conclusion</h2>
-                    <p className="text-xs text-slate-400">Master report, Uniformity %, CV%</p>
+                    <h2 className="font-black text-base text-slate-900">Consolidated Conclusion</h2>
+                    <p className="text-xs text-slate-500">Master report, Uniformity %, CV%</p>
                   </div>
                 </div>
                 <ChevronRight className="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition" />
@@ -637,15 +639,15 @@ export default function App() {
               {/* 3. Manage Sheds & Comparison */}
               <button
                 onClick={() => setCurrentScreen('sheds')}
-                className="w-full bg-slate-800 hover:bg-slate-750 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-md border border-slate-700 group"
+                className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group"
               >
                 <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-sky-500/10 rounded-xl text-sky-400">
+                  <div className="p-3 bg-sky-50 rounded-xl text-sky-600 border border-sky-200">
                     <Layers className="w-6 h-6" />
                   </div>
                   <div>
-                    <h2 className="font-black text-base text-white">Manage & Compare Sheds</h2>
-                    <p className="text-xs text-slate-400">Add, rename, delete sheds & view stats</p>
+                    <h2 className="font-black text-base text-slate-900">Manage & Compare Sheds</h2>
+                    <p className="text-xs text-slate-500">Add, rename, delete sheds & view stats</p>
                   </div>
                 </div>
                 <ChevronRight className="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition" />
@@ -654,15 +656,15 @@ export default function App() {
               {/* 4. Farm Details Settings */}
               <button
                 onClick={() => setCurrentScreen('setup')}
-                className="w-full bg-slate-800 hover:bg-slate-750 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-md border border-slate-700 group"
+                className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group"
               >
                 <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-purple-500/10 rounded-xl text-purple-400">
+                  <div className="p-3 bg-purple-50 rounded-xl text-purple-600 border border-purple-200">
                     <Settings className="w-6 h-6" />
                   </div>
                   <div>
-                    <h2 className="font-black text-base text-white">Edit Farm Details</h2>
-                    <p className="text-xs text-slate-400">Change Name, Date, Age & Export Excel</p>
+                    <h2 className="font-black text-base text-slate-900">Edit Farm Details</h2>
+                    <p className="text-xs text-slate-500">Change Name, Date, Age & Export Excel</p>
                   </div>
                 </div>
                 <ChevronRight className="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition" />
@@ -670,12 +672,12 @@ export default function App() {
             </div>
 
             {/* Quick Export in Footer */}
-            <div className="mt-4 pt-3 border-t border-slate-800">
+            <div className="mt-4 pt-3 border-t border-slate-200">
               <button
                 onClick={handleExportExcel}
-                className="w-full bg-slate-800/90 hover:bg-slate-750 text-slate-200 py-3 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 border border-slate-700 active:scale-95 transition"
+                className="w-full bg-white hover:bg-slate-100 text-slate-800 py-3 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 border border-slate-300 shadow-xs active:scale-95 transition"
               >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
                 <span>Save / Share Complete .xlsx Workbook</span>
               </button>
             </div>
@@ -693,7 +695,7 @@ export default function App() {
             <div className="flex items-center justify-between mb-3">
               <button 
                 onClick={() => setCurrentScreen('home')} 
-                className="flex items-center gap-1.5 text-xs font-bold text-slate-300 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700 active:scale-95"
+                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
               </button>
@@ -701,15 +703,15 @@ export default function App() {
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => handleStartEditShed(activeShed)}
-                  className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 text-xs flex items-center gap-1 border border-slate-700"
+                  className="p-1.5 bg-white hover:bg-slate-100 rounded-lg text-slate-700 text-xs flex items-center gap-1 border border-slate-200 shadow-xs"
                   title="Rename/Edit Shed"
                 >
                   <Edit2 className="w-3.5 h-3.5" />
                 </button>
                 <span className={`text-[10px] px-2 py-1 rounded-full font-bold border ${
                   activeShed.type === 'Male' 
-                    ? 'bg-blue-950/70 text-blue-300 border-blue-800' 
-                    : 'bg-pink-950/70 text-pink-300 border-pink-800'
+                    ? 'bg-blue-50 text-blue-700 border-blue-200' 
+                    : 'bg-pink-50 text-pink-700 border-pink-200'
                 }`}>
                   {activeShed.name} ({activeShed.type === 'Male' ? '♂' : '♀'})
                 </span>
@@ -727,8 +729,8 @@ export default function App() {
                   }}
                   className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
                     selectedShedId === s.id 
-                      ? 'bg-emerald-500 text-slate-950 font-black shadow' 
-                      : 'bg-slate-800 text-slate-400'
+                      ? 'bg-emerald-600 text-white font-black shadow-xs' 
+                      : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
                   }`}
                 >
                   {s.name}
@@ -737,7 +739,7 @@ export default function App() {
 
               <button
                 onClick={() => setShowAddShedModal(true)}
-                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-400 rounded-xl text-xs font-bold flex items-center gap-1 border border-dashed border-emerald-500/50 whitespace-nowrap"
+                className="px-2.5 py-1.5 bg-white hover:bg-emerald-50 text-emerald-700 rounded-xl text-xs font-bold flex items-center gap-1 border border-dashed border-emerald-300 whitespace-nowrap"
               >
                 <Plus className="w-3.5 h-3.5" /> Shed
               </button>
@@ -755,8 +757,8 @@ export default function App() {
                       onClick={() => setSelectedLineId(line.id)}
                       className={`px-3 py-2 text-xs font-bold whitespace-nowrap transition rounded-l-xl ${
                         isSelected 
-                          ? 'bg-sky-500 text-slate-950 font-black shadow-md' 
-                          : 'bg-slate-800 text-slate-400 hover:text-white'
+                          ? 'bg-sky-600 text-white font-black shadow-xs' 
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
                       }`}
                     >
                       {line.name} ({line.weights.length})
@@ -764,12 +766,12 @@ export default function App() {
                     <button
                       type="button"
                       onClick={(e) => handleDeleteLine(line.id, e)}
-                      className={`px-2.5 py-2 rounded-r-xl border-l text-xs transition flex items-center justify-center active:scale-95 cursor-pointer ${
+                      className={`px-2.5 py-2 rounded-r-xl border-y border-r text-xs transition flex items-center justify-center active:scale-95 cursor-pointer ${
                         isOnlyLine 
-                          ? 'bg-slate-800 text-slate-600 hover:text-slate-400 border-slate-700/60'
+                          ? 'bg-slate-100 text-slate-400 hover:text-slate-500 border-slate-200'
                           : isSelected 
-                            ? 'bg-sky-600 text-slate-950 hover:bg-rose-600 hover:text-white border-sky-400' 
-                            : 'bg-slate-800 text-slate-400 hover:bg-rose-950 hover:text-rose-400 border-slate-700'
+                            ? 'bg-sky-700 text-white hover:bg-rose-600 border-sky-600' 
+                            : 'bg-white text-slate-400 hover:bg-rose-50 hover:text-rose-600 border-slate-200'
                       }`}
                       title={isOnlyLine ? "Only pen line in shed (cannot delete)" : `Delete ${line.name}`}
                       aria-label={`Delete ${line.name}`}
@@ -783,29 +785,29 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleAddLine}
-                className="px-3 py-2 bg-slate-800 hover:bg-slate-750 text-sky-400 rounded-xl text-xs font-bold flex items-center gap-1 border border-dashed border-sky-500/50 whitespace-nowrap shrink-0 active:scale-95 cursor-pointer"
+                className="px-3 py-2 bg-white hover:bg-sky-50 text-sky-700 rounded-xl text-xs font-bold flex items-center gap-1 border border-dashed border-sky-300 whitespace-nowrap shrink-0 active:scale-95 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" /> Pen Line
               </button>
             </div>
 
             {/* Real-Time Metric Strip for Current Line */}
-            <div className="bg-slate-800/90 p-3 rounded-2xl border border-slate-700 grid grid-cols-4 gap-1 text-center mb-3.5 shadow-sm">
+            <div className="bg-white p-3 rounded-2xl border border-slate-200 grid grid-cols-4 gap-1 text-center mb-3.5 shadow-xs">
               <div>
-                <span className="text-[10px] text-slate-400 font-bold uppercase">Weighed</span>
-                <div className="text-base font-black text-white">{lineStats.count}</div>
+                <span className="text-[10px] text-slate-500 font-bold uppercase">Weighed</span>
+                <div className="text-base font-black text-slate-900">{lineStats.count}</div>
               </div>
               <div>
-                <span className="text-[10px] text-slate-400 font-bold uppercase">Avg Wt</span>
-                <div className="text-base font-black text-emerald-400">{lineStats.avg}g</div>
+                <span className="text-[10px] text-slate-500 font-bold uppercase">Avg Wt</span>
+                <div className="text-base font-black text-emerald-600">{lineStats.avg}g</div>
               </div>
               <div>
-                <span className="text-[10px] text-slate-400 font-bold uppercase">Unif (S%)</span>
-                <div className="text-base font-black text-amber-400">{lineStats.unif}%</div>
+                <span className="text-[10px] text-slate-500 font-bold uppercase">Unif (S%)</span>
+                <div className="text-base font-black text-amber-600">{lineStats.unif}%</div>
               </div>
               <div>
-                <span className="text-[10px] text-slate-400 font-bold uppercase">CV %</span>
-                <div className="text-base font-black text-sky-400">{lineStats.cv}%</div>
+                <span className="text-[10px] text-slate-500 font-bold uppercase">CV %</span>
+                <div className="text-base font-black text-sky-600">{lineStats.cv}%</div>
               </div>
             </div>
 
@@ -817,11 +819,11 @@ export default function App() {
                 value={inputWeight}
                 onChange={e => setInputWeight(e.target.value)}
                 autoFocus
-                className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-black text-white focus:outline-none focus:border-emerald-500 font-mono"
+                className="flex-1 min-w-0 bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm font-black text-slate-900 focus:outline-none focus:border-emerald-600 font-mono shadow-xs placeholder:text-slate-400"
               />
               <button
                 type="submit"
-                className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-slate-950 font-black px-4 py-2 rounded-xl text-xs shrink-0 whitespace-nowrap shadow-md shadow-emerald-950"
+                className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black px-4 py-2 rounded-xl text-xs shrink-0 whitespace-nowrap shadow-xs"
               >
                 Add / Save
               </button>
@@ -834,7 +836,7 @@ export default function App() {
                   key={w}
                   type="button"
                   onClick={() => handleAddWeight(w)}
-                  className="bg-slate-800 hover:bg-slate-750 active:bg-slate-700 py-1.5 rounded-lg text-[11px] font-mono font-bold text-slate-200 border border-slate-700 transition"
+                  className="bg-white hover:bg-slate-100 active:bg-slate-200 py-1.5 rounded-lg text-[11px] font-mono font-bold text-slate-700 border border-slate-200 transition shadow-2xs"
                 >
                   +{w}
                 </button>
@@ -842,15 +844,15 @@ export default function App() {
             </div>
 
             {/* Weighed Birds List with Live Grading */}
-            <div className="flex-1 bg-slate-950 rounded-xl border border-slate-800 p-2.5 overflow-y-auto max-h-[230px]">
-              <div className="flex justify-between items-center text-xs text-slate-400 pb-2 mb-2 border-b border-slate-800">
+            <div className="flex-1 bg-white rounded-xl border border-slate-200 p-2.5 overflow-y-auto max-h-[230px] shadow-xs">
+              <div className="flex justify-between items-center text-xs text-slate-500 pb-2 mb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="font-semibold text-slate-300">Birds in {activeLine.name} ({activeLine.weights.length})</span>
+                  <span className="font-semibold text-slate-700">Birds in {activeLine.name} ({activeLine.weights.length})</span>
                   {activeShed.lines.length > 1 && (
                     <button
                       type="button"
                       onClick={(e) => handleDeleteLine(activeLine.id, e)}
-                      className="text-rose-400 hover:text-white hover:bg-rose-600 bg-rose-500/15 border border-rose-500/30 px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-1 active:scale-95 transition cursor-pointer"
+                      className="text-rose-600 hover:text-white hover:bg-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-1 active:scale-95 transition cursor-pointer"
                       title={`Delete ${activeLine.name}`}
                     >
                       <Trash2 className="w-3 h-3" />
@@ -861,34 +863,34 @@ export default function App() {
                     <button
                       type="button"
                       onClick={handleClearCurrentLineWeights}
-                      className="text-amber-400 hover:text-white hover:bg-amber-600 bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-1 active:scale-95 transition cursor-pointer"
+                      className="text-amber-700 hover:text-white hover:bg-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-1 active:scale-95 transition cursor-pointer"
                       title={`Clear all weights recorded in ${activeLine.name}`}
                     >
                       Clear All
                     </button>
                   )}
                 </div>
-                <span className="text-[10px] font-mono">Target: {activeStd}g</span>
+                <span className="text-[10px] font-mono text-slate-500">Target: {activeStd}g</span>
               </div>
 
               {activeLine.weights.length === 0 ? (
-                <div className="text-center py-8 text-xs text-slate-600">No birds recorded yet for {activeLine.name}</div>
+                <div className="text-center py-8 text-xs text-slate-400">No birds recorded yet for {activeLine.name}</div>
               ) : (
                 <div className="space-y-1.5">
                   {activeLine.weights.map((w, idx) => {
                     let grade = 'S (Ideal)';
-                    let color = 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
-                    if (w < activeStd * 0.85) { grade = 'MB'; color = 'text-rose-400 bg-rose-500/10 border-rose-500/20'; }
-                    else if (w < activeStd * 0.90) { grade = 'B'; color = 'text-amber-400 bg-amber-500/10 border-amber-500/20'; }
-                    else if (w > activeStd * 1.15) { grade = 'MA'; color = 'text-purple-400 bg-purple-500/10 border-purple-500/20'; }
-                    else if (w > activeStd * 1.10) { grade = 'A'; color = 'text-sky-400 bg-sky-500/10 border-sky-500/20'; }
+                    let color = 'text-emerald-700 bg-emerald-50 border-emerald-200';
+                    if (w < activeStd * 0.85) { grade = 'MB'; color = 'text-rose-700 bg-rose-50 border-rose-200'; }
+                    else if (w < activeStd * 0.90) { grade = 'B'; color = 'text-amber-700 bg-amber-50 border-amber-200'; }
+                    else if (w > activeStd * 1.15) { grade = 'MA'; color = 'text-purple-700 bg-purple-50 border-purple-200'; }
+                    else if (w > activeStd * 1.10) { grade = 'A'; color = 'text-sky-700 bg-sky-50 border-sky-200'; }
 
                     return (
-                      <div key={idx} className="flex items-center justify-between bg-slate-900 px-3 py-2 rounded-xl border border-slate-800 text-xs">
-                        <span className="text-slate-500 font-mono w-6">#{idx + 1}</span>
-                        <span className="font-bold text-sm text-white font-mono">{w}g</span>
+                      <div key={idx} className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 text-xs">
+                        <span className="text-slate-400 font-mono w-6">#{idx + 1}</span>
+                        <span className="font-bold text-sm text-slate-900 font-mono">{w}g</span>
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${color}`}>{grade}</span>
-                        <button onClick={() => handleDeleteWeight(idx)} className="text-slate-500 hover:text-rose-400 p-1">
+                        <button onClick={() => handleDeleteWeight(idx)} className="text-slate-400 hover:text-rose-600 p-1">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
@@ -910,15 +912,14 @@ export default function App() {
             <div className="flex items-center justify-between mb-4">
               <button 
                 onClick={() => setCurrentScreen('home')} 
-                className="flex items-center gap-1.5 text-xs font-bold text-slate-300 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700 active:scale-95"
+                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
               </button>
               <div className="text-right">
-                <h2 className="text-sm font-black text-amber-400 uppercase tracking-wide">Cons Conclusion</h2>
-                <div className="flex items-center justify-end gap-1 text-[10px] text-slate-400 font-mono">
-                  {isLiveClock && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>}
-                  <span>{formattedDateTime}</span>
+                <h2 className="text-sm font-black text-amber-600 uppercase tracking-wide">Cons Conclusion</h2>
+                <div className="text-[10px] text-slate-500 font-mono">
+                  {formattedDateTime}
                 </div>
               </div>
             </div>
@@ -927,54 +928,54 @@ export default function App() {
             <div className="space-y-3.5 mb-5">
               
               {/* Female Card */}
-              <div className="bg-slate-800/90 border border-slate-700 p-3.5 rounded-2xl">
+              <div className="bg-white border border-slate-200 p-3.5 rounded-2xl shadow-xs">
                 <div className="flex justify-between items-center mb-2.5">
-                  <span className="font-bold text-sm text-pink-400 flex items-center gap-1">♀ Female Overall ({ageWeek}F)</span>
-                  <span className="text-xs text-slate-400 font-mono">Target: {stdWeightFemale}g</span>
+                  <span className="font-bold text-sm text-pink-600 flex items-center gap-1">♀ Female Overall ({ageWeek}F)</span>
+                  <span className="text-xs text-slate-500 font-mono">Target: {stdWeightFemale}g</span>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-center text-xs mb-2.5">
-                  <div className="bg-slate-900/60 p-2 rounded-xl">
-                    <span className="text-[10px] text-slate-400">ACT WT</span>
-                    <div className="font-bold text-emerald-400 text-sm">{consolidated.fStats.avg}g</div>
+                  <div className="bg-slate-50 border border-slate-100 p-2 rounded-xl">
+                    <span className="text-[10px] text-slate-500">ACT WT</span>
+                    <div className="font-bold text-emerald-600 text-sm">{consolidated.fStats.avg}g</div>
                   </div>
-                  <div className="bg-slate-900/60 p-2 rounded-xl">
-                    <span className="text-[10px] text-slate-400">DIFF</span>
-                    <div className="font-bold text-slate-300 text-sm">{consolidated.fStats.diff}g</div>
+                  <div className="bg-slate-50 border border-slate-100 p-2 rounded-xl">
+                    <span className="text-[10px] text-slate-500">DIFF</span>
+                    <div className="font-bold text-slate-700 text-sm">{consolidated.fStats.diff}g</div>
                   </div>
-                  <div className="bg-slate-900/60 p-2 rounded-xl">
-                    <span className="text-[10px] text-slate-400">UNIF (S%)</span>
-                    <div className="font-bold text-amber-400 text-sm">{consolidated.fStats.unif}%</div>
+                  <div className="bg-slate-50 border border-slate-100 p-2 rounded-xl">
+                    <span className="text-[10px] text-slate-500">UNIF (S%)</span>
+                    <div className="font-bold text-amber-600 text-sm">{consolidated.fStats.unif}%</div>
                   </div>
                 </div>
-                <div className="flex justify-between text-[11px] text-slate-400 bg-slate-900/60 px-2.5 py-1.5 rounded-lg">
-                  <span>CV%: <strong className="text-sky-400">{consolidated.fStats.cv}%</strong></span>
-                  <span>Range: <strong className="text-slate-300">{consolidated.fStats.min}g - {consolidated.fStats.max}g</strong></span>
+                <div className="flex justify-between text-[11px] text-slate-500 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-100">
+                  <span>CV%: <strong className="text-sky-600">{consolidated.fStats.cv}%</strong></span>
+                  <span>Range: <strong className="text-slate-700">{consolidated.fStats.min}g - {consolidated.fStats.max}g</strong></span>
                 </div>
               </div>
 
               {/* Male Card */}
-              <div className="bg-slate-800/90 border border-slate-700 p-3.5 rounded-2xl">
+              <div className="bg-white border border-slate-200 p-3.5 rounded-2xl shadow-xs">
                 <div className="flex justify-between items-center mb-2.5">
-                  <span className="font-bold text-sm text-blue-400 flex items-center gap-1">♂ Male Overall ({ageWeek}M)</span>
-                  <span className="text-xs text-slate-400 font-mono">Target: {stdWeightMale}g</span>
+                  <span className="font-bold text-sm text-blue-600 flex items-center gap-1">♂ Male Overall ({ageWeek}M)</span>
+                  <span className="text-xs text-slate-500 font-mono">Target: {stdWeightMale}g</span>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-center text-xs mb-2.5">
-                  <div className="bg-slate-900/60 p-2 rounded-xl">
-                    <span className="text-[10px] text-slate-400">ACT WT</span>
-                    <div className="font-bold text-emerald-400 text-sm">{consolidated.mStats.avg}g</div>
+                  <div className="bg-slate-50 border border-slate-100 p-2 rounded-xl">
+                    <span className="text-[10px] text-slate-500">ACT WT</span>
+                    <div className="font-bold text-emerald-600 text-sm">{consolidated.mStats.avg}g</div>
                   </div>
-                  <div className="bg-slate-900/60 p-2 rounded-xl">
-                    <span className="text-[10px] text-slate-400">DIFF</span>
-                    <div className="font-bold text-slate-300 text-sm">{consolidated.mStats.diff}g</div>
+                  <div className="bg-slate-50 border border-slate-100 p-2 rounded-xl">
+                    <span className="text-[10px] text-slate-500">DIFF</span>
+                    <div className="font-bold text-slate-700 text-sm">{consolidated.mStats.diff}g</div>
                   </div>
-                  <div className="bg-slate-900/60 p-2 rounded-xl">
-                    <span className="text-[10px] text-slate-400">UNIF (S%)</span>
-                    <div className="font-bold text-amber-400 text-sm">{consolidated.mStats.unif}%</div>
+                  <div className="bg-slate-50 border border-slate-100 p-2 rounded-xl">
+                    <span className="text-[10px] text-slate-500">UNIF (S%)</span>
+                    <div className="font-bold text-amber-600 text-sm">{consolidated.mStats.unif}%</div>
                   </div>
                 </div>
-                <div className="flex justify-between text-[11px] text-slate-400 bg-slate-900/60 px-2.5 py-1.5 rounded-lg">
-                  <span>CV%: <strong className="text-sky-400">{consolidated.mStats.cv}%</strong></span>
-                  <span>Range: <strong className="text-slate-300">{consolidated.mStats.min}g - {consolidated.mStats.max}g</strong></span>
+                <div className="flex justify-between text-[11px] text-slate-500 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-100">
+                  <span>CV%: <strong className="text-sky-600">{consolidated.mStats.cv}%</strong></span>
+                  <span>Range: <strong className="text-slate-700">{consolidated.mStats.min}g - {consolidated.mStats.max}g</strong></span>
                 </div>
               </div>
 
@@ -983,7 +984,7 @@ export default function App() {
             {/* Quick Export Button */}
             <button
               onClick={handleExportExcel}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 py-3.5 rounded-2xl font-black text-sm text-slate-950 flex items-center justify-center gap-2 active:scale-95 shadow-md shadow-emerald-950 transition"
+              className="w-full bg-emerald-600 hover:bg-emerald-700 py-3.5 rounded-2xl font-black text-sm text-white flex items-center justify-center gap-2 active:scale-95 shadow-md shadow-emerald-600/20 transition"
             >
               <Download className="w-4 h-4" /> Save / Share Excel Sheet (.xlsx)
             </button>
@@ -999,27 +1000,27 @@ export default function App() {
             <div className="flex items-center justify-between mb-4">
               <button 
                 onClick={() => setCurrentScreen('home')} 
-                className="flex items-center gap-1.5 text-xs font-bold text-slate-300 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700 active:scale-95"
+                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
               </button>
               <button
                 onClick={() => setShowAddShedModal(true)}
-                className="bg-emerald-600 hover:bg-emerald-500 text-slate-950 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 active:scale-95"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95"
               >
                 <Plus className="w-3.5 h-3.5" /> Add Shed
               </button>
             </div>
 
-            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-1 mb-2">All Active Sheds ({sheds.length})</p>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 px-1 mb-2">All Active Sheds ({sheds.length})</p>
 
             <div className="space-y-2.5 overflow-y-auto flex-1">
               {consolidated.shedSummaries.map(s => (
-                <div key={s.id} className="bg-slate-800/90 p-3 rounded-2xl border border-slate-700 flex flex-col gap-2">
+                <div key={s.id} className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs flex flex-col gap-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="font-black text-sm text-white">{s.name}</span>
-                      <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${s.type === 'Male' ? 'bg-blue-950 text-blue-300' : 'bg-pink-950 text-pink-300'}`}>
+                      <span className="font-black text-sm text-slate-900">{s.name}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${s.type === 'Male' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-pink-50 text-pink-700 border-pink-200'}`}>
                         {s.type}
                       </span>
                     </div>
@@ -1028,14 +1029,14 @@ export default function App() {
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => handleStartEditShed(s)}
-                        className="p-1.5 bg-slate-700/60 hover:bg-slate-700 text-slate-300 rounded-lg text-xs"
+                        className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs"
                         title="Edit Shed Details"
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => handleDeleteShed(s.id)}
-                        className="p-1.5 bg-slate-700/60 hover:bg-rose-950 text-slate-400 hover:text-rose-400 rounded-lg text-xs"
+                        className="p-1.5 bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 rounded-lg text-xs"
                         title="Delete Shed"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -1043,22 +1044,22 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-4 gap-1 text-center bg-slate-900/60 p-2 rounded-xl text-xs">
+                  <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 border border-slate-100 p-2 rounded-xl text-xs">
                     <div>
-                      <span className="text-[9px] text-slate-400">BIRDS</span>
-                      <div className="font-bold text-white">{s.stats.count}</div>
+                      <span className="text-[9px] text-slate-500">BIRDS</span>
+                      <div className="font-bold text-slate-900">{s.stats.count}</div>
                     </div>
                     <div>
-                      <span className="text-[9px] text-slate-400">AVG WT</span>
-                      <div className="font-bold text-emerald-400">{s.stats.avg}g</div>
+                      <span className="text-[9px] text-slate-500">AVG WT</span>
+                      <div className="font-bold text-emerald-600">{s.stats.avg}g</div>
                     </div>
                     <div>
-                      <span className="text-[9px] text-slate-400">UNIF%</span>
-                      <div className="font-bold text-amber-400">{s.stats.unif}%</div>
+                      <span className="text-[9px] text-slate-500">UNIF%</span>
+                      <div className="font-bold text-amber-600">{s.stats.unif}%</div>
                     </div>
                     <div>
-                      <span className="text-[9px] text-slate-400">CV%</span>
-                      <div className="font-bold text-sky-400">{s.stats.cv}%</div>
+                      <span className="text-[9px] text-slate-500">CV%</span>
+                      <div className="font-bold text-sky-600">{s.stats.cv}%</div>
                     </div>
                   </div>
 
@@ -1068,7 +1069,7 @@ export default function App() {
                       setSelectedLineId(s.lines[0]?.id || 1);
                       setCurrentScreen('weigh');
                     }}
-                    className="w-full bg-slate-700/60 hover:bg-slate-700 text-slate-200 text-xs font-bold py-1.5 rounded-xl transition mt-0.5 text-center"
+                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold py-2 rounded-xl transition mt-0.5 text-center"
                   >
                     Open Weighing Grid →
                   </button>
@@ -1088,35 +1089,35 @@ export default function App() {
             <div className="flex items-center justify-between mb-4">
               <button 
                 onClick={() => setCurrentScreen('home')} 
-                className="flex items-center gap-1.5 text-xs font-bold text-slate-300 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700 active:scale-95"
+                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
               </button>
-              <h2 className="text-sm font-black text-purple-400 uppercase tracking-wide">Farm Setup</h2>
+              <h2 className="text-sm font-black text-purple-600 uppercase tracking-wide">Farm Setup</h2>
             </div>
 
-            <div className="bg-slate-800/90 p-4 rounded-2xl border border-slate-700 space-y-4 mb-4">
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-4 mb-4">
               <div>
-                <label className="text-[11px] font-bold text-slate-400 uppercase">Farm Name</label>
+                <label className="text-[11px] font-bold text-slate-600 uppercase">Farm Name</label>
                 <input
                   type="text"
                   value={farmName}
                   onChange={e => setFarmName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-bold text-white mt-1 focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 mt-1 focus:outline-none focus:border-emerald-600 focus:bg-white"
                 />
               </div>
 
               {/* Live Real-Time Clock Controls */}
-              <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800 space-y-3">
+              <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="relative flex h-2.5 w-2.5">
                       {isLiveClock && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>}
-                      <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isLiveClock ? 'bg-emerald-500' : 'bg-slate-500'}`}></span>
+                      <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isLiveClock ? 'bg-emerald-500' : 'bg-slate-400'}`}></span>
                     </span>
                     <div>
-                      <span className="text-xs font-bold text-white block">Auto Live Clock</span>
-                      <span className="text-[10px] text-slate-400">Runs real-time in background without reload</span>
+                      <span className="text-xs font-bold text-slate-900 block">Auto Live Clock</span>
+                      <span className="text-[10px] text-slate-500">Runs real-time in background without reload</span>
                     </div>
                   </div>
                   <button
@@ -1129,30 +1130,30 @@ export default function App() {
                     }}
                     className={`px-3 py-1 rounded-xl text-xs font-bold border transition cursor-pointer active:scale-95 ${
                       isLiveClock 
-                        ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' 
-                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300' 
+                        : 'bg-white text-slate-600 border-slate-300 shadow-xs'
                     }`}
                   >
                     {isLiveClock ? 'Active (Live)' : 'Manual Mode'}
                   </button>
                 </div>
 
-                <div className="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between text-xs">
-                  <span className="text-slate-400 font-medium">Top Bar Clock:</span>
-                  <span className="font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
+                <div className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between text-xs shadow-2xs">
+                  <span className="text-slate-500 font-medium">Top Bar Clock:</span>
+                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
                     {formattedDateTime}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-800/80">
-                  <span className="text-slate-400">Show Ticking Seconds (:ss)</span>
+                <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-200">
+                  <span className="text-slate-500">Show Ticking Seconds (:ss)</span>
                   <button
                     type="button"
                     onClick={() => setShowLiveSeconds(prev => !prev)}
                     className={`px-2.5 py-0.5 rounded-lg text-[11px] font-bold border transition cursor-pointer active:scale-95 ${
                       showLiveSeconds 
-                        ? 'bg-sky-500/20 text-sky-400 border-sky-500/40' 
-                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                        ? 'bg-sky-100 text-sky-800 border-sky-300' 
+                        : 'bg-white text-slate-600 border-slate-300 shadow-xs'
                     }`}
                   >
                     {showLiveSeconds ? 'Enabled' : 'Disabled'}
@@ -1161,23 +1162,23 @@ export default function App() {
 
                 {/* If manual mode, show manual pickers */}
                 {!isLiveClock && (
-                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800/80">
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200">
                     <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Fixed Date</label>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase">Fixed Date</label>
                       <input
                         type="date"
                         value={date}
                         onChange={e => setDate(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs font-bold text-white mt-1 focus:outline-none focus:border-emerald-500 font-mono"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-900 mt-1 focus:outline-none focus:border-emerald-600 font-mono shadow-xs"
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Fixed Time</label>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase">Fixed Time</label>
                       <input
                         type="time"
                         value={recordTime}
                         onChange={e => setRecordTime(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs font-bold text-white mt-1 focus:outline-none focus:border-emerald-500 font-mono"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-900 mt-1 focus:outline-none focus:border-emerald-600 font-mono shadow-xs"
                       />
                     </div>
                   </div>
@@ -1185,11 +1186,11 @@ export default function App() {
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-400 uppercase">Age Week</label>
+                <label className="text-[11px] font-bold text-slate-600 uppercase">Age Week</label>
                 <select
                   value={ageWeek}
                   onChange={e => setAgeWeek(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-bold text-white mt-1 focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 mt-1 focus:outline-none focus:border-emerald-600 focus:bg-white"
                 >
                   {Object.keys(BENCHMARKS).map(w => (
                     <option key={w} value={w}>{w}</option>
@@ -1198,11 +1199,11 @@ export default function App() {
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-400 uppercase">Season</label>
+                <label className="text-[11px] font-bold text-slate-600 uppercase">Season</label>
                 <select
                   value={season}
                   onChange={e => setSeason(e.target.value as any)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-bold text-white mt-1 focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 mt-1 focus:outline-none focus:border-emerald-600 focus:bg-white"
                 >
                   <option value="Summer">Summer Brooding</option>
                   <option value="Winter">Winter Brooding</option>
@@ -1215,7 +1216,7 @@ export default function App() {
                 showToast('Farm settings saved successfully!');
                 setCurrentScreen('home');
               }}
-              className="w-full bg-purple-600 hover:bg-purple-500 py-3 rounded-xl font-black text-sm text-white shadow-md active:scale-95"
+              className="w-full bg-purple-600 hover:bg-purple-700 py-3 rounded-xl font-black text-sm text-white shadow-md shadow-purple-600/20 active:scale-95"
             >
               Save & Back to Home
             </button>
@@ -1226,36 +1227,36 @@ export default function App() {
         {/* MODAL: ADD NEW SHED                                       */}
         {/* ========================================================= */}
         {showAddShedModal && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-4 space-y-4">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-4 space-y-4 shadow-xl">
               <div className="flex justify-between items-center">
-                <h3 className="font-black text-base text-white">Create New Shed</h3>
-                <button onClick={() => setShowAddShedModal(false)} className="text-slate-400 hover:text-white">
+                <h3 className="font-black text-base text-slate-900">Create New Shed</h3>
+                <button onClick={() => setShowAddShedModal(false)} className="text-slate-400 hover:text-slate-700">
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
               <div>
-                <label className="text-xs text-slate-400 uppercase font-semibold">Shed Name</label>
+                <label className="text-xs text-slate-600 uppercase font-semibold">Shed Name</label>
                 <input
                   type="text"
                   placeholder="e.g. Shed 11"
                   value={newShedName}
                   onChange={e => setNewShedName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm font-bold text-white mt-1 focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 mt-1 focus:outline-none focus:border-emerald-600 shadow-xs"
                 />
               </div>
 
               <div>
-                <label className="text-xs text-slate-400 uppercase font-semibold">Flock Gender</label>
+                <label className="text-xs text-slate-600 uppercase font-semibold">Flock Gender</label>
                 <div className="grid grid-cols-2 gap-2 mt-1">
                   <button
                     type="button"
                     onClick={() => setNewShedType('Female')}
                     className={`py-2 rounded-xl text-xs font-bold border transition ${
                       newShedType === 'Female' 
-                        ? 'bg-pink-950/80 text-pink-300 border-pink-700' 
-                        : 'bg-slate-950 text-slate-400 border-slate-800'
+                        ? 'bg-pink-100 text-pink-800 border-pink-300' 
+                        : 'bg-slate-50 text-slate-600 border-slate-200'
                     }`}
                   >
                     ♀ Female
@@ -1265,8 +1266,8 @@ export default function App() {
                     onClick={() => setNewShedType('Male')}
                     className={`py-2 rounded-xl text-xs font-bold border transition ${
                       newShedType === 'Male' 
-                        ? 'bg-blue-950/80 text-blue-300 border-blue-700' 
-                        : 'bg-slate-950 text-slate-400 border-slate-800'
+                        ? 'bg-blue-100 text-blue-800 border-blue-300' 
+                        : 'bg-slate-50 text-slate-600 border-slate-200'
                     }`}
                   >
                     ♂ Male
@@ -1278,14 +1279,14 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setShowAddShedModal(false)}
-                  className="flex-1 bg-slate-800 py-2.5 rounded-xl text-xs font-bold text-slate-300"
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleCreateShed}
-                  className="flex-1 bg-emerald-600 py-2.5 rounded-xl text-xs font-black text-slate-950"
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2.5 rounded-xl text-xs font-black text-white shadow-xs"
                 >
                   Create Shed
                 </button>
@@ -1298,35 +1299,35 @@ export default function App() {
         {/* MODAL: EDIT SHED DETAILS                                  */}
         {/* ========================================================= */}
         {editingShedId && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-4 space-y-4">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-4 space-y-4 shadow-xl">
               <div className="flex justify-between items-center">
-                <h3 className="font-black text-base text-white">Edit Shed</h3>
-                <button onClick={() => setEditingShedId(null)} className="text-slate-400 hover:text-white">
+                <h3 className="font-black text-base text-slate-900">Edit Shed</h3>
+                <button onClick={() => setEditingShedId(null)} className="text-slate-400 hover:text-slate-700">
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
               <div>
-                <label className="text-xs text-slate-400 uppercase font-semibold">Shed Name</label>
+                <label className="text-xs text-slate-600 uppercase font-semibold">Shed Name</label>
                 <input
                   type="text"
                   value={editShedName}
                   onChange={e => setEditShedName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm font-bold text-white mt-1 focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 mt-1 focus:outline-none focus:border-emerald-600 shadow-xs"
                 />
               </div>
 
               <div>
-                <label className="text-xs text-slate-400 uppercase font-semibold">Flock Gender</label>
+                <label className="text-xs text-slate-600 uppercase font-semibold">Flock Gender</label>
                 <div className="grid grid-cols-2 gap-2 mt-1">
                   <button
                     type="button"
                     onClick={() => setEditShedType('Female')}
                     className={`py-2 rounded-xl text-xs font-bold border transition ${
                       editShedType === 'Female' 
-                        ? 'bg-pink-950/80 text-pink-300 border-pink-700' 
-                        : 'bg-slate-950 text-slate-400 border-slate-800'
+                        ? 'bg-pink-100 text-pink-800 border-pink-300' 
+                        : 'bg-slate-50 text-slate-600 border-slate-200'
                     }`}
                   >
                     ♀ Female
@@ -1336,8 +1337,8 @@ export default function App() {
                     onClick={() => setEditShedType('Male')}
                     className={`py-2 rounded-xl text-xs font-bold border transition ${
                       editShedType === 'Male' 
-                        ? 'bg-blue-950/80 text-blue-300 border-blue-700' 
-                        : 'bg-slate-950 text-slate-400 border-slate-800'
+                        ? 'bg-blue-100 text-blue-800 border-blue-300' 
+                        : 'bg-slate-50 text-slate-600 border-slate-200'
                     }`}
                   >
                     ♂ Male
@@ -1349,14 +1350,14 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setEditingShedId(null)}
-                  className="flex-1 bg-slate-800 py-2.5 rounded-xl text-xs font-bold text-slate-300"
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleSaveEditShed}
-                  className="flex-1 bg-emerald-600 py-2.5 rounded-xl text-xs font-black text-slate-950"
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 py-2.5 rounded-xl text-xs font-black text-white shadow-xs"
                 >
                   Save Changes
                 </button>
@@ -1369,32 +1370,32 @@ export default function App() {
         {/* MODAL: CONFIRM DELETE PEN LINE                           */}
         {/* ========================================================= */}
         {linePendingDelete && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-rose-500/20 text-rose-400 rounded-xl">
+                <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl border border-rose-200">
                   <Trash2 className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="font-black text-base text-white">Delete {linePendingDelete.name}?</h3>
-                  <p className="text-xs text-slate-400">Contains {linePendingDelete.weights.length} weighed birds</p>
+                  <h3 className="font-black text-base text-slate-900">Delete {linePendingDelete.name}?</h3>
+                  <p className="text-xs text-slate-500">Contains {linePendingDelete.weights.length} weighed birds</p>
                 </div>
               </div>
-              <p className="text-xs text-rose-300/90 bg-rose-950/40 p-3 rounded-xl border border-rose-800/40">
+              <p className="text-xs text-rose-800 bg-rose-50 p-3 rounded-xl border border-rose-200 leading-relaxed">
                 Are you sure? All {linePendingDelete.weights.length} recorded bird weights for <strong>{linePendingDelete.name}</strong> will be permanently deleted.
               </p>
               <div className="flex gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => setLinePendingDelete(null)}
-                  className="flex-1 bg-slate-800 hover:bg-slate-750 py-2.5 rounded-xl text-xs font-bold text-slate-300 active:scale-95 transition cursor-pointer"
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={() => executeDeleteLine(linePendingDelete.id)}
-                  className="flex-1 bg-rose-600 hover:bg-rose-500 py-2.5 rounded-xl text-xs font-black text-white shadow-lg shadow-rose-950 active:scale-95 transition cursor-pointer"
+                  className="flex-1 bg-rose-600 hover:bg-rose-700 py-2.5 rounded-xl text-xs font-black text-white shadow-md shadow-rose-600/20 active:scale-95 transition cursor-pointer"
                 >
                   Yes, Delete Line
                 </button>
@@ -1407,32 +1408,32 @@ export default function App() {
         {/* MODAL: CONFIRM DELETE SHED                                */}
         {/* ========================================================= */}
         {shedPendingDelete && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-rose-500/20 text-rose-400 rounded-xl">
+                <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl border border-rose-200">
                   <Trash2 className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="font-black text-base text-white">Delete {shedPendingDelete.name}?</h3>
-                  <p className="text-xs text-slate-400">This will remove the shed and all its pen lines.</p>
+                  <h3 className="font-black text-base text-slate-900">Delete {shedPendingDelete.name}?</h3>
+                  <p className="text-xs text-slate-500">This will remove the shed and all its pen lines.</p>
                 </div>
               </div>
-              <p className="text-xs text-rose-300/90 bg-rose-950/40 p-3 rounded-xl border border-rose-800/40">
+              <p className="text-xs text-rose-800 bg-rose-50 p-3 rounded-xl border border-rose-200 leading-relaxed">
                 Are you sure you want to delete <strong>{shedPendingDelete.name}</strong>? This action cannot be undone.
               </p>
               <div className="flex gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => setShedPendingDelete(null)}
-                  className="flex-1 bg-slate-800 hover:bg-slate-750 py-2.5 rounded-xl text-xs font-bold text-slate-300 active:scale-95 transition cursor-pointer"
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={() => executeDeleteShed(shedPendingDelete.id)}
-                  className="flex-1 bg-rose-600 hover:bg-rose-500 py-2.5 rounded-xl text-xs font-black text-white shadow-lg shadow-rose-950 active:scale-95 transition cursor-pointer"
+                  className="flex-1 bg-rose-600 hover:bg-rose-700 py-2.5 rounded-xl text-xs font-black text-white shadow-md shadow-rose-600/20 active:scale-95 transition cursor-pointer"
                 >
                   Yes, Delete Shed
                 </button>
@@ -1443,14 +1444,14 @@ export default function App() {
 
         {/* On-Screen Mobile Toast Notification */}
         {toastMessage && (
-          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm bg-slate-900/95 border border-emerald-500/60 text-white px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-3 backdrop-blur-md z-50 animate-in fade-in slide-in-from-bottom duration-200">
-            <div className="p-2 bg-emerald-500/20 text-emerald-400 rounded-xl shrink-0">
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm bg-white border border-slate-300 text-slate-900 px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-3 backdrop-blur-md z-50 animate-in fade-in slide-in-from-bottom duration-200">
+            <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl shrink-0 border border-emerald-200">
               <CheckCircle2 className="w-5 h-5" />
             </div>
-            <p className="text-xs font-bold leading-snug text-slate-100 flex-1">
+            <p className="text-xs font-bold leading-snug text-slate-800 flex-1">
               {toastMessage}
             </p>
-            <button onClick={() => setToastMessage(null)} className="text-slate-400 hover:text-white p-1">
+            <button onClick={() => setToastMessage(null)} className="text-slate-400 hover:text-slate-700 p-1">
               <X className="w-4 h-4" />
             </button>
           </div>
