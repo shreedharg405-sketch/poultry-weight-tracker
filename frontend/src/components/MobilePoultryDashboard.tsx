@@ -266,7 +266,7 @@ export const MobilePoultryDashboard: React.FC<MobilePoultryDashboardProps> = ({
 
   // Copy WhatsApp / SMS Report Text
   const generateShareReport = () => {
-    return `🐔 *AVISYNC FLOCK WEIGHING REPORT*
+    return `🐔 *POULTRY FLOCK WEIGHING REPORT*
 📍 *Farm:* Sai Farm | *Shed:* ${selectedShed} | *Pen:* ${selectedPen}
 📅 *Week:* ${selectedWeek} (${selectedSeason.replace('_', ' ')})
 ⚖️ *Sample Weighed:* ${stats.total}/100 Birds
@@ -275,7 +275,7 @@ export const MobilePoultryDashboard: React.FC<MobilePoultryDashboardProps> = ({
 📉 *CV% (F-factor):* ${stats.cv}% (F=${stats.fVal})
 📏 *Range:* ${stats.minW}g - ${stats.maxW}g (Band: ${stats.rangeLow}g - ${stats.rangeHigh}g)
 🌾 *Est. Feed (Shed):* ${dailyFeedKg} kg/day (~${bags50kg} Bags @ 50kg)
-*Generated via Avisync Mobile Field System*`;
+*Generated via Poultry Mobile Field System*`;
   };
 
   const handleCopyShare = async () => {

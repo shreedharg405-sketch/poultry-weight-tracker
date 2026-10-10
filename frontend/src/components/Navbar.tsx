@@ -11,13 +11,14 @@ import {
   Scale, 
   Smartphone,
   Sun,
-  Moon
+  Moon,
+  FileSpreadsheet
 } from 'lucide-react';
 import { soundEffects } from '../services/audioFeedback';
 
 interface NavbarProps {
-  activeTab: 'shed' | 'tally' | 'paper' | 'history' | 'mobile';
-  setActiveTab: (tab: 'shed' | 'tally' | 'paper' | 'history' | 'mobile') => void;
+  activeTab: 'excel' | 'shed' | 'tally' | 'paper' | 'history' | 'mobile';
+  setActiveTab: (tab: 'excel' | 'shed' | 'tally' | 'paper' | 'history' | 'mobile') => void;
   onOpenShedSetup: () => void;
   isBackendConnected: boolean;
   soundEnabled: boolean;
@@ -71,7 +72,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     ? 'text-slate-900' 
                     : 'bg-gradient-to-r from-emerald-400 via-teal-200 to-amber-300 bg-clip-text text-transparent'
                 }`}>
-                  AVISYNC
+                  POULTRY SYNC
                 </span>
                 <span className={`text-[11px] uppercase tracking-wider px-2 py-0.5 rounded-full font-bold border ${
                   isLight 
@@ -82,13 +83,28 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </span>
               </div>
               <p className={`text-xs hidden sm:block ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                Shed-Wise Poultry Uniformity & Multi-Pen Feed Allocation System
+                B.wt Excel Replica & Multi-Pen Uniformity System
               </p>
             </div>
           </div>
 
           {/* Navigation Tabs */}
           <nav className="flex items-center gap-1 sm:gap-2">
+            <button
+              onClick={() => setActiveTab('excel')}
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+                activeTab === 'excel'
+                  ? isLight 
+                    ? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-sm' 
+                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                  : isLight 
+                    ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' 
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+              }`}
+            >
+              <FileSpreadsheet className="w-4 h-4 text-amber-500" />
+              <span>B.wt Excel & Cons</span>
+            </button>
             <button
               onClick={() => setActiveTab('shed')}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold transition-all ${
