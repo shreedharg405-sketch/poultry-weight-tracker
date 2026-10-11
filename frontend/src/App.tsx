@@ -313,33 +313,96 @@ export default function App() {
   const currentScreenRef = useRef<ScreenType>('home');
   currentScreenRef.current = currentScreen;
 
+  const selectedShedIdRef = useRef(selectedShedId);
+  selectedShedIdRef.current = selectedShedId;
+
+  const selectedPartIdRef = useRef(selectedPartId);
+  selectedPartIdRef.current = selectedPartId;
+
+  const selectedLineIdRef = useRef(selectedLineId);
+  selectedLineIdRef.current = selectedLineId;
+
+  const handlePopState = (event?: PopStateEvent) => {
+    const active = currentScreenRef.current;
+
+    // Restore hierarchy identifiers from event state if available
+    if (event?.state) {
+      if (event.state.shedId) setSelectedShedId(event.state.shedId);
+      if (event.state.partId) setSelectedPartId(event.state.partId);
+      if (event.state.lineId !== undefined) setSelectedLineId(event.state.lineId);
+    }
+
+    if (active === 'weigh_pad') {
+      setCurrentScreen('line_select');
+      window.history.pushState({
+        screen: 'line_select',
+        shedId: selectedShedIdRef.current,
+        partId: selectedPartIdRef.current
+      }, '');
+    } else if (active === 'line_select') {
+      setCurrentScreen('part_select');
+      window.history.pushState({
+        screen: 'part_select',
+        shedId: selectedShedIdRef.current
+      }, '');
+    } else if (active === 'part_select') {
+      setCurrentScreen('shed_select');
+      window.history.pushState({ screen: 'shed_select' }, '');
+    } else if (active === 'shed_select' || active === 'conclusion' || active === 'setup' || active === 'sheds_manage') {
+      setCurrentScreen('home');
+      window.history.pushState({ screen: 'home' }, '');
+    } else if (active === 'home') {
+      // Trigger Exit Confirmation Dialog
+      setShowExitConfirm(true);
+      window.history.pushState({ screen: 'home' }, '');
+    } else {
+      setCurrentScreen('home');
+      window.history.pushState({ screen: 'home' }, '');
+    }
+  };
+
   useEffect(() => {
+    // Prime root state
     window.history.replaceState({ screen: 'home' }, '');
     window.history.pushState({ screen: 'home' }, '');
-
-    const handlePopState = () => {
-      const active = currentScreenRef.current;
-      if (active === 'weigh_pad') {
-        setCurrentScreen('line_select');
-        window.history.pushState({ screen: 'line_select' }, '');
-      } else if (active === 'line_select') {
-        setCurrentScreen('part_select');
-        window.history.pushState({ screen: 'part_select' }, '');
-      } else if (active === 'part_select') {
-        setCurrentScreen('shed_select');
-        window.history.pushState({ screen: 'shed_select' }, '');
-      } else if (active !== 'home') {
-        setCurrentScreen('home');
-        window.history.pushState({ screen: 'home' }, '');
-      } else {
-        setShowExitConfirm(true);
-        window.history.pushState({ screen: 'home' }, '');
-      }
-    };
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  // Consistent UI Back Button handler matching popstate behavior 100%
+  const handleGoBack = () => {
+    handlePopState();
+  };
+
+  // Synchronized Forward Navigation Helpers
+  const navigateToShedSelect = () => {
+    setCurrentScreen('shed_select');
+    window.history.pushState({ screen: 'shed_select' }, '');
+  };
+
+  const navigateToPartSelect = (shedId: string, partId?: string) => {
+    setSelectedShedId(shedId);
+    if (partId) setSelectedPartId(partId);
+    setCurrentScreen('part_select');
+    window.history.pushState({ screen: 'part_select', shedId }, '');
+  };
+
+  const navigateToLineSelect = (shedId: string, partId: string, lineId?: number) => {
+    setSelectedShedId(shedId);
+    setSelectedPartId(partId);
+    if (lineId !== undefined) setSelectedLineId(lineId);
+    setCurrentScreen('line_select');
+    window.history.pushState({ screen: 'line_select', shedId, partId }, '');
+  };
+
+  const navigateToWeighPad = (shedId: string, partId: string, lineId: number) => {
+    setSelectedShedId(shedId);
+    setSelectedPartId(partId);
+    setSelectedLineId(lineId);
+    setCurrentScreen('weigh_pad');
+    window.history.pushState({ screen: 'weigh_pad', shedId, partId, lineId }, '');
+  };
 
   const navigateTo = (screen: ScreenType) => {
     setCurrentScreen(screen);
@@ -789,7 +852,7 @@ export default function App() {
 
               {/* 1. Enter Weights */}
               <button
-                onClick={() => navigateTo('shed_select')}
+                onClick={navigateToShedSelect}
                 className="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-md shadow-emerald-600/20 text-white group cursor-pointer"
               >
                 <div className="flex items-center gap-3.5">
@@ -876,7 +939,7 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={() => navigateTo('home')} 
+                onClick={handleGoBack} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
@@ -896,9 +959,7 @@ export default function App() {
                   <button
                     key={s.id}
                     onClick={() => {
-                      setSelectedShedId(s.id);
-                      setSelectedPartId(s.parts[0]?.id || 'part-1-a');
-                      navigateTo('part_select');
+                      navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a');
                     }}
                     className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl border border-slate-200 text-left flex items-center justify-between group shadow-xs cursor-pointer"
                   >
@@ -946,7 +1007,7 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
             <div className="flex items-center justify-between mb-3.5">
               <button 
-                onClick={() => navigateTo('shed_select')} 
+                onClick={handleGoBack} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4" /> Sheds
@@ -1051,9 +1112,7 @@ export default function App() {
 
                     <button
                       onClick={() => {
-                        setSelectedPartId(part.id);
-                        setSelectedLineId(part.lines[0]?.id || 1);
-                        navigateTo('line_select');
+                        navigateToLineSelect(activeShed.id, part.id, part.lines[0]?.id || 1);
                       }}
                       className="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
                     >
@@ -1075,7 +1134,7 @@ export default function App() {
             {/* Header with Back button up to Parts Screen */}
             <div className="flex items-center justify-between mb-3.5">
               <button 
-                onClick={() => navigateTo('part_select')} 
+                onClick={handleGoBack} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4" /> Parts
@@ -1169,8 +1228,7 @@ export default function App() {
 
                     <button
                       onClick={() => {
-                        setSelectedLineId(line.id);
-                        navigateTo('weigh_pad');
+                        navigateToWeighPad(activeShed.id, activePart.id, line.id);
                       }}
                       className="w-full bg-sky-600 hover:bg-sky-500 active:scale-95 text-white py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
                     >
@@ -1192,7 +1250,7 @@ export default function App() {
             {/* Header with Back Button (Weigh Pad -> Line Screen) & Breadcrumb */}
             <div className="flex items-center justify-between mb-2.5">
               <button 
-                onClick={() => navigateTo('line_select')} 
+                onClick={handleGoBack} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer shrink-0"
               >
                 <ArrowLeft className="w-4 h-4" /> Lines
@@ -1335,7 +1393,7 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={() => navigateTo('home')} 
+                onClick={handleGoBack} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4"/> Home
@@ -1421,7 +1479,7 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={() => navigateTo('home')} 
+                onClick={handleGoBack} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4"/> Home
@@ -1507,7 +1565,7 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={() => navigateTo('home')} 
+                onClick={handleGoBack} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4"/> Home
