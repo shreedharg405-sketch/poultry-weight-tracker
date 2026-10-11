@@ -433,6 +433,59 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
     });
   });
 
+  // Part & Line Hierarchical Breakdown Table on Cons Sheet
+  const partLineTableTitleRow = 5 + shedSummaries.length + 2;
+  wsCons.mergeCells(`F${partLineTableTitleRow}:N${partLineTableTitleRow}`);
+  const plTitleCell = wsCons.getCell(`F${partLineTableTitleRow}`);
+  plTitleCell.value = 'PART & LINE HIERARCHICAL IDENTIFIER PERFORMANCE';
+  plTitleCell.font = { name: 'Cambria', size: 12, bold: true, color: { argb: 'FF1E3A8A' } };
+  plTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } };
+  plTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  plTitleCell.border = headerBorder;
+
+  const plHeaderRow = partLineTableTitleRow + 1;
+  const plHeaders = ['Shed', 'Part', 'Line', 'Hierarchical Identifier', 'Act B.WT', 'Min', 'Max', 'CV %', 'Unif (S%)'];
+  plHeaders.forEach((h, i) => {
+    const cell = wsCons.getCell(`${shedColLetters[i]}${plHeaderRow}`);
+    cell.value = h;
+    cell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = headerBorder;
+  });
+
+  let currPLRow = plHeaderRow + 1;
+  sheds.forEach((s) => {
+    const std = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
+    s.parts.forEach((p) => {
+      p.lines.forEach((l) => {
+        const lStats = calculateFlockStats(l.weights, std, weekNum);
+        const plData = [
+          s.name,
+          p.name,
+          l.name,
+          `${s.name} - ${p.name} - ${l.name}`,
+          `${lStats.avg} g`,
+          `${lStats.min} g`,
+          `${lStats.max} g`,
+          `${lStats.cv}%`,
+          `${lStats.sPct}%`
+        ];
+        plData.forEach((val, i) => {
+          const cell = wsCons.getCell(`${shedColLetters[i]}${currPLRow}`);
+          cell.value = val;
+          cell.font = { name: 'Cambria', size: 10, bold: i === 3 || i === 4 || i === 8 };
+          cell.border = thinBorder;
+          cell.alignment = { horizontal: i === 3 ? 'left' : 'center', vertical: 'middle' };
+          if (i === 3) {
+            cell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF0369A1' } };
+          }
+        });
+        currPLRow++;
+      });
+    });
+  });
+
   // =========================================================================
   // 2. SHED SHEETS ('Shed 1' to 'Shed 7', ' Shed 8 Male', 'Shed 9', 'Shed 10')
   // =========================================================================
@@ -453,54 +506,98 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
       });
     });
 
+    if (flatLines.length === 0) {
+      flatLines.push({
+        colHeader: `${shed.name} - Part A - Line 1`,
+        partName: 'Part A',
+        lineName: 'Line 1',
+        weights: []
+      });
+    }
+
     const sheetName = (shed.sheetName || shed.name).substring(0, 31);
     const ws = workbook.addWorksheet(sheetName, {
       views: [{ showGridLines: true }]
     });
 
-    // Row 1: STD B.WT
-    ws.mergeCells('B1:F1');
-    const r1 = ws.getCell('B1');
-    r1.value = `STD B.WT: ${std} g (Tolerance: ±${bands.tolerance}g, S Band: ${bands.sMin}g - ${bands.sMax}g)`;
-    r1.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FF1F2937' } };
+    const lastCol = Math.max(3, 1 + flatLines.length * 2);
+
+    // Row 1: Farm: [farmName] | Shed: [shed.name] | Gender: [shed.type] | STD B.WT
+    ws.mergeCells(1, 1, 1, lastCol);
+    const r1 = ws.getCell(1, 1);
+    r1.value = `Farm: ${farmName}  |  Shed: ${shed.name}  |  Gender: ${shed.type}  |  Age: ${ageWeek}${shed.type === 'Male' ? 'M' : 'F'}  |  STD B.WT: ${std} g (Tolerance: ±${bands.tolerance}g, S Band: ${bands.sMin}g - ${bands.sMax}g)`;
+    r1.font = { name: 'Cambria', size: 11, bold: true, color: { argb: 'FF1F2937' } };
+    r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
     r1.alignment = { horizontal: 'left', vertical: 'middle' };
+    r1.border = thinBorder;
+    ws.getRow(1).height = 24;
 
-    // Row 2: Age code (Yellow #FFFF66 fill, Bold Red #FF0000 font)
-    ws.mergeCells('B2:D2');
-    const r2 = ws.getCell('B2');
-    r2.value = `AGE: ${ageWeek}${shed.type === 'Male' ? 'M' : 'F'}`;
-    r2.font = { name: 'Calibri', size: 13, bold: true, color: { argb: 'FFFF0000' } };
-    r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF66' } };
-    r2.alignment = { horizontal: 'center', vertical: 'middle' };
-    r2.border = thinBorder;
+    // Row 2: Part Metadata Header
+    const a2 = ws.getCell('A2');
+    a2.value = 'Part';
+    a2.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF1F2937' } };
+    a2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF66' } }; // Yellow #FFFF66
+    a2.alignment = { horizontal: 'center', vertical: 'middle' };
+    a2.border = headerBorder;
+    ws.getRow(2).height = 22;
 
-    // Row 4: Table Headers
-    ws.getCell('A4').value = 'Bird #';
-    ws.getCell('A4').font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
-    ws.getCell('A4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF374151' } };
-    ws.getCell('A4').alignment = { horizontal: 'center', vertical: 'middle' };
-    ws.getCell('A4').border = headerBorder;
+    // Row 3: Line Metadata Header with Full Hierarchical Identifier
+    const a3 = ws.getCell('A3');
+    a3.value = 'Line';
+    a3.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF0369A1' } };
+    a3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2FE' } };
+    a3.alignment = { horizontal: 'center', vertical: 'middle' };
+    a3.border = headerBorder;
+    ws.getRow(3).height = 22;
 
-    // Widths
-    ws.getColumn(1).width = 9;
+    // Row 4: Column Headers: Sample #, Weight (g), Grade (MB/B/S/A/MA)
+    const a4 = ws.getCell('A4');
+    a4.value = 'Sample #';
+    a4.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+    a4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF374151' } };
+    a4.alignment = { horizontal: 'center', vertical: 'middle' };
+    a4.border = headerBorder;
+    ws.getRow(4).height = 24;
+
+    // Column A width
+    ws.getColumn(1).width = 10;
 
     flatLines.forEach((fl, flIdx) => {
       const wtCol = 2 + flIdx * 2;
       const grCol = 3 + flIdx * 2;
 
-      ws.getColumn(wtCol).width = 15;
-      ws.getColumn(grCol).width = 11;
+      ws.getColumn(wtCol).width = 16;
+      ws.getColumn(grCol).width = 14;
 
+      // Row 2: Part metadata
+      ws.mergeCells(2, wtCol, 2, grCol);
+      const partCell = ws.getCell(2, wtCol);
+      partCell.value = `Part: ${fl.partName}`;
+      partCell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF1F2937' } };
+      partCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF66' } }; // Yellow #FFFF66
+      partCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      partCell.border = headerBorder;
+
+      // Row 3: Line metadata with full hierarchical identifier
+      ws.mergeCells(3, wtCol, 3, grCol);
+      const lineCell = ws.getCell(3, wtCol);
+      lineCell.value = `${shed.name} - ${fl.partName} - ${fl.lineName}`;
+      lineCell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF0369A1' } };
+      lineCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2FE' } };
+      lineCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      lineCell.border = headerBorder;
+
+      // Row 4: Weight (g) & Grade (MB/B/S/A/MA)
       const wtHeader = ws.getCell(4, wtCol);
-      wtHeader.value = fl.colHeader;
-      wtHeader.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+      wtHeader.value = 'Weight (g)';
+      wtHeader.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
       wtHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } };
       wtHeader.alignment = { horizontal: 'center', vertical: 'middle' };
       wtHeader.border = headerBorder;
 
       const grHeader = ws.getCell(4, grCol);
-      grHeader.value = 'Grade';
-      grHeader.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+      grHeader.value = 'Grade (MB/B/S/A/MA)';
+      grHeader.font = { name: 'Cambria', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
       grHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF374151' } };
       grHeader.alignment = { horizontal: 'center', vertical: 'middle' };
       grHeader.border = headerBorder;
@@ -511,7 +608,7 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
       const rowNum = 5 + sampleIdx;
       const birdNumCell = ws.getCell(rowNum, 1);
       birdNumCell.value = sampleIdx + 1;
-      birdNumCell.font = { name: 'Calibri', size: 10, color: { argb: 'FF6B7280' } };
+      birdNumCell.font = { name: 'Cambria', size: 10, color: { argb: 'FF6B7280' } };
       birdNumCell.alignment = { horizontal: 'center', vertical: 'middle' };
       birdNumCell.border = thinBorder;
 
@@ -531,25 +628,25 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
         if (w !== undefined && w > 0) {
           const grade = getBirdGrade(w, bands);
           wCell.value = w;
-          wCell.font = { name: 'Calibri', size: 11, bold: true };
+          wCell.font = { name: 'Cambria', size: 11, bold: true };
           gCell.value = grade;
-          gCell.font = { name: 'Calibri', size: 10, bold: true };
+          gCell.font = { name: 'Cambria', size: 10, bold: true };
 
           if (grade === 'S') {
             gCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
-            gCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF065F46' } };
+            gCell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF065F46' } };
           } else if (grade === 'MB') {
             gCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
-            gCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF991B1B' } };
+            gCell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF991B1B' } };
           } else if (grade === 'B') {
             gCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } };
-            gCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF92400E' } };
+            gCell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF92400E' } };
           } else if (grade === 'A') {
             gCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2FE' } };
-            gCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF075985' } };
+            gCell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF075985' } };
           } else if (grade === 'MA') {
             gCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E8FF' } };
-            gCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF6B21A8' } };
+            gCell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: 'FF6B21A8' } };
           }
         } else {
           wCell.value = '';
@@ -572,7 +669,7 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
     summaryMetrics.forEach(([rowNum, label, valGetter, isRedBold]) => {
       const lblCell = ws.getCell(rowNum, 1);
       lblCell.value = label;
-      lblCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: isRedBold ? 'FFFF0000' : 'FF1F2937' } };
+      lblCell.font = { name: 'Cambria', size: 10, bold: true, color: { argb: isRedBold ? 'FFFF0000' : 'FF1F2937' } };
       lblCell.alignment = { horizontal: 'left', vertical: 'middle' };
       lblCell.border = thinBorder;
 
@@ -586,7 +683,7 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
         const valCell = ws.getCell(rowNum, wtCol);
         valCell.value = val;
         valCell.font = {
-          name: 'Calibri',
+          name: 'Cambria',
           size: 11,
           bold: true,
           color: { argb: isRedBold ? 'FFFF0000' : 'FF111827' }
@@ -603,7 +700,7 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
     ws.mergeCells('B85:F85');
     const fCell = ws.getCell('B85');
     fCell.value = `F-Factor Lookup: ${shedTotalStats.fFactor}  (Total Shed Weighed Birds: ${shedTotalStats.count})`;
-    fCell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF065F46' } };
+    fCell.font = { name: 'Cambria', size: 11, bold: true, color: { argb: 'FF065F46' } };
     fCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FF99' } };
     fCell.alignment = { horizontal: 'center', vertical: 'middle' };
     fCell.border = headerBorder;

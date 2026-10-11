@@ -346,13 +346,19 @@ export default function App() {
     window.history.pushState({ screen }, '');
   };
 
+  const handleCancelExit = () => {
+    setShowExitConfirm(false);
+    window.history.pushState({ screen: 'home' }, '');
+  };
+
   const handleConfirmExit = () => {
     setShowExitConfirm(false);
     try {
       window.close();
     } catch {
-      window.history.go(-2);
+      // fallback
     }
+    window.history.go(-2);
   };
 
   // Local Storage Persistence
@@ -729,12 +735,12 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 animate-in fade-in duration-150">
             {/* Top Quick Profile Card */}
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs mb-4">
-              {/* Top Row: Flock Status & Live Date/Time (No 'Live Clock' label) */}
-              <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
+              {/* Top Row: Flock Status & Live Date/Time (Responsive flex layout prevents text overlap) */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1.5 pb-2.5 border-b border-slate-100">
                 <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 inline-block shrink-0">
                   Poultry Flock Live
                 </span>
-                <span className="text-[11px] font-mono font-bold text-amber-800 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 shadow-2xs shrink-0">
+                <span className="text-[10px] sm:text-xs font-mono font-bold text-amber-800 bg-amber-50 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-lg border border-amber-200 shadow-2xs leading-tight whitespace-nowrap">
                   {formattedDateTime}
                 </span>
               </div>
@@ -1843,7 +1849,7 @@ export default function App() {
               <div className="flex gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() => setShowExitConfirm(false)}
+                  onClick={handleCancelExit}
                   className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
                 >
                   Cancel
