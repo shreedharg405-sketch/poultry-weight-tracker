@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Building2, 
   Calendar, 
@@ -10,13 +10,14 @@ import {
   Plus, 
   Trash2, 
   Download, 
-  Sparkles,
-  Edit2,
-  X,
-  FileSpreadsheet,
-  Share2,
-  CheckCircle2,
-  Clock
+  Sparkles, 
+  Edit2, 
+  X, 
+  FileSpreadsheet, 
+  Share2, 
+  CheckCircle2, 
+  Clock,
+  LogOut
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { downloadExcelFile } from './utils/fileDownloader';
@@ -35,6 +36,50 @@ const getFFactor = (n: number): number => {
   if (n <= 80) return 4.87;
   if (n <= 100) return 5.02;
   return 5.03;
+};
+
+// Statistical Calculation Helper matching manual Suguna Sheet standards
+const computeStats = (weights: number[], stdTarget: number) => {
+  const count = weights.length;
+  if (count === 0) {
+    return { count: 0, avg: 0, diff: 0, min: 0, max: 0, cv: 0, mb: 0, b: 0, s: 0, a: 0, ma: 0, unif: 0 };
+  }
+  const sum = weights.reduce((acc, w) => acc + w, 0);
+  const avg = Number((sum / count).toFixed(1));
+  const diff = Number((avg - stdTarget).toFixed(1));
+  const min = Math.min(...weights);
+  const max = Math.max(...weights);
+  const fFactor = getFFactor(count);
+  const cv = Number((((max - min) * 100) / (avg * fFactor)).toFixed(2));
+
+  const sLow = stdTarget * 0.90;
+  const sHigh = stdTarget * 1.10;
+  const mbLimit = stdTarget * 0.85;
+  const maLimit = stdTarget * 1.15;
+
+  let mb = 0, b = 0, s = 0, a = 0, ma = 0;
+  weights.forEach(w => {
+    if (w < mbLimit) mb++;
+    else if (w < sLow) b++;
+    else if (w <= sHigh) s++;
+    else if (w <= maLimit) a++;
+    else ma++;
+  });
+
+  return {
+    count,
+    avg,
+    diff,
+    min,
+    max,
+    cv,
+    mb: Number(((mb / count) * 100).toFixed(1)),
+    b: Number(((b / count) * 100).toFixed(1)),
+    s: Number(((s / count) * 100).toFixed(1)),
+    a: Number(((a / count) * 100).toFixed(1)),
+    ma: Number(((ma / count) * 100).toFixed(1)),
+    unif: Number(((s / count) * 100).toFixed(1))
+  };
 };
 
 // Seasonal Standard Benchmarks (Weeks 1 to 23)
@@ -66,15 +111,22 @@ const BENCHMARKS: Record<string, { stdF: number; stdM: number }> = {
 
 interface PenLine {
   id: number;
-  name: string;
+  name: string;        // e.g., "Line 1", "Line 2"
   weights: number[];
+}
+
+interface ShedPart {
+  id: string;
+  name: string;        // e.g., "Part A", "Part B"
+  lines: PenLine[];
 }
 
 interface ShedData {
   id: string;
-  name: string;
+  name: string;        // e.g., "Shed 1"
+  sheetName?: string;
   type: 'Female' | 'Male';
-  lines: PenLine[];
+  parts: ShedPart[];   // Contains array of Parts
 }
 
 // Helper to format date string as date-month-year (DD-MM-YYYY)
@@ -124,6 +176,52 @@ const getSystemNow = () => {
 export default function App() {
   // Navigation Router: 'home' | 'weigh' | 'conclusion' | 'sheds' | 'setup'
   const [currentScreen, setCurrentScreen] = useState<'home' | 'weigh' | 'conclusion' | 'sheds' | 'setup'>('home');
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+
+  // Active Screen Reference & Exit Flag for Popstate Event Traps
+  const currentScreenRef = useRef(currentScreen);
+  currentScreenRef.current = currentScreen;
+  const isExitingRef = useRef(false);
+
+  // Screen Routing Hook: pushes { screen } onto window.history when navigating
+  const navigateTo = (screen: 'home' | 'weigh' | 'conclusion' | 'sheds' | 'setup') => {
+    setCurrentScreen(screen);
+    window.history.pushState({ screen }, '');
+  };
+
+  // Mobile Swipe-Back Navigation & Home Exit Confirmation Trap
+  useEffect(() => {
+    // Prime baseline state
+    window.history.replaceState({ screen: 'home' }, '');
+    window.history.pushState({ screen: 'home' }, '');
+
+    const handlePopState = () => {
+      if (isExitingRef.current) return;
+
+      if (currentScreenRef.current !== 'home') {
+        // Return to home screen from any nested sub-view
+        setCurrentScreen('home');
+        window.history.pushState({ screen: 'home' }, '');
+      } else {
+        // On home screen: trap exit and prompt user
+        setShowExitConfirm(true);
+        window.history.pushState({ screen: 'home' }, '');
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const handleConfirmExit = () => {
+    setShowExitConfirm(false);
+    isExitingRef.current = true;
+    try {
+      window.history.go(-2);
+    } catch {
+      window.close();
+    }
+  };
 
   // Farm Profile State (Initialized to live current system date & time)
   const initialNow = getSystemNow();
@@ -159,10 +257,15 @@ export default function App() {
     return `${liveDateString} - ${liveTimeString}`;
   }, [liveDateString, liveTimeString]);
 
-  // Weighing & Line State
+  // Weighing, Part & Line State
   const [selectedShedId, setSelectedShedId] = useState('1');
+  const [selectedPartId, setSelectedPartId] = useState('part-1-a');
   const [selectedLineId, setSelectedLineId] = useState(1);
   const [inputWeight, setInputWeight] = useState('');
+
+  // Part Management Modals & State
+  const [editingPart, setEditingPart] = useState<{ id: string; name: string } | null>(null);
+  const [partPendingDelete, setPartPendingDelete] = useState<{ id: string; name: string; totalWeights: number } | null>(null);
 
   // Shed Management Modals
   const [editingShedId, setEditingShedId] = useState<string | null>(null);
@@ -187,27 +290,169 @@ export default function App() {
   const stdWeightFemale = BENCHMARKS[ageWeek]?.stdF || 1905;
   const stdWeightMale = BENCHMARKS[ageWeek]?.stdM || 1880;
 
-  // Initial Sheds Setup
+  // Initial Sheds Setup with Part hierarchy (Shed -> Part -> Line)
   const [sheds, setSheds] = useState<ShedData[]>([
-    { id: '1', name: 'Shed 1', type: 'Female', lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1850, 1950, 1985, 1990] }] },
-    { id: '2', name: 'Shed 2', type: 'Female', lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1500, 1510] }] },
-    { id: '3', name: 'Shed 3', type: 'Female', lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1500] }] },
-    { id: '4', name: 'Shed 4', type: 'Female', lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470] }] },
-    { id: '5', name: 'Shed 5', type: 'Female', lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450] }] },
-    { id: '6', name: 'Shed 6', type: 'Female', lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400] }] },
-    { id: '7', name: 'Shed 7', type: 'Female', lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390] }] },
-    { id: '8', name: 'Shed 8 (Male)', type: 'Male', lines: [{ id: 1, name: 'Line 1', weights: [2800, 3000, 3800, 2650, 2950, 2456, 3566, 2800, 3000, 3800] }] },
-    { id: '9', name: 'Shed 9', type: 'Female', lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450] }] },
-    { id: '10', name: 'Shed 10', type: 'Female', lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450] }] },
+    {
+      id: '1',
+      name: 'Shed 1',
+      sheetName: 'Shed 1',
+      type: 'Female',
+      parts: [
+        {
+          id: 'part-1-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1850, 1950, 1985, 1990] }]
+        }
+      ]
+    },
+    {
+      id: '2',
+      name: 'Shed 2',
+      sheetName: 'Shed 2',
+      type: 'Female',
+      parts: [
+        {
+          id: 'part-2-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1500, 1510] }]
+        }
+      ]
+    },
+    {
+      id: '3',
+      name: 'Shed 3',
+      sheetName: 'Shed 3',
+      type: 'Female',
+      parts: [
+        {
+          id: 'part-3-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1500] }]
+        }
+      ]
+    },
+    {
+      id: '4',
+      name: 'Shed 4',
+      sheetName: 'Shed 4',
+      type: 'Female',
+      parts: [
+        {
+          id: 'part-4-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470] }]
+        }
+      ]
+    },
+    {
+      id: '5',
+      name: 'Shed 5',
+      sheetName: 'Shed 5',
+      type: 'Female',
+      parts: [
+        {
+          id: 'part-5-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450] }]
+        }
+      ]
+    },
+    {
+      id: '6',
+      name: 'Shed 6',
+      sheetName: 'Shed 6',
+      type: 'Female',
+      parts: [
+        {
+          id: 'part-6-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400] }]
+        }
+      ]
+    },
+    {
+      id: '7',
+      name: 'Shed 7',
+      sheetName: 'Shed 7',
+      type: 'Female',
+      parts: [
+        {
+          id: 'part-7-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390] }]
+        }
+      ]
+    },
+    {
+      id: '8',
+      name: 'Shed 8 (Male)',
+      sheetName: 'Shed 8',
+      type: 'Male',
+      parts: [
+        {
+          id: 'part-8-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [2800, 3000, 3800, 2650, 2950, 2456, 3566, 2800, 3000, 3800] }]
+        }
+      ]
+    },
+    {
+      id: '9',
+      name: 'Shed 9',
+      sheetName: 'Shed 9',
+      type: 'Female',
+      parts: [
+        {
+          id: 'part-9-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450] }]
+        }
+      ]
+    },
+    {
+      id: '10',
+      name: 'Shed 10',
+      sheetName: 'Shed 10',
+      type: 'Female',
+      parts: [
+        {
+          id: 'part-10-a',
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450] }]
+        }
+      ]
+    },
   ]);
 
-  // Load from local storage
+  // Load from local storage with backward-compatible normalization for Parts
   useEffect(() => {
     const saved = localStorage.getItem('poultry_dynamic_db');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed.sheds) setSheds(parsed.sheds);
+        if (parsed.sheds && Array.isArray(parsed.sheds)) {
+          const normalizedSheds: ShedData[] = parsed.sheds.map((s: any) => {
+            if (Array.isArray(s.parts) && s.parts.length > 0) {
+              return s;
+            }
+            return {
+              id: s.id,
+              name: s.name,
+              sheetName: s.sheetName || s.name,
+              type: s.type || 'Female',
+              parts: [
+                {
+                  id: `part-${s.id}-1`,
+                  name: 'Part A',
+                  lines: Array.isArray(s.lines) && s.lines.length > 0 
+                    ? s.lines 
+                    : [{ id: 1, name: 'Line 1', weights: [] }]
+                }
+              ]
+            };
+          });
+          setSheds(normalizedSheds);
+        }
         if (parsed.isLiveClock === false) {
           setIsLiveClock(false);
           if (parsed.date) setDate(parsed.date);
@@ -236,23 +481,37 @@ export default function App() {
     }));
   }, [farmName, sheds, date, recordTime, ageWeek, isLiveClock, showLiveSeconds]);
 
-  // Active Shed & Line
+  // Active Shed, Part & Line
   const activeShed = sheds.find(s => s.id === selectedShedId) || sheds[0];
-  const activeLine = activeShed?.lines.find(l => l.id === selectedLineId) || activeShed?.lines[0] || { id: 1, name: 'Line 1', weights: [] };
+  const activePart = activeShed?.parts.find(p => p.id === selectedPartId) || activeShed?.parts[0] || { id: 'part-1-a', name: 'Part A', lines: [{ id: 1, name: 'Line 1', weights: [] }] };
+  const activeLine = activePart?.lines.find(l => l.id === selectedLineId) || activePart?.lines[0] || { id: 1, name: 'Line 1', weights: [] };
   const activeStd = activeShed?.type === 'Male' ? stdWeightMale : stdWeightFemale;
+
+  // Real-time metric computations
+  const lineStats = useMemo(() => computeStats(activeLine.weights, activeStd), [activeLine.weights, activeStd]);
+  const partStats = useMemo(() => computeStats(activePart.lines.flatMap(l => l.weights), activeStd), [activePart.lines, activeStd]);
 
   // --- SHED CREATION & MODIFICATION HANDLERS ---
   const handleCreateShed = () => {
     if (!newShedName.trim()) return;
     const newId = String(Date.now());
+    const newPartId = `part-${newId}-1`;
     const newShedObj: ShedData = {
       id: newId,
       name: newShedName.trim(),
+      sheetName: newShedName.trim(),
       type: newShedType,
-      lines: [{ id: 1, name: 'Line 1', weights: [] }]
+      parts: [
+        {
+          id: newPartId,
+          name: 'Part A',
+          lines: [{ id: 1, name: 'Line 1', weights: [] }]
+        }
+      ]
     };
     setSheds(prev => [...prev, newShedObj]);
     setSelectedShedId(newId);
+    setSelectedPartId(newPartId);
     setSelectedLineId(1);
     setNewShedName('');
     setShowAddShedModal(false);
@@ -268,7 +527,7 @@ export default function App() {
     if (!editingShedId || !editShedName.trim()) return;
     setSheds(prev => prev.map(s => {
       if (s.id !== editingShedId) return s;
-      return { ...s, name: editShedName.trim(), type: editShedType };
+      return { ...s, name: editShedName.trim(), sheetName: editShedName.trim(), type: editShedType };
     }));
     setEditingShedId(null);
   };
@@ -280,7 +539,7 @@ export default function App() {
     }
     const targetShed = sheds.find(s => s.id === shedId);
     if (!targetShed) return;
-    const totalWeights = targetShed.lines.reduce((sum, l) => sum + l.weights.length, 0);
+    const totalWeights = targetShed.parts.reduce((sum, p) => sum + p.lines.reduce((lSum, l) => lSum + l.weights.length, 0), 0);
     if (totalWeights === 0) {
       executeDeleteShed(shedId);
     } else {
@@ -296,25 +555,127 @@ export default function App() {
     setSheds(remaining);
     if (selectedShedId === shedId) {
       setSelectedShedId(remaining[0].id);
-      setSelectedLineId(remaining[0].lines[0]?.id || 1);
+      const remPart = remaining[0].parts[0];
+      setSelectedPartId(remPart?.id || 'part-1');
+      setSelectedLineId(remPart?.lines[0]?.id || 1);
     }
     showToast(`${shedName} deleted.`);
     setShedPendingDelete(null);
   };
 
-  // --- LINE / PEN CREATION & REMOVAL ---
-  const handleAddLine = () => {
+  // --- PART CREATION, EDIT & REMOVAL ---
+  const getNextPartName = (parts: ShedPart[]) => {
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const usedNames = new Set(parts.map(p => p.name.trim().toUpperCase()));
+    for (let i = 0; i < letters.length; i++) {
+      const candidate = `Part ${letters[i]}`;
+      if (!usedNames.has(candidate.toUpperCase())) {
+        return candidate;
+      }
+    }
+    return `Part ${parts.length + 1}`;
+  };
+
+  const handleAddPart = () => {
     if (!activeShed) return;
-    const nextId = (activeShed.lines.length ? Math.max(...activeShed.lines.map(l => l.id)) : 0) + 1;
+    const newPartName = getNextPartName(activeShed.parts);
+    const newPartId = `part-${Date.now()}`;
+    const newPart: ShedPart = {
+      id: newPartId,
+      name: newPartName,
+      lines: [{ id: 1, name: 'Line 1', weights: [] }]
+    };
+
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
         ...s,
-        lines: [...s.lines, { id: nextId, name: `Line ${nextId}`, weights: [] }]
+        parts: [...s.parts, newPart]
+      };
+    }));
+    setSelectedPartId(newPartId);
+    setSelectedLineId(1);
+    showToast(`${newPartName} added.`);
+  };
+
+  const handleStartEditPart = (part: ShedPart) => {
+    setEditingPart({ id: part.id, name: part.name });
+  };
+
+  const handleSaveEditPart = () => {
+    if (!editingPart || !editingPart.name.trim() || !activeShed) return;
+    const trimmed = editingPart.name.trim();
+    setSheds(prev => prev.map(s => {
+      if (s.id !== activeShed.id) return s;
+      return {
+        ...s,
+        parts: s.parts.map(p => p.id === editingPart.id ? { ...p, name: trimmed } : p)
+      };
+    }));
+    showToast(`Part renamed to "${trimmed}".`);
+    setEditingPart(null);
+  };
+
+  const handleDeletePart = (partId: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (!activeShed) return;
+    if (activeShed.parts.length <= 1) {
+      showToast('A shed must have at least 1 part. Tap + Add Part to add another first.');
+      return;
+    }
+    const targetPart = activeShed.parts.find(p => p.id === partId);
+    if (!targetPart) return;
+
+    const totalWeights = targetPart.lines.reduce((sum, l) => sum + l.weights.length, 0);
+    if (totalWeights === 0) {
+      executeDeletePart(partId);
+    } else {
+      setPartPendingDelete({ id: targetPart.id, name: targetPart.name, totalWeights });
+    }
+  };
+
+  const executeDeletePart = (partId: string) => {
+    if (!activeShed) return;
+    const targetPart = activeShed.parts.find(p => p.id === partId);
+    const partName = targetPart?.name || 'Part';
+    const remainingParts = activeShed.parts.filter(p => p.id !== partId);
+
+    setSheds(prev => prev.map(s => {
+      if (s.id !== activeShed.id) return s;
+      return { ...s, parts: remainingParts };
+    }));
+
+    if (selectedPartId === partId) {
+      const fallbackPart = remainingParts[0];
+      setSelectedPartId(fallbackPart.id);
+      setSelectedLineId(fallbackPart.lines[0]?.id || 1);
+    }
+    showToast(`${partName} deleted.`);
+    setPartPendingDelete(null);
+  };
+
+  // --- LINE / PEN CREATION & REMOVAL ---
+  const handleAddLine = () => {
+    if (!activeShed || !activePart) return;
+    const nextId = (activePart.lines.length ? Math.max(...activePart.lines.map(l => l.id)) : 0) + 1;
+    setSheds(prev => prev.map(s => {
+      if (s.id !== activeShed.id) return s;
+      return {
+        ...s,
+        parts: s.parts.map(p => {
+          if (p.id !== activePart.id) return p;
+          return {
+            ...p,
+            lines: [...p.lines, { id: nextId, name: `Line ${nextId}`, weights: [] }]
+          };
+        })
       };
     }));
     setSelectedLineId(nextId);
-    showToast(`Line ${nextId} added.`);
+    showToast(`Line ${nextId} added to ${activePart.name}.`);
   };
 
   const handleDeleteLine = (lineId: number, e?: React.MouseEvent) => {
@@ -322,12 +683,12 @@ export default function App() {
       e.preventDefault();
       e.stopPropagation();
     }
-    if (!activeShed) return;
-    if (activeShed.lines.length <= 1) {
-      showToast('A shed must have at least 1 pen line. Tap + Pen Line to add another first.');
+    if (!activeShed || !activePart) return;
+    if (activePart.lines.length <= 1) {
+      showToast('A part must have at least 1 pen line. Tap + Line to add another first.');
       return;
     }
-    const targetLine = activeShed.lines.find(l => l.id === lineId);
+    const targetLine = activePart.lines.find(l => l.id === lineId);
     if (!targetLine) return;
 
     // If line is empty with 0 weights, delete immediately!
@@ -340,14 +701,20 @@ export default function App() {
   };
 
   const executeDeleteLine = (lineId: number) => {
-    if (!activeShed) return;
-    const targetLine = activeShed.lines.find(l => l.id === lineId);
+    if (!activeShed || !activePart) return;
+    const targetLine = activePart.lines.find(l => l.id === lineId);
     const lineName = targetLine?.name || `Line ${lineId}`;
-    const remainingLines = activeShed.lines.filter(l => l.id !== lineId);
+    const remainingLines = activePart.lines.filter(l => l.id !== lineId);
 
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
-      return { ...s, lines: remainingLines };
+      return {
+        ...s,
+        parts: s.parts.map(p => {
+          if (p.id !== activePart.id) return p;
+          return { ...p, lines: remainingLines };
+        })
+      };
     }));
 
     setSelectedLineId(prev => (prev === lineId ? remainingLines[0].id : prev));
@@ -356,14 +723,20 @@ export default function App() {
   };
 
   const handleClearCurrentLineWeights = () => {
-    if (!activeShed || !activeLine || activeLine.weights.length === 0) return;
+    if (!activeShed || !activePart || !activeLine || activeLine.weights.length === 0) return;
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
         ...s,
-        lines: s.lines.map(l => {
-          if (l.id !== activeLine.id) return l;
-          return { ...l, weights: [] };
+        parts: s.parts.map(p => {
+          if (p.id !== activePart.id) return p;
+          return {
+            ...p,
+            lines: p.lines.map(l => {
+              if (l.id !== activeLine.id) return l;
+              return { ...l, weights: [] };
+            })
+          };
         })
       };
     }));
@@ -373,15 +746,21 @@ export default function App() {
   // --- WEIGHT INPUT & CALCULATION ---
   const handleAddWeight = (valToAdd?: number) => {
     const val = valToAdd !== undefined ? valToAdd : parseFloat(inputWeight);
-    if (!val || isNaN(val) || !activeShed || !activeLine) return;
+    if (!val || isNaN(val) || !activeShed || !activePart || !activeLine) return;
 
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
         ...s,
-        lines: s.lines.map(l => {
-          if (l.id !== activeLine.id) return l;
-          return { ...l, weights: [...l.weights, val] };
+        parts: s.parts.map(p => {
+          if (p.id !== activePart.id) return p;
+          return {
+            ...p,
+            lines: p.lines.map(l => {
+              if (l.id !== activeLine.id) return l;
+              return { ...l, weights: [...l.weights, val] };
+            })
+          };
         })
       };
     }));
@@ -389,73 +768,41 @@ export default function App() {
   };
 
   const handleDeleteWeight = (idx: number) => {
+    if (!activeShed || !activePart || !activeLine) return;
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
         ...s,
-        lines: s.lines.map(l => {
-          if (l.id !== activeLine.id) return l;
-          const copy = [...l.weights];
-          copy.splice(idx, 1);
-          return { ...l, weights: copy };
+        parts: s.parts.map(p => {
+          if (p.id !== activePart.id) return p;
+          return {
+            ...p,
+            lines: p.lines.map(l => {
+              if (l.id !== activeLine.id) return l;
+              const copy = [...l.weights];
+              copy.splice(idx, 1);
+              return { ...l, weights: copy };
+            })
+          };
         })
       };
     }));
   };
 
-  const computeStats = (weights: number[], stdTarget: number) => {
-    const count = weights.length;
-    if (count === 0) {
-      return { count: 0, avg: 0, diff: 0, min: 0, max: 0, cv: 0, mb: 0, b: 0, s: 0, a: 0, ma: 0, unif: 0 };
-    }
-    const sum = weights.reduce((acc, w) => acc + w, 0);
-    const avg = Number((sum / count).toFixed(1));
-    const diff = Number((avg - stdTarget).toFixed(1));
-    const min = Math.min(...weights);
-    const max = Math.max(...weights);
-    const fFactor = getFFactor(count);
-    const cv = Number((((max - min) * 100) / (avg * fFactor)).toFixed(2));
-
-    const sLow = stdTarget * 0.90;
-    const sHigh = stdTarget * 1.10;
-    const mbLimit = stdTarget * 0.85;
-    const maLimit = stdTarget * 1.15;
-
-    let mb = 0, b = 0, s = 0, a = 0, ma = 0;
-    weights.forEach(w => {
-      if (w < mbLimit) mb++;
-      else if (w < sLow) b++;
-      else if (w <= sHigh) s++;
-      else if (w <= maLimit) a++;
-      else ma++;
-    });
-
-    return {
-      count,
-      avg,
-      diff,
-      min,
-      max,
-      cv,
-      mb: Number(((mb / count) * 100).toFixed(1)),
-      b: Number(((b / count) * 100).toFixed(1)),
-      s: Number(((s / count) * 100).toFixed(1)),
-      a: Number(((a / count) * 100).toFixed(1)),
-      ma: Number(((ma / count) * 100).toFixed(1)),
-      unif: Number(((s / count) * 100).toFixed(1))
-    };
-  };
-
   // Grand Consolidated Calculation (Cons Sheet)
   const consolidated = useMemo(() => {
-    const femaleWeights = sheds.filter(s => s.type === 'Female').flatMap(s => s.lines.flatMap(l => l.weights));
-    const maleWeights = sheds.filter(s => s.type === 'Male').flatMap(s => s.lines.flatMap(l => l.weights));
+    const femaleWeights = sheds
+      .filter(s => s.type === 'Female')
+      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights)));
+    const maleWeights = sheds
+      .filter(s => s.type === 'Male')
+      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights)));
 
     const fStats = computeStats(femaleWeights, stdWeightFemale);
     const mStats = computeStats(maleWeights, stdWeightMale);
 
     const shedSummaries = sheds.map((s, idx) => {
-      const allW = s.lines.flatMap(l => l.weights);
+      const allW = s.parts.flatMap(p => p.lines.flatMap(l => l.weights));
       const std = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
       return {
         ...s,
@@ -493,18 +840,29 @@ export default function App() {
     const wsCons = XLSX.utils.aoa_to_sheet(consData);
     XLSX.utils.book_append_sheet(wb, wsCons, 'Cons');
 
-    // Individual Shed sheets
+    // Individual Shed sheets with Part-wise line headers
     sheds.forEach(s => {
       const std = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
+      // Flatten all lines across all parts, formatted as "Shed 1 - Part A - Line 1"
+      const flatLines: { headerName: string; weights: number[] }[] = [];
+      s.parts.forEach(p => {
+        p.lines.forEach(l => {
+          flatLines.push({
+            headerName: `${s.name} - ${p.name} - ${l.name}`,
+            weights: l.weights
+          });
+        });
+      });
+
       const sRows: (string | number)[][] = [
         ['Shed:', s.name, 'Gender:', s.type, 'Target:', std],
-        ['Sample #', ...s.lines.flatMap(l => [l.name, 'Grade'])]
+        ['Sample #', ...flatLines.flatMap(fl => [fl.headerName, 'Grade'])]
       ];
-      const maxLen = Math.max(...s.lines.map(l => l.weights.length), 0);
+      const maxLen = Math.max(...flatLines.map(fl => fl.weights.length), 0);
       for (let i = 0; i < maxLen; i++) {
         const r: (string | number)[] = [i + 1];
-        s.lines.forEach(l => {
-          const w = l.weights[i];
+        flatLines.forEach(fl => {
+          const w = fl.weights[i];
           if (w !== undefined) {
             let grade = 'S';
             if (w < std * 0.85) grade = 'MB';
@@ -540,8 +898,6 @@ export default function App() {
       showToast('Error generating workbook.');
     }
   };
-
-  const lineStats = activeLine ? computeStats(activeLine.weights, activeStd) : computeStats([], activeStd);
 
   return (
     <div className="flex justify-center bg-slate-100 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
@@ -604,7 +960,7 @@ export default function App() {
 
               {/* 1. Enter Weights */}
               <button
-                onClick={() => setCurrentScreen('weigh')}
+                onClick={() => navigateTo('weigh')}
                 className="w-full bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-md shadow-emerald-600/20 border border-emerald-500 group"
               >
                 <div className="flex items-center gap-3.5">
@@ -621,7 +977,7 @@ export default function App() {
 
               {/* 2. Consolidated Report */}
               <button
-                onClick={() => setCurrentScreen('conclusion')}
+                onClick={() => navigateTo('conclusion')}
                 className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group"
               >
                 <div className="flex items-center gap-3.5">
@@ -638,7 +994,7 @@ export default function App() {
 
               {/* 3. Manage Sheds & Comparison */}
               <button
-                onClick={() => setCurrentScreen('sheds')}
+                onClick={() => navigateTo('sheds')}
                 className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group"
               >
                 <div className="flex items-center gap-3.5">
@@ -655,7 +1011,7 @@ export default function App() {
 
               {/* 4. Farm Details Settings */}
               <button
-                onClick={() => setCurrentScreen('setup')}
+                onClick={() => navigateTo('setup')}
                 className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group"
               >
                 <div className="flex items-center gap-3.5">
@@ -686,19 +1042,28 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* 2. WEIGHING SCREEN WITH IN-LINE MANAGEMENT                */}
+        {/* 2. WEIGHING SCREEN WITH IN-LINE MANAGEMENT (SHED -> PART -> LINE) */}
         {/* ========================================================= */}
-        {currentScreen === 'weigh' && activeShed && activeLine && (
+        {currentScreen === 'weigh' && activeShed && activePart && activeLine && (
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
             
-            {/* Header with Back Button */}
-            <div className="flex items-center justify-between mb-3">
+            {/* Header with Back Button, Hierarchy Breadcrumb & Shed Info */}
+            <div className="flex items-center justify-between mb-2.5">
               <button 
-                onClick={() => setCurrentScreen('home')} 
+                onClick={() => navigateTo('home')} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
               </button>
+
+              {/* Compact Hierarchy Breadcrumb Trail */}
+              <div className="flex items-center gap-1 text-[11px] font-bold bg-white px-2.5 py-1 rounded-xl border border-slate-200 shadow-xs">
+                <span className="text-emerald-700 font-extrabold">{activeShed.name}</span>
+                <span className="text-slate-300">›</span>
+                <span className="text-indigo-700 font-extrabold">{activePart.name}</span>
+                <span className="text-slate-300">›</span>
+                <span className="text-sky-700 font-extrabold">{activeLine.name}</span>
+              </div>
 
               <div className="flex items-center gap-1.5">
                 <button
@@ -713,29 +1078,37 @@ export default function App() {
                     ? 'bg-blue-50 text-blue-700 border-blue-200' 
                     : 'bg-pink-50 text-pink-700 border-pink-200'
                 }`}>
-                  {activeShed.name} ({activeShed.type === 'Male' ? '♂' : '♀'})
+                  {activeShed.type === 'Male' ? '♂' : '♀'}
                 </span>
               </div>
             </div>
 
-            {/* Shed Horizontal Selector Chips + Quick Add Shed Button */}
-            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 mb-2.5">
-              {sheds.map(s => (
-                <button
-                  key={s.id}
-                  onClick={() => {
-                    setSelectedShedId(s.id);
-                    setSelectedLineId(s.lines[0]?.id || 1);
-                  }}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-                    selectedShedId === s.id 
-                      ? 'bg-emerald-600 text-white font-black shadow-xs' 
-                      : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  {s.name}
-                </button>
-              ))}
+            {/* Layer 1: Shed Horizontal Selector Chips + Quick Add Shed Button */}
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 mb-2">
+              <span className="text-[9px] font-black uppercase tracking-wider text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-1 rounded-lg shrink-0">
+                Shed
+              </span>
+              {sheds.map(s => {
+                const isSelected = selectedShedId === s.id;
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => {
+                      setSelectedShedId(s.id);
+                      const firstPart = s.parts[0];
+                      setSelectedPartId(firstPart?.id || 'part-1');
+                      setSelectedLineId(firstPart?.lines[0]?.id || 1);
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
+                      isSelected 
+                        ? 'bg-emerald-600 text-white font-black shadow-xs' 
+                        : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    {s.name}
+                  </button>
+                );
+              })}
 
               <button
                 onClick={() => setShowAddShedModal(true)}
@@ -745,17 +1118,85 @@ export default function App() {
               </button>
             </div>
 
-            {/* Line Tabs + Line Add/Delete Controls */}
-            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 mb-3">
-              {activeShed.lines.map(line => {
+            {/* Layer 2: Part Tabs + Part Add/Edit/Delete Controls */}
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 mb-2">
+              <span className="text-[9px] font-black uppercase tracking-wider text-indigo-800 bg-indigo-50 border border-indigo-200 px-1.5 py-1 rounded-lg shrink-0">
+                Part
+              </span>
+              {activeShed.parts.map(part => {
+                const isSelected = selectedPartId === part.id;
+                const isOnlyPart = activeShed.parts.length <= 1;
+                const partBirdCount = part.lines.reduce((acc, l) => acc + l.weights.length, 0);
+
+                return (
+                  <div key={part.id} className="flex items-center shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedPartId(part.id);
+                        setSelectedLineId(part.lines[0]?.id || 1);
+                      }}
+                      className={`px-3 py-1.5 text-xs font-bold whitespace-nowrap transition rounded-l-xl ${
+                        isSelected 
+                          ? 'bg-indigo-600 text-white font-black shadow-xs' 
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                      }`}
+                    >
+                      {part.name} ({partBirdCount})
+                    </button>
+                    {isSelected && (
+                      <button
+                        type="button"
+                        onClick={() => handleStartEditPart(part)}
+                        className="px-1.5 py-1.5 bg-indigo-700 text-white hover:bg-indigo-800 border-y border-indigo-600 text-xs transition cursor-pointer"
+                        title={`Rename ${part.name}`}
+                        aria-label={`Rename ${part.name}`}
+                      >
+                        <Edit2 className="w-3 h-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeletePart(part.id, e)}
+                      className={`px-2 py-1.5 rounded-r-xl border-y border-r text-xs transition flex items-center justify-center active:scale-95 cursor-pointer ${
+                        isOnlyPart 
+                          ? 'bg-slate-100 text-slate-400 hover:text-slate-500 border-slate-200' 
+                          : isSelected 
+                            ? 'bg-indigo-700 text-white hover:bg-rose-600 border-indigo-600' 
+                            : 'bg-white text-slate-400 hover:bg-rose-50 hover:text-rose-600 border-slate-200'
+                      }`}
+                      title={isOnlyPart ? "Only part in shed (cannot delete)" : `Delete ${part.name}`}
+                      aria-label={`Delete ${part.name}`}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
+
+              <button
+                type="button"
+                onClick={handleAddPart}
+                className="px-2.5 py-1.5 bg-white hover:bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold flex items-center gap-1 border border-dashed border-indigo-300 whitespace-nowrap shrink-0 active:scale-95 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add Part
+              </button>
+            </div>
+
+            {/* Layer 3: Line Tabs + Line Add/Delete Controls */}
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 mb-2.5">
+              <span className="text-[9px] font-black uppercase tracking-wider text-sky-800 bg-sky-50 border border-sky-200 px-1.5 py-1 rounded-lg shrink-0">
+                Line
+              </span>
+              {activePart.lines.map(line => {
                 const isSelected = selectedLineId === line.id;
-                const isOnlyLine = activeShed.lines.length <= 1;
+                const isOnlyLine = activePart.lines.length <= 1;
                 return (
                   <div key={line.id} className="flex items-center shrink-0">
                     <button
                       type="button"
                       onClick={() => setSelectedLineId(line.id)}
-                      className={`px-3 py-2 text-xs font-bold whitespace-nowrap transition rounded-l-xl ${
+                      className={`px-3 py-1.5 text-xs font-bold whitespace-nowrap transition rounded-l-xl ${
                         isSelected 
                           ? 'bg-sky-600 text-white font-black shadow-xs' 
                           : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
@@ -766,17 +1207,17 @@ export default function App() {
                     <button
                       type="button"
                       onClick={(e) => handleDeleteLine(line.id, e)}
-                      className={`px-2.5 py-2 rounded-r-xl border-y border-r text-xs transition flex items-center justify-center active:scale-95 cursor-pointer ${
+                      className={`px-2 py-1.5 rounded-r-xl border-y border-r text-xs transition flex items-center justify-center active:scale-95 cursor-pointer ${
                         isOnlyLine 
-                          ? 'bg-slate-100 text-slate-400 hover:text-slate-500 border-slate-200'
+                          ? 'bg-slate-100 text-slate-400 hover:text-slate-500 border-slate-200' 
                           : isSelected 
                             ? 'bg-sky-700 text-white hover:bg-rose-600 border-sky-600' 
                             : 'bg-white text-slate-400 hover:bg-rose-50 hover:text-rose-600 border-slate-200'
                       }`}
-                      title={isOnlyLine ? "Only pen line in shed (cannot delete)" : `Delete ${line.name}`}
+                      title={isOnlyLine ? "Only pen line in part (cannot delete)" : `Delete ${line.name}`}
                       aria-label={`Delete ${line.name}`}
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
                 );
@@ -785,29 +1226,33 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleAddLine}
-                className="px-3 py-2 bg-white hover:bg-sky-50 text-sky-700 rounded-xl text-xs font-bold flex items-center gap-1 border border-dashed border-sky-300 whitespace-nowrap shrink-0 active:scale-95 cursor-pointer"
+                className="px-2.5 py-1.5 bg-white hover:bg-sky-50 text-sky-700 rounded-xl text-xs font-bold flex items-center gap-1 border border-dashed border-sky-300 whitespace-nowrap shrink-0 active:scale-95 cursor-pointer"
               >
-                <Plus className="w-3.5 h-3.5" /> Pen Line
+                <Plus className="w-3.5 h-3.5" /> Line
               </button>
             </div>
 
-            {/* Real-Time Metric Strip for Current Line */}
-            <div className="bg-white p-3 rounded-2xl border border-slate-200 grid grid-cols-4 gap-1 text-center mb-3.5 shadow-xs">
+            {/* Real-Time Metric Strip for Current Line & Part */}
+            <div className="bg-white p-3 rounded-2xl border border-slate-200 grid grid-cols-4 gap-1 text-center mb-3 shadow-xs">
               <div>
                 <span className="text-[10px] text-slate-500 font-bold uppercase">Weighed</span>
                 <div className="text-base font-black text-slate-900">{lineStats.count}</div>
+                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.count}</span>
               </div>
               <div>
                 <span className="text-[10px] text-slate-500 font-bold uppercase">Avg Wt</span>
                 <div className="text-base font-black text-emerald-600">{lineStats.avg}g</div>
+                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.avg}g</span>
               </div>
               <div>
                 <span className="text-[10px] text-slate-500 font-bold uppercase">Unif (S%)</span>
                 <div className="text-base font-black text-amber-600">{lineStats.unif}%</div>
+                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.unif}%</span>
               </div>
               <div>
                 <span className="text-[10px] text-slate-500 font-bold uppercase">CV %</span>
                 <div className="text-base font-black text-sky-600">{lineStats.cv}%</div>
+                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.cv}%</span>
               </div>
             </div>
 
@@ -847,8 +1292,10 @@ export default function App() {
             <div className="flex-1 bg-white rounded-xl border border-slate-200 p-2.5 overflow-y-auto max-h-[230px] shadow-xs">
               <div className="flex justify-between items-center text-xs text-slate-500 pb-2 mb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="font-semibold text-slate-700">Birds in {activeLine.name} ({activeLine.weights.length})</span>
-                  {activeShed.lines.length > 1 && (
+                  <span className="font-semibold text-slate-700">
+                    Birds in {activePart.name} › {activeLine.name} ({activeLine.weights.length})
+                  </span>
+                  {activePart.lines.length > 1 && (
                     <button
                       type="button"
                       onClick={(e) => handleDeleteLine(activeLine.id, e)}
@@ -911,7 +1358,7 @@ export default function App() {
             
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={() => setCurrentScreen('home')} 
+                onClick={() => navigateTo('home')} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
@@ -999,7 +1446,7 @@ export default function App() {
             
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={() => setCurrentScreen('home')} 
+                onClick={() => navigateTo('home')} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
@@ -1066,8 +1513,10 @@ export default function App() {
                   <button
                     onClick={() => {
                       setSelectedShedId(s.id);
-                      setSelectedLineId(s.lines[0]?.id || 1);
-                      setCurrentScreen('weigh');
+                      const pFirst = s.parts[0];
+                      setSelectedPartId(pFirst?.id || 'part-1');
+                      setSelectedLineId(pFirst?.lines[0]?.id || 1);
+                      navigateTo('weigh');
                     }}
                     className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold py-2 rounded-xl transition mt-0.5 text-center"
                   >
@@ -1088,7 +1537,7 @@ export default function App() {
             
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={() => setCurrentScreen('home')} 
+                onClick={() => navigateTo('home')} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
@@ -1214,7 +1663,7 @@ export default function App() {
             <button
               onClick={() => {
                 showToast('Farm settings saved successfully!');
-                setCurrentScreen('home');
+                navigateTo('home');
               }}
               className="w-full bg-purple-600 hover:bg-purple-700 py-3 rounded-xl font-black text-sm text-white shadow-md shadow-purple-600/20 active:scale-95"
             >
@@ -1367,6 +1816,88 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
+        {/* MODAL: RENAME PART                                        */}
+        {/* ========================================================= */}
+        {editingPart && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-4 space-y-4 shadow-xl">
+              <div className="flex justify-between items-center">
+                <h3 className="font-black text-base text-slate-900">Rename Part</h3>
+                <button onClick={() => setEditingPart(null)} className="text-slate-400 hover:text-slate-700">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-600 uppercase font-semibold">Part Name</label>
+                <input
+                  type="text"
+                  value={editingPart.name}
+                  onChange={e => setEditingPart({ ...editingPart, name: e.target.value })}
+                  placeholder="e.g. Part A, North Wing"
+                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 mt-1 focus:outline-none focus:border-indigo-600 shadow-xs"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingPart(null)}
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveEditPart}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 py-2.5 rounded-xl text-xs font-black text-white shadow-xs"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODAL: CONFIRM DELETE PART                                */}
+        {/* ========================================================= */}
+        {partPendingDelete && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl border border-rose-200">
+                  <Trash2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base text-slate-900">Delete {partPendingDelete.name}?</h3>
+                  <p className="text-xs text-slate-500">Contains {partPendingDelete.totalWeights} weighed birds across its lines</p>
+                </div>
+              </div>
+              <p className="text-xs text-rose-800 bg-rose-50 p-3 rounded-xl border border-rose-200 leading-relaxed">
+                Delete this Part and all its lines/weights? All {partPendingDelete.totalWeights} recorded bird weights will be permanently deleted.
+              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setPartPendingDelete(null)}
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => executeDeletePart(partPendingDelete.id)}
+                  className="flex-1 bg-rose-600 hover:bg-rose-700 py-2.5 rounded-xl text-xs font-black text-white shadow-md shadow-rose-600/20 active:scale-95 transition cursor-pointer"
+                >
+                  Yes, Delete Part
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
         {/* MODAL: CONFIRM DELETE PEN LINE                           */}
         {/* ========================================================= */}
         {linePendingDelete && (
@@ -1436,6 +1967,54 @@ export default function App() {
                   className="flex-1 bg-rose-600 hover:bg-rose-700 py-2.5 rounded-xl text-xs font-black text-white shadow-md shadow-rose-600/20 active:scale-95 transition cursor-pointer"
                 >
                   Yes, Delete Shed
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODAL: EXIT CONFIRMATION TRAP                             */}
+        {/* ========================================================= */}
+        {showExitConfirm && (
+          <div 
+            className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="exit-app-dialog-title"
+          >
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl border border-amber-200">
+                  <LogOut className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 id="exit-app-dialog-title" className="font-black text-base text-slate-900">
+                    Exit Application?
+                  </h3>
+                  <p className="text-xs text-slate-500">Poultry Weight & Uniformity Tracker</p>
+                </div>
+              </div>
+              <p className="text-xs text-slate-700 bg-slate-50 p-3.5 rounded-xl border border-slate-200 leading-relaxed">
+                Do you want to exit the application?
+              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  id="cancel-exit-btn"
+                  onClick={() => setShowExitConfirm(false)}
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  id="confirm-exit-btn"
+                  onClick={handleConfirmExit}
+                  className="flex-1 bg-rose-600 hover:bg-rose-700 py-2.5 rounded-xl text-xs font-black text-white shadow-md shadow-rose-600/20 active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Exit
                 </button>
               </div>
             </div>
