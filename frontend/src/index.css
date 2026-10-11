@@ -3,6 +3,10 @@
 @tailwind utilities;
 
 @layer base {
+  html, body {
+    overscroll-behavior-x: none;
+    -webkit-overscroll-behavior-x: none;
+  }
   body {
     @apply bg-slate-100 text-slate-900 antialiased selection:bg-emerald-500 selection:text-white min-h-screen font-sans;
   }

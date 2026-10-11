@@ -309,7 +309,7 @@ export default function App() {
     }
   ]);
 
-  // Hardware Back Button & Mobile Popstate Routing Trap
+  // Hardware Back Button & Mobile Popstate Routing Trap with Hash Navigation
   const currentScreenRef = useRef<ScreenType>('home');
   currentScreenRef.current = currentScreen;
 
@@ -324,68 +324,93 @@ export default function App() {
 
   const handlePopState = (event?: PopStateEvent) => {
     const active = currentScreenRef.current;
+    const targetState = event?.state as { screen?: ScreenType; shedId?: string; partId?: string; lineId?: number } | null;
+    const hash = window.location.hash;
 
     // Restore hierarchy identifiers from event state if available
-    if (event?.state) {
-      if (event.state.shedId) setSelectedShedId(event.state.shedId);
-      if (event.state.partId) setSelectedPartId(event.state.partId);
-      if (event.state.lineId !== undefined) setSelectedLineId(event.state.lineId);
+    if (targetState?.shedId) setSelectedShedId(targetState.shedId);
+    if (targetState?.partId) setSelectedPartId(targetState.partId);
+    if (targetState?.lineId !== undefined) setSelectedLineId(targetState.lineId);
+
+    // Determine target screen from state or hash
+    let targetScreen: ScreenType | null = null;
+    if (targetState?.screen) {
+      targetScreen = targetState.screen;
+    } else if (hash === '#weigh') {
+      targetScreen = 'weigh_pad';
+    } else if (hash === '#lines') {
+      targetScreen = 'line_select';
+    } else if (hash === '#parts') {
+      targetScreen = 'part_select';
+    } else if (hash === '#sheds') {
+      targetScreen = 'shed_select';
+    } else if (hash === '#conclusion') {
+      targetScreen = 'conclusion';
+    } else if (hash === '#manage') {
+      targetScreen = 'sheds_manage';
+    } else if (hash === '#setup') {
+      targetScreen = 'setup';
+    } else if (hash === '#home' || !hash || hash === '') {
+      targetScreen = 'home';
     }
 
-    if (active === 'weigh_pad') {
-      setCurrentScreen('line_select');
-      window.history.pushState({
-        screen: 'line_select',
-        shedId: selectedShedIdRef.current,
-        partId: selectedPartIdRef.current
-      }, '');
-    } else if (active === 'line_select') {
-      setCurrentScreen('part_select');
-      window.history.pushState({
-        screen: 'part_select',
-        shedId: selectedShedIdRef.current
-      }, '');
-    } else if (active === 'part_select') {
-      setCurrentScreen('shed_select');
-      window.history.pushState({ screen: 'shed_select' }, '');
-    } else if (active === 'shed_select' || active === 'conclusion' || active === 'setup' || active === 'sheds_manage') {
-      setCurrentScreen('home');
-      window.history.pushState({ screen: 'home' }, '');
+    if (targetScreen && targetScreen !== active) {
+      // Clean natural backward transition without fighting the browser history stack
+      setCurrentScreen(targetScreen);
     } else if (active === 'home') {
-      // Trigger Exit Confirmation Dialog
+      // Swiped back while on home -> Show Exit Confirmation Dialog
       setShowExitConfirm(true);
-      window.history.pushState({ screen: 'home' }, '');
+      window.history.pushState({ screen: 'home' }, '', '#home');
     } else {
-      setCurrentScreen('home');
-      window.history.pushState({ screen: 'home' }, '');
+      // Fallback hierarchy if state was lost
+      if (active === 'weigh_pad') {
+        setCurrentScreen('line_select');
+      } else if (active === 'line_select') {
+        setCurrentScreen('part_select');
+      } else if (active === 'part_select') {
+        setCurrentScreen('shed_select');
+      } else {
+        setCurrentScreen('home');
+      }
     }
   };
 
   useEffect(() => {
-    // Prime root state
-    window.history.replaceState({ screen: 'home' }, '');
-    window.history.pushState({ screen: 'home' }, '');
+    // Prime root state with hash
+    if (!window.location.hash || window.location.hash === '#home' || window.location.hash === '#') {
+      window.history.replaceState({ screen: 'home' }, '', '#home');
+      window.history.pushState({ screen: 'home' }, '', '#home');
+    }
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Consistent UI Back Button handler matching popstate behavior 100%
+  // Consistent UI Back Button handler: calls window.history.back() for natural parity
   const handleGoBack = () => {
-    handlePopState();
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      const active = currentScreenRef.current;
+      if (active === 'weigh_pad') setCurrentScreen('line_select');
+      else if (active === 'line_select') setCurrentScreen('part_select');
+      else if (active === 'part_select') setCurrentScreen('shed_select');
+      else if (active === 'home') setShowExitConfirm(true);
+      else setCurrentScreen('home');
+    }
   };
 
-  // Synchronized Forward Navigation Helpers
+  // Synchronized Forward Navigation Helpers with Hash Anchors (Recognized by Android Chrome)
   const navigateToShedSelect = () => {
     setCurrentScreen('shed_select');
-    window.history.pushState({ screen: 'shed_select' }, '');
+    window.history.pushState({ screen: 'shed_select' }, '', '#sheds');
   };
 
   const navigateToPartSelect = (shedId: string, partId?: string) => {
     setSelectedShedId(shedId);
     if (partId) setSelectedPartId(partId);
     setCurrentScreen('part_select');
-    window.history.pushState({ screen: 'part_select', shedId }, '');
+    window.history.pushState({ screen: 'part_select', shedId, partId }, '', '#parts');
   };
 
   const navigateToLineSelect = (shedId: string, partId: string, lineId?: number) => {
@@ -393,7 +418,7 @@ export default function App() {
     setSelectedPartId(partId);
     if (lineId !== undefined) setSelectedLineId(lineId);
     setCurrentScreen('line_select');
-    window.history.pushState({ screen: 'line_select', shedId, partId }, '');
+    window.history.pushState({ screen: 'line_select', shedId, partId, lineId }, '', '#lines');
   };
 
   const navigateToWeighPad = (shedId: string, partId: string, lineId: number) => {
@@ -401,17 +426,22 @@ export default function App() {
     setSelectedPartId(partId);
     setSelectedLineId(lineId);
     setCurrentScreen('weigh_pad');
-    window.history.pushState({ screen: 'weigh_pad', shedId, partId, lineId }, '');
+    window.history.pushState({ screen: 'weigh_pad', shedId, partId, lineId }, '', '#weigh');
   };
 
   const navigateTo = (screen: ScreenType) => {
     setCurrentScreen(screen);
-    window.history.pushState({ screen }, '');
+    const hash = screen === 'conclusion' ? '#conclusion' 
+      : screen === 'sheds_manage' ? '#manage' 
+      : screen === 'setup' ? '#setup' 
+      : screen === 'shed_select' ? '#sheds' 
+      : '#home';
+    window.history.pushState({ screen }, '', hash);
   };
 
   const handleCancelExit = () => {
     setShowExitConfirm(false);
-    window.history.pushState({ screen: 'home' }, '');
+    window.history.pushState({ screen: 'home' }, '', '#home');
   };
 
   const handleConfirmExit = () => {
