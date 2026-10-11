@@ -30,6 +30,7 @@ import {
   BirdGrade
 } from './services/excelExportService';
 import { WINTER_BROOD_STANDARDS, SUMMER_BROOD_STANDARDS } from './services/benchmarks';
+import { LoadingScreen } from './components/LoadingScreen';
 
 // Seasonal Target Benchmarks for all 23 Weeks
 const BENCHMARKS: Record<'Summer' | 'Winter', Record<string, { stdF: number; stdM: number }>> = {
@@ -74,6 +75,35 @@ export type ScreenType =
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('home');
   const [showExitConfirm, setShowExitConfirm] = useState(false);
+
+  // Full-Screen Splash & Operations Loading State (2 Seconds)
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [loadingMessage, setLoadingMessage] = useState('Calibrating Shed & Line Uniformity...');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState('Generating 13-Sheet Excel Workbook...');
+
+  // 2-Second Initial Splash Sequence
+  useEffect(() => {
+    const t1 = setTimeout(() => {
+      setLoadingMessage('Synchronizing 10 Sheds & Pen Records...');
+    }, 650);
+    const t2 = setTimeout(() => {
+      setLoadingMessage('Verifying Body Weight Tolerances & Benchmarks...');
+    }, 1300);
+    const t3 = setTimeout(() => {
+      setLoadingMessage('Flock Ready');
+    }, 1750);
+    const t4 = setTimeout(() => {
+      setIsInitialLoading(false);
+    }, 2000);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+    };
+  }, []);
 
   // Live System Clock
   const [liveTime, setLiveTime] = useState(new Date());
@@ -640,6 +670,8 @@ export default function App() {
   // --- COMPLETE 13-SHEET WORKBOOK EXPORT ---
   const handleDownloadExcel = async () => {
     try {
+      setIsExporting(true);
+      setExportMessage('Generating 13-Sheet Excel Workbook...');
       showToast('Generating complete 13-sheet Excel workbook...');
       const res = await exportPoultryWorkbook({
         farmName,
@@ -660,6 +692,8 @@ export default function App() {
     } catch (err) {
       console.error(err);
       showToast('Error generating workbook.');
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -680,8 +714,13 @@ export default function App() {
   };
 
   return (
-    <div className="flex justify-center bg-slate-100 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
-      <div className="w-full max-w-md min-h-screen bg-slate-50 border-x border-slate-200 flex flex-col shadow-2xl relative pb-6">
+    <>
+      {/* Full-Screen Hen/Rooster Logo Splash & Operations Loading Screen */}
+      {isInitialLoading && <LoadingScreen message={loadingMessage} />}
+      {isExporting && <LoadingScreen message={exportMessage} />}
+
+      <div className="flex justify-center bg-slate-100 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
+        <div className="w-full max-w-md min-h-screen bg-slate-50 border-x border-slate-200 flex flex-col shadow-2xl relative pb-6">
         
         {/* ========================================================= */}
         {/* 1. APP HOME DASHBOARD                                     */}
@@ -1832,5 +1871,6 @@ export default function App() {
 
       </div>
     </div>
+    </>
   );
 }

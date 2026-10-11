@@ -52,3 +52,19 @@
     font-size: 11px !important;
   }
 }
+
+@keyframes runner {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(50%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+.animate-runner {
+  animation: runner 1.5s infinite ease-in-out;
+}
