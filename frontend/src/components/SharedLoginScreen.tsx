@@ -5,27 +5,42 @@ import { UserRole } from '../services/cloudSyncService';
 export interface SharedLoginProps {
   onLoginSuccess: (user: { name: string; role: 'Admin' | 'Manager' | 'Supervisor' }) => void;
   onCancel?: () => void;
+  initialName?: string;
+  initialRole?: UserRole;
 }
 
-export const SharedLoginScreen: React.FC<SharedLoginProps> = ({ onLoginSuccess, onCancel }) => {
+export const SharedLoginScreen: React.FC<SharedLoginProps> = ({ 
+  onLoginSuccess, 
+  onCancel,
+  initialName = '',
+  initialRole = 'Supervisor'
+}) => {
   const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
-  const [role, setRole] = useState<UserRole>('Supervisor');
+  const [name, setName] = useState(initialName);
+  const [role, setRole] = useState<UserRole>(initialRole);
   const [error, setError] = useState<string | null>(null);
+  const [isShaking, setIsShaking] = useState(false);
+
+  const triggerShake = () => {
+    setIsShaking(true);
+    setTimeout(() => setIsShaking(false), 450);
+  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (!password.trim() || !name.trim()) {
-      setError('Please enter the farm password and your name.');
+    const validPassword = import.meta.env.VITE_FARM_SHARED_PASSWORD || 'farm123';
+
+    if (!password || password.trim() !== validPassword) {
+      setError('Please enter the login password correctly!');
+      triggerShake();
       return;
     }
 
-    // Verify shared environment password (fallback 'farm123')
-    const validPassword = import.meta.env.VITE_FARM_SHARED_PASSWORD || 'farm123';
-    if (password.trim() !== validPassword) {
-      setError('Invalid Farm Password. Please check with your Admin.');
+    if (!name.trim()) {
+      setError('Please enter your name.');
+      triggerShake();
       return;
     }
 
@@ -33,7 +48,14 @@ export const SharedLoginScreen: React.FC<SharedLoginProps> = ({ onLoginSuccess, 
   };
 
   return (
-    <form onSubmit={handleLogin} className="space-y-3.5 p-5 bg-slate-900 rounded-2xl border border-slate-800 shadow-xl text-slate-100">
+    <form 
+      onSubmit={handleLogin} 
+      className={`space-y-3.5 p-5 bg-slate-900 rounded-2xl border shadow-xl text-slate-100 transition-all duration-200 ${
+        isShaking 
+          ? 'animate-shake border-rose-500/70 shadow-rose-950/40' 
+          : 'border-slate-800'
+      }`}
+    >
       <div className="flex items-center gap-3 pb-2 border-b border-slate-800">
         <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
           <ShieldCheck className="w-5 h-5" />

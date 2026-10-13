@@ -22,6 +22,7 @@ import {
   RefreshCw,
   Cloud,
   CloudOff,
+  Lock,
   Loader2,
   Check,
   History,
@@ -305,6 +306,7 @@ export default function App() {
     return 'Supervisor';
   }, [currentUser]);
 
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isSwitchingUser, setIsSwitchingUser] = useState<boolean>(false);
 
   // Shared Farm Login Handler (Single Account Model + Role-Based Identity)
@@ -329,6 +331,7 @@ export default function App() {
       id: newUser.id,
       email: newUser.email,
     }));
+    setIsAuthenticated(true);
     setIsSwitchingUser(false);
     showToast(`Welcome, ${user.name} (${user.role})!`);
     setCurrentScreen('home');
@@ -401,6 +404,7 @@ export default function App() {
     if (confirm('Are you sure you want to log out from this session?')) {
       setCurrentUser(null);
       localStorage.removeItem('poultry_current_user');
+      setIsAuthenticated(false);
       setIsSwitchingUser(false);
       showToast('Logged out successfully.');
       navigateTo('auth');
@@ -1422,6 +1426,7 @@ export default function App() {
     });
 
     if (incompleteLines.length > 0) {
+      showToast(`Cannot submit yet! All lines must be completely weighed. Pending lines: [${incompleteLines.join(', ')}]. Complete all lines to submit.`);
       setShowIncompleteAlertModal(true);
       return;
     }
@@ -1856,7 +1861,7 @@ export default function App() {
       <div className="flex justify-center bg-slate-100 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
         <div className="w-full max-w-md min-h-screen bg-slate-50 border-x border-slate-200 flex flex-col shadow-2xl relative pb-6">
         
-        {(!currentUser || !currentUser.isAuthenticated) ? (
+        {!isAuthenticated ? (
           <div className="flex-1 flex flex-col justify-center p-4">
             <div className="text-center mb-4">
               <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-600/10 border border-emerald-500/30 text-emerald-500 mb-2 shadow-xs">
@@ -1865,7 +1870,11 @@ export default function App() {
               <h2 className="text-base font-black text-slate-900">Farm Team Authentication</h2>
               <p className="text-xs text-slate-500">Shared Password & Role Identity Access</p>
             </div>
-            <SharedLoginScreen onLoginSuccess={handleSharedLoginSuccess} />
+            <SharedLoginScreen 
+              initialName={currentUser?.userName || currentUser?.name || ''}
+              initialRole={currentUserRole}
+              onLoginSuccess={handleSharedLoginSuccess} 
+            />
           </div>
         ) : (
           <>
@@ -1943,7 +1952,7 @@ export default function App() {
                     {farmStatus === 'DRAFT' ? (
                       <>
                         <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                        <span>🟡 DRAFT IN PROGRESS (Editing)</span>
+                        <span>🟡 DRAFT IN PROGRESS ({completionStats.completedLinesCount} of {completionStats.totalLinesCount} lines completed)</span>
                       </>
                     ) : (
                       <>
@@ -1985,16 +1994,20 @@ export default function App() {
               </div>
             </div>
 
-            {/* Progress & Draft Indicator Banner (Req 3.A) */}
+            {/* Progress & Draft Indicator Banner (Req 1) */}
             <div className="flex items-center justify-between p-2.5 rounded-xl border mb-3 bg-slate-800/90 border-slate-700 shadow-sm">
               <div className="flex items-center gap-2">
                 {farmStatus === 'DRAFT' ? (
                   <>
                     <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
                     <div>
-                      <span className="text-xs font-bold text-amber-300">Draft In Progress</span>
+                      <span className="text-xs font-bold text-amber-300">
+                        🟡 DRAFT IN PROGRESS ({completionStats.completedLinesCount} of {completionStats.totalLinesCount} lines completed)
+                      </span>
                       <span className="text-[10px] text-slate-400 block">
-                        {completionStats.completedLinesCount} / {completionStats.totalLinesCount} lines weighed ({completionStats.progressPercent}%)
+                        {completionStats.incompleteLines.length > 0 
+                          ? `${completionStats.incompleteLines.length} lines remaining to unlock submission`
+                          : '100% Weighed! Ready for final submission.'}
                       </span>
                     </div>
                   </>
@@ -2002,7 +2015,7 @@ export default function App() {
                   <>
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0" />
                     <div>
-                      <span className="text-xs font-bold text-emerald-400">Completed & Submitted</span>
+                      <span className="text-xs font-bold text-emerald-400">🟢 COMPLETED & SUBMITTED</span>
                       <span className="text-[10px] text-slate-400 block">
                         Submitted by {farmAudit?.submittedBy || farmAudit?.lastSubmittedBy || 'Supervisor'} at {farmAudit?.lastSubmittedAt || 'Recent'}
                       </span>
@@ -2016,7 +2029,7 @@ export default function App() {
               </span>
             </div>
 
-            {/* PROMINENT BATCH SUBMIT BANNER / ACTION ON HOME (Req 2 & 3) */}
+            {/* PROMINENT BATCH SUBMIT BANNER / ACTION ON HOME (Req 1 & 2) */}
             <div className={`mb-3 p-3.5 rounded-2xl border shadow-xs flex items-center justify-between transition-all ${
               farmStatus === 'DRAFT' 
                 ? 'bg-amber-500/10 border-amber-500/40 text-amber-950' 
@@ -2053,12 +2066,21 @@ export default function App() {
                 type="button"
                 onClick={handleCompleteFarmSubmission}
                 disabled={isSubmittingBatch}
-                className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-black px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-emerald-600/20 cursor-pointer shrink-0 disabled:opacity-50"
+                className={`font-black px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer shrink-0 disabled:opacity-50 transition ${
+                  !completionStats.isFarm100PercentWeighed
+                    ? 'bg-amber-600/90 hover:bg-amber-600 text-white shadow-amber-600/20'
+                    : 'bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white shadow-emerald-600/20'
+                }`}
               >
                 {isSubmittingBatch ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     <span>Submitting...</span>
+                  </>
+                ) : !completionStats.isFarm100PercentWeighed ? (
+                  <>
+                    <Lock className="w-3.5 h-3.5 text-amber-200" />
+                    <span>Submit (Locked)</span>
                   </>
                 ) : (
                   <>
@@ -2166,14 +2188,14 @@ export default function App() {
                 <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Female Avg (♀)</span>
                 <div className="text-xl font-black text-emerald-600 font-mono mt-1">{consolidated.fStats.avg}g</div>
                 <div className="text-[10px] text-slate-400 font-mono mt-0.5">
-                  Target: {stdWeightFemale}g ({consolidated.fStats.unif}% S)
+                  Target: {stdWeightFemale}g (Std Uniformity: {consolidated.fStats.sPct}%)
                 </div>
               </div>
               <div className="bg-white p-3 rounded-2xl border border-slate-200 text-center shadow-xs">
                 <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Male Avg (♂)</span>
                 <div className="text-xl font-black text-blue-600 font-mono mt-1">{consolidated.mStats.avg}g</div>
                 <div className="text-[10px] text-slate-400 font-mono mt-0.5">
-                  Target: {stdWeightMale}g ({consolidated.mStats.unif}% S)
+                  Target: {stdWeightMale}g (Std Uniformity: {consolidated.mStats.sPct}%)
                 </div>
               </div>
             </div>
@@ -2337,7 +2359,7 @@ export default function App() {
                     <div className="text-right flex items-center gap-2.5">
                       <div>
                         <div className="text-base font-black text-emerald-600 font-mono">{sStats.avg}g</div>
-                        <div className="text-[11px] text-amber-600 font-bold">{sStats.unif}% Unif</div>
+                        <div className="text-[11px] text-amber-600 font-bold">Std Uniformity: {sStats.sPct}%</div>
                       </div>
                       <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-emerald-600 group-hover:translate-x-1 transition" />
                     </div>
@@ -2401,8 +2423,8 @@ export default function App() {
                 <span className="font-black text-emerald-600 text-sm">{shedStats.avg}g</span>
               </div>
               <div>
-                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Uniformity</span>
-                <span className="font-black text-amber-600 text-sm">{shedStats.unif}%</span>
+                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Uniformity (S%)</span>
+                <span className="font-black text-amber-600 text-sm">{shedStats.sPct}%</span>
               </div>
             </div>
 
@@ -2456,8 +2478,8 @@ export default function App() {
                         <span className="font-bold text-emerald-600">{partStat.avg}g</span>
                       </div>
                       <div>
-                        <span className="text-[10px] text-slate-400 block font-sans font-semibold">UNIF (S%)</span>
-                        <span className="font-bold text-amber-600">{partStat.unif}%</span>
+                        <span className="text-[10px] text-slate-400 block font-sans font-semibold">Uniformity (S%)</span>
+                        <span className="font-bold text-amber-600">{partStat.sPct}%</span>
                       </div>
                       <div>
                         <span className="text-[10px] text-slate-400 block font-sans font-semibold">CV %</span>
@@ -2524,8 +2546,8 @@ export default function App() {
                 <span className="font-black text-emerald-600 text-sm">{partStats.avg}g</span>
               </div>
               <div>
-                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Uniformity</span>
-                <span className="font-black text-amber-600 text-sm">{partStats.unif}%</span>
+                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Uniformity (S%)</span>
+                <span className="font-black text-amber-600 text-sm">{partStats.sPct}%</span>
               </div>
             </div>
 
@@ -2572,8 +2594,8 @@ export default function App() {
                         <div className="font-bold text-emerald-600">{lStats.avg}g</div>
                       </div>
                       <div>
-                        <span className="text-[10px] text-slate-400 font-sans font-semibold">UNIF%</span>
-                        <div className="font-bold text-amber-600">{lStats.unif}%</div>
+                        <span className="text-[10px] text-slate-400 font-sans font-semibold">Uniformity (S%)</span>
+                        <div className="font-bold text-amber-600">{lStats.sPct}%</div>
                       </div>
                       <div>
                         <span className="text-[10px] text-slate-400 font-sans font-semibold">CV%</span>
@@ -2642,9 +2664,9 @@ export default function App() {
                 <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.avg}g</span>
               </div>
               <div>
-                <span className="text-[10px] text-slate-500 font-bold uppercase">Unif (S%)</span>
-                <div className="text-base font-black text-amber-600">{lineStats.unif}%</div>
-                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.unif}%</span>
+                <span className="text-[10px] text-slate-500 font-bold uppercase">Uniformity (S%)</span>
+                <div className="text-base font-black text-amber-600">{lineStats.sPct}%</div>
+                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.sPct}%</span>
               </div>
               <div>
                 <span className="text-[10px] text-slate-500 font-bold uppercase">CV %</span>
@@ -2776,18 +2798,29 @@ export default function App() {
                 type="button"
                 onClick={handleCompleteFarmSubmission}
                 disabled={isSubmittingBatch}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-black py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 transition cursor-pointer disabled:opacity-50"
+                className={`w-full font-black py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition cursor-pointer disabled:opacity-50 ${
+                  !completionStats.isFarm100PercentWeighed
+                    ? 'bg-amber-600/90 hover:bg-amber-600 text-white shadow-amber-600/20'
+                    : 'bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white shadow-emerald-600/25'
+                }`}
               >
                 {isSubmittingBatch ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span>Submitting Farm Weighing Batch...</span>
                   </>
+                ) : !completionStats.isFarm100PercentWeighed ? (
+                  <>
+                    <Lock className="w-4 h-4 text-amber-200" />
+                    <span>
+                      Submit Farm Weighing (Locked - {completionStats.incompleteLines.length} Pending Lines)
+                    </span>
+                  </>
                 ) : (
                   <>
                     <CheckCircle className="w-4 h-4" />
                     <span>
-                      Submit Farm Weighing {farmStatus === 'DRAFT' ? `(${completionStats.progressPercent}% - ${completionStats.incompleteLines.length === 0 ? 'Ready' : `${completionStats.incompleteLines.length} Pending`})` : '(Completed)'}
+                      Submit Farm Weighing {farmStatus === 'DRAFT' ? '(Ready)' : '(Completed)'}
                     </span>
                   </>
                 )}
@@ -2834,8 +2867,8 @@ export default function App() {
                     <div className="font-bold text-slate-700 text-sm">{consolidated.fStats.diff}g</div>
                   </div>
                   <div className="bg-slate-50 p-2 rounded-xl">
-                    <span className="text-[9px] text-slate-400 block font-sans">UNIF%</span>
-                    <div className="font-bold text-amber-600 text-sm">{consolidated.fStats.unif}%</div>
+                    <span className="text-[9px] text-slate-400 block font-sans">Uniformity (S%)</span>
+                    <div className="font-bold text-amber-600 text-sm">{consolidated.fStats.sPct}%</div>
                   </div>
                 </div>
                 <div className="flex justify-between text-[11px] text-slate-500 bg-slate-50 px-2.5 py-1.5 rounded-xl">
@@ -2862,8 +2895,8 @@ export default function App() {
                     <div className="font-bold text-slate-700 text-sm">{consolidated.mStats.diff}g</div>
                   </div>
                   <div className="bg-slate-50 p-2 rounded-xl">
-                    <span className="text-[9px] text-slate-400 block font-sans">UNIF%</span>
-                    <div className="font-bold text-amber-600 text-sm">{consolidated.mStats.unif}%</div>
+                    <span className="text-[9px] text-slate-400 block font-sans">Uniformity (S%)</span>
+                    <div className="font-bold text-amber-600 text-sm">{consolidated.mStats.sPct}%</div>
                   </div>
                 </div>
                 <div className="flex justify-between text-[11px] text-slate-500 bg-slate-50 px-2.5 py-1.5 rounded-xl">
@@ -2958,8 +2991,8 @@ export default function App() {
                       <div className="font-bold text-emerald-600">{s.stats.avg}g</div>
                     </div>
                     <div>
-                      <span className="text-[9px] text-slate-400 font-sans">UNIF%</span>
-                      <div className="font-bold text-amber-600">{s.stats.unif}%</div>
+                      <span className="text-[9px] text-slate-400 font-sans">Uniformity (S%)</span>
+                      <div className="font-bold text-amber-600">{s.stats.sPct}%</div>
                     </div>
                     <div>
                       <span className="text-[9px] text-slate-400 font-sans">CV%</span>
@@ -4136,6 +4169,20 @@ export default function App() {
                       ♀ {consolidated.fStats.avg || farmAudit?.femaleAvgWeight || 0}g | ♂ {consolidated.mStats.avg || farmAudit?.maleAvgWeight || 0}g
                     </span>
                   </div>
+
+                  <div className="bg-white p-2.5 rounded-xl border border-slate-200/80">
+                    <span className="text-[9px] uppercase font-bold text-slate-400 block">Uniformity (S%)</span>
+                    <span className="font-bold text-amber-700 text-xs">
+                      ♀ {consolidated.fStats.sPct}% | ♂ {consolidated.mStats.sPct}%
+                    </span>
+                  </div>
+
+                  <div className="bg-white p-2.5 rounded-xl border border-slate-200/80">
+                    <span className="text-[9px] uppercase font-bold text-slate-400 block">CV % (F-Factor)</span>
+                    <span className="font-bold text-sky-700 text-xs">
+                      ♀ {consolidated.fStats.cv}% | ♂ {consolidated.mStats.cv}%
+                    </span>
+                  </div>
                 </div>
 
                 {/* Last Submission Metadata */}
@@ -4230,7 +4277,7 @@ export default function App() {
                     Incomplete Farm Weighing!
                   </h3>
                   <p className="text-xs text-amber-300 font-medium">
-                    Please complete weighing for all lines before final submission.
+                    Cannot submit yet! All lines must be completely weighed. Pending lines: [{completionStats.incompleteLines.map(l => l.path).join(', ')}]. Complete all lines to submit.
                   </p>
                 </div>
               </div>

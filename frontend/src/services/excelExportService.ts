@@ -444,7 +444,7 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
   plTitleCell.border = headerBorder;
 
   const plHeaderRow = partLineTableTitleRow + 1;
-  const plHeaders = ['Shed', 'Part', 'Line', 'Hierarchical Identifier', 'Act B.WT', 'Min', 'Max', 'CV %', 'Unif (S%)'];
+  const plHeaders = ['Shed', 'Part', 'Line', 'Hierarchical Identifier', 'Act B.WT', 'Min', 'Max', 'CV %', 'Uniformity (S%)'];
   plHeaders.forEach((h, i) => {
     const cell = wsCons.getCell(`${shedColLetters[i]}${plHeaderRow}`);
     cell.value = h;
@@ -663,7 +663,7 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
       [62, 'Min (g)', s => s.min, false],
       [64, 'Max (g)', s => s.max, false],
       [66, 'CV %', s => `${s.cv}%`, false],
-      [68, 'Uniformity S%', s => `${s.sPct}%`, false]
+      [68, 'Uniformity (S%)', s => `${s.sPct}%`, false]
     ];
 
     summaryMetrics.forEach(([rowNum, label, valGetter, isRedBold]) => {
