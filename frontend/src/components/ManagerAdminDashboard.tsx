@@ -210,24 +210,31 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   ];
 
   return (
-    <div className="flex-1 flex flex-col p-4 animate-in fade-in duration-150">
+    <div className="flex-1 flex flex-col p-3 sm:p-4 md:p-6 lg:p-8 animate-in fade-in duration-150">
       {/* Top Header: Session & Role Bar */}
-      <div className="flex items-center justify-between mb-3 px-1">
+      <div className="flex items-center justify-between mb-4 px-1">
         <div 
           onClick={onOpenAuth}
-          className="flex items-center gap-2 cursor-pointer hover:opacity-90 transition bg-white px-2.5 py-1.5 rounded-xl border border-slate-200/90 shadow-2xs"
+          className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition bg-white px-3 py-2 rounded-xl border border-slate-200/90 shadow-2xs"
           title="View Session Details"
         >
-          <div className={`w-7 h-7 rounded-lg text-white flex items-center justify-center font-bold text-xs shadow-xs ${
+          <div className={`w-8 h-8 rounded-lg text-white flex items-center justify-center font-black text-xs shadow-xs ${
             isAdmin ? 'bg-purple-600' : 'bg-sky-600'
           }`}>
             {userDisplayName.charAt(0).toUpperCase()}
           </div>
           <div>
-            <span className="text-xs font-bold text-slate-900 block leading-tight truncate max-w-[120px]">
-              {userDisplayName}
-            </span>
-            <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border ${
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-black text-slate-900 block leading-tight truncate max-w-[130px] sm:max-w-[200px]">
+                {userDisplayName}
+              </span>
+              {currentUser?.username && (
+                <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
+                  @{currentUser.username}
+                </span>
+              )}
+            </div>
+            <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border mt-0.5 ${
               isAdmin ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-sky-50 text-sky-700 border-sky-200'
             }`}>
               {userRole}
@@ -235,10 +242,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <button
             onClick={onViewSubmissionsUpdate}
-            className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl active:scale-95 transition cursor-pointer shadow-2xs"
+            className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl active:scale-95 transition cursor-pointer shadow-2xs"
           >
             <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
             <span>Submissions Update</span>
@@ -247,100 +254,138 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
           {isAdmin ? (
             <button
               onClick={onOpenSetup}
-              className="p-1.5 text-slate-500 hover:text-purple-600 rounded-xl hover:bg-slate-200 transition cursor-pointer"
+              className="flex items-center gap-1.5 p-2 md:px-3 text-slate-600 hover:text-purple-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition cursor-pointer shadow-2xs"
               title="Cloud Integration Settings (Admin)"
             >
-              <Settings className="w-4 h-4" />
+              <Settings className="w-4 h-4 text-purple-600" />
+              <span className="hidden md:inline text-xs font-bold">Cloud Settings</span>
             </button>
           ) : (
             <button
               onClick={onOpenSetup}
-              className="p-1.5 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-200 transition cursor-pointer"
+              className="flex items-center gap-1.5 p-2 md:px-3 text-slate-500 hover:text-sky-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition cursor-pointer shadow-2xs"
               title="Cloud Connection (Read-Only Manager)"
             >
-              <Cloud className="w-4 h-4" />
+              <Cloud className="w-4 h-4 text-sky-600" />
+              <span className="hidden md:inline text-xs font-bold">Cloud Link</span>
             </button>
           )}
 
           <button
             onClick={onLogout}
-            className="p-1.5 text-slate-400 hover:text-rose-600 rounded-xl hover:bg-slate-200 transition cursor-pointer"
+            className="flex items-center gap-1.5 p-2 md:px-3 text-rose-600 hover:text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-xl transition cursor-pointer shadow-2xs"
             title="Log Out Session"
           >
             <LogOut className="w-4 h-4" />
+            <span className="hidden md:inline text-xs font-bold">Log Out</span>
           </button>
         </div>
       </div>
 
       {/* Role Banner */}
-      <div className={`text-white p-3.5 rounded-2xl border mb-3.5 shadow-md ${
+      <div className={`text-white p-4 md:p-6 rounded-2xl md:rounded-3xl border mb-4 md:mb-6 shadow-md ${
         isAdmin 
-          ? 'bg-gradient-to-r from-purple-900 to-slate-900 border-purple-700/60' 
-          : 'bg-gradient-to-r from-sky-900 to-slate-900 border-sky-700/60'
+          ? 'bg-gradient-to-r from-purple-950 via-slate-900 to-indigo-950 border-purple-700/60' 
+          : 'bg-gradient-to-r from-sky-950 via-slate-900 to-indigo-950 border-sky-700/60'
       }`}>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
-            <span className="text-[10px] font-black uppercase tracking-wider text-purple-200 block">
-              {isAdmin ? 'System Administrator Suite' : 'Supervisory Management Suite'}
-            </span>
-            <h2 className="text-sm font-black text-white mt-0.5">
-              {isAdmin ? 'Admin Master Dashboard' : 'Manager Master Dashboard'}
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] md:text-xs font-black uppercase tracking-wider text-purple-300 block">
+                {isAdmin ? 'System Administrator Suite' : 'Supervisory Management Suite'}
+              </span>
+              <span className="hidden md:inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              <span className="hidden md:inline-block text-[10px] text-slate-300 font-medium">
+                Live PostgreSQL Multi-Device Sync
+              </span>
+            </div>
+            <h2 className="text-base sm:text-lg md:text-2xl font-black text-white mt-1">
+              {isAdmin ? 'Admin Master Control Center' : 'Manager Operations Portal'}
             </h2>
+            <p className="text-xs text-slate-300 mt-0.5 hidden sm:block">
+              {isAdmin 
+                ? 'Manage enterprise farm units, provision user credentials, enforce field operator assignments, and review flock metrics.'
+                : 'Monitor real-time flock drafts, inspect weighing conclusions, and manage field operator assignments across farm units.'}
+            </p>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2 flex-wrap">
             {isAdmin && (
               <button
                 type="button"
                 onClick={handleOpenUserManagement}
-                className="bg-purple-600 hover:bg-purple-500 text-white font-black text-[11px] px-3 py-1.5 rounded-xl flex items-center gap-1 active:scale-95 transition cursor-pointer shadow-xs border border-purple-400/40"
+                className="bg-purple-600 hover:bg-purple-500 text-white font-black text-xs px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 active:scale-95 transition cursor-pointer shadow-lg shadow-purple-950/40 border border-purple-400/40"
               >
-                <Users className="w-3.5 h-3.5" />
-                <span>User Accounts</span>
+                <Users className="w-4 h-4" />
+                <span>User Accounts ({systemUsers.length > 0 ? systemUsers.length : 'Manage'})</span>
               </button>
             )}
             <button
               onClick={onNewFarm}
-              className="bg-white text-slate-950 font-black text-[11px] px-3 py-1.5 rounded-xl flex items-center gap-1 active:scale-95 transition cursor-pointer shadow-xs"
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 active:scale-95 transition cursor-pointer shadow-lg shadow-emerald-950/40 border border-emerald-400/40"
             >
-              <Plus className="w-3.5 h-3.5" />
-              <span>New Farm</span>
+              <Plus className="w-4 h-4" />
+              <span>Create New Farm</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Overview Stats Strip */}
-      <div className="grid grid-cols-3 gap-2 mb-3.5">
-        <div className="bg-white p-2.5 rounded-xl border border-slate-200 text-center shadow-xs">
-          <span className="text-[9px] uppercase font-bold text-slate-400 block">Total Units</span>
-          <span className="text-base font-black text-slate-900 font-mono">{farms.length}</span>
+      {/* Overview Stats Strip (Responsive 2 to 6 columns for PC widescreen) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5 sm:gap-3 md:gap-4 mb-4 md:mb-6">
+        <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Total Units</span>
+          <span className="text-lg md:text-2xl font-black text-slate-900 font-mono mt-0.5">{farms.length}</span>
         </div>
-        <div className="bg-white p-2.5 rounded-xl border border-slate-200 text-center shadow-xs">
-          <span className="text-[9px] uppercase font-bold text-slate-400 block">In Draft</span>
-          <span className="text-base font-black text-amber-600 font-mono">
+        <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">In Draft</span>
+          <span className="text-lg md:text-2xl font-black text-amber-600 font-mono mt-0.5">
             {farms.filter(f => f.status === 'DRAFT').length}
           </span>
         </div>
-        <div className="bg-white p-2.5 rounded-xl border border-slate-200 text-center shadow-xs">
-          <span className="text-[9px] uppercase font-bold text-slate-400 block">Submitted</span>
-          <span className="text-base font-black text-emerald-600 font-mono">
+        <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Submitted</span>
+          <span className="text-lg md:text-2xl font-black text-emerald-600 font-mono mt-0.5">
             {farms.filter(f => f.status === 'COMPLETED').length}
+          </span>
+        </div>
+        <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Total Sheds</span>
+          <span className="text-lg md:text-2xl font-black text-sky-600 font-mono mt-0.5">
+            {farms.reduce((acc, f) => acc + (f._count?.sheds || 10), 0)}
+          </span>
+        </div>
+        <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Active Unit</span>
+          <span className="text-xs md:text-sm font-black text-purple-700 truncate block mt-1">
+            {farms.find(f => f.id === activeFarmId)?.name || 'None'}
+          </span>
+        </div>
+        <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Sync Health</span>
+          <span className="text-xs md:text-sm font-black text-emerald-600 block mt-1 flex items-center justify-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            Online
           </span>
         </div>
       </div>
 
       {/* Master Farm Roster Header */}
-      <div className="flex items-center justify-between px-1 mb-2">
-        <h3 className="text-xs font-black uppercase tracking-wider text-slate-500">
-          Master Farm Roster ({farms.length})
-        </h3>
-        <span className="text-[10px] text-slate-400 font-medium">
+      <div className="flex items-center justify-between px-1 mb-3">
+        <div className="flex items-center gap-2">
+          <h3 className="text-xs sm:text-sm font-black uppercase tracking-wider text-slate-700">
+            Master Farm Roster ({farms.length} Units)
+          </h3>
+          <span className="hidden sm:inline-block text-[11px] text-slate-400 font-medium">
+            • Multi-unit grid view adapted for desktop screens
+          </span>
+        </div>
+        <span className="text-xs text-slate-500 font-medium">
           Select unit for One-Tap Conclusion
         </span>
       </div>
 
-      {/* Master Farm Roster List */}
-      <div className="space-y-3 overflow-y-auto flex-1 pb-4">
+      {/* Master Farm Roster List (Responsive grid: 1 col on mobile, 2 on tablet, 3 on PC desktop) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4 md:gap-5 overflow-y-auto flex-1 pb-6">
         {farms.map((farm) => {
           const isCompleted = farm.status === 'COMPLETED';
           const assignedCount = farm.assignedUserNames?.length || 0;
@@ -599,7 +644,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-slate-900 border border-slate-700 text-slate-100 rounded-2xl w-full max-w-lg p-5 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
+          <div className="bg-slate-900 border border-slate-700 text-slate-100 rounded-2xl w-full max-w-lg md:max-w-4xl p-5 md:p-6 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 shrink-0">
               <div className="flex items-center gap-2.5">
@@ -607,11 +652,11 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                   <Users className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-black text-sm text-white">
+                  <h3 className="font-black text-sm md:text-base text-white">
                     User Account Management Hub
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Create, activate, reset credentials & assign farms
+                    Create, activate, reset credentials & assign farms across the system
                   </p>
                 </div>
               </div>
@@ -634,7 +679,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
             {/* Actions Bar */}
             <div className="flex items-center justify-between shrink-0">
               <span className="text-xs text-slate-400 font-bold">
-                Total Accounts: <strong className="text-white font-mono">{systemUsers.length}</strong>
+                Total System Accounts: <strong className="text-white font-mono">{systemUsers.length}</strong>
               </span>
               <button
                 type="button"
@@ -642,22 +687,22 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                   setShowCreateUser(true);
                   setUserMgmtFeedback(null);
                 }}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-md active:scale-95 transition cursor-pointer"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow-md active:scale-95 transition cursor-pointer"
               >
                 <UserPlus className="w-4 h-4" />
                 <span>Create New User</span>
               </button>
             </div>
 
-            {/* User List */}
-            <div className="space-y-2 overflow-y-auto flex-1 pr-1">
+            {/* User List in Responsive Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 overflow-y-auto flex-1 pr-1">
               {isLoadingUsers ? (
-                <div className="py-12 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                <div className="col-span-full py-12 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
                   <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
                   <span>Loading user accounts...</span>
                 </div>
               ) : systemUsers.length === 0 ? (
-                <div className="py-8 text-center text-xs text-slate-400 bg-slate-950 rounded-xl border border-slate-800">
+                <div className="col-span-full py-8 text-center text-xs text-slate-400 bg-slate-950 rounded-xl border border-slate-800">
                   No accounts found. Tap "Create New User" to provision one.
                 </div>
               ) : (

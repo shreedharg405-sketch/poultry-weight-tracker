@@ -2019,7 +2019,11 @@ export default function App() {
       {isExporting && <LoadingScreen message={exportMessage} />}
 
       <div className="flex justify-center bg-slate-100 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
-        <div className="w-full max-w-md min-h-screen bg-slate-50 border-x border-slate-200 flex flex-col shadow-2xl relative pb-6">
+        <div className={`w-full min-h-screen bg-slate-50 border-x border-slate-200 flex flex-col shadow-2xl relative pb-6 transition-all duration-300 ${
+          (currentUserRole === 'Admin' || currentUserRole === 'Manager') && (currentScreen === 'home' || currentScreen === 'conclusion' || currentScreen === 'history' || currentScreen === 'setup')
+            ? 'max-w-7xl md:px-4 lg:px-6'
+            : 'max-w-md'
+        }`}>
         
         {!isAuthenticated ? (
           <LoginScreen onLoginSuccess={handleLoginSuccess} />
@@ -2617,7 +2621,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="space-y-3 mb-4 flex-1 overflow-y-auto">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 mb-4 flex-1 overflow-y-auto">
               {/* Female Overall Card */}
               <div className="bg-white border border-slate-200 p-3.5 rounded-2xl shadow-xs">
                 <div className="flex justify-between items-center mb-2 pb-1.5 border-b border-slate-100">
@@ -3011,7 +3015,7 @@ export default function App() {
             </div>
 
             {/* Submissions Update Logs Stream */}
-            <div className="space-y-2.5 overflow-y-auto flex-1 pb-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 overflow-y-auto flex-1 pb-6">
               {(() => {
                 const filtered = activityLogs.filter(log => {
                   if (historyFilter === 'currentFarm') {
@@ -3022,7 +3026,7 @@ export default function App() {
 
                 if (filtered.length === 0) {
                   return (
-                    <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-3 shadow-xs">
+                    <div className="col-span-full bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-3 shadow-xs">
                       <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-400">
                         <History className="w-6 h-6" />
                       </div>
