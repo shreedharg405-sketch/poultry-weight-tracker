@@ -1,5 +1,29 @@
 import { ShedData } from './excelExportService';
 
+export interface AppUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
+
+export interface ActivityLogItem {
+  id: string;
+  farmId: string;
+  farmName: string;
+  userId?: string | null;
+  userName: string;
+  action: string;
+  shedName?: string;
+  partName?: string;
+  lineName?: string;
+  sampleCount: number;
+  avgWeight?: number;
+  status: string; // 'LIVE' | 'COMPLETED'
+  timestamp: string; // ISO string
+  isLive: boolean;
+}
+
 export interface FarmSummary {
   id: string;
   name: string;
@@ -90,11 +114,11 @@ export const cloudApi = {
   },
 
   // 6. Push single weight entry
-  async pushWeight(lineId: string | number, weight: number): Promise<any> {
+  async pushWeight(lineId: string | number, weight: number, meta?: { userName?: string; userId?: string }): Promise<any> {
     const res = await fetch(`${getApiBaseUrl()}/lines/${lineId}/weight`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ weight }),
+      body: JSON.stringify({ weight, userName: meta?.userName, userId: meta?.userId }),
     });
     if (!res.ok) throw new Error(`Failed to push weight (${res.status})`);
     return res.json();
@@ -201,6 +225,66 @@ export const cloudApi = {
       body: JSON.stringify(data),
     });
     if (!res.ok) throw new Error(`Full sync failed (${res.status})`);
+    return res.json();
+  },
+
+  // 18. Register
+  async register(data: { name: string; email: string; password: string; role?: string }): Promise<{ user: AppUser }> {
+    const res = await fetch(`${getApiBaseUrl()}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Registration failed' }));
+      throw new Error(err.error || `Registration failed (${res.status})`);
+    }
+    return res.json();
+  },
+
+  // 19. Login
+  async login(data: { email: string; password: string }): Promise<{ user: AppUser }> {
+    const res = await fetch(`${getApiBaseUrl()}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Login failed' }));
+      throw new Error(err.error || `Login failed (${res.status})`);
+    }
+    return res.json();
+  },
+
+  // 20. Get Users
+  async getUsers(): Promise<AppUser[]> {
+    const res = await fetch(`${getApiBaseUrl()}/auth/users`);
+    if (!res.ok) throw new Error(`Failed to fetch users (${res.status})`);
+    return res.json();
+  },
+
+  // 21. Get Activity Logs
+  async getLogs(params?: { farmId?: string; liveOnly?: boolean; limit?: number }): Promise<ActivityLogItem[]> {
+    const query = new URLSearchParams();
+    if (params?.farmId) query.append('farmId', params.farmId);
+    if (params?.liveOnly) query.append('liveOnly', 'true');
+    if (params?.limit) query.append('limit', String(params.limit));
+
+    const qs = query.toString();
+    const url = `${getApiBaseUrl()}/logs${qs ? `?${qs}` : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch logs (${res.status})`);
+    return res.json();
+  },
+
+  // 22. Create Activity Log
+  async createLog(data: Partial<ActivityLogItem> & { farmId: string; userName: string }): Promise<ActivityLogItem> {
+    const res = await fetch(`${getApiBaseUrl()}/logs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`Failed to create log (${res.status})`);
     return res.json();
   },
 };

@@ -7,23 +7,35 @@ generator client {
   provider = "prisma-client-js"
 }
 
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String   // Hashed password
+  role      String   @default("Supervisor")
+  createdAt DateTime @default(now())
+
+  logs      ActivityLog[]
+}
+
 model Farm {
-  id          String   @id @default(uuid())
+  id          String        @id @default(uuid())
   name        String
   flockDate   String
-  ageWeek     String   @default("W18")
-  season      String   @default("Summer")
-  updatedAt   DateTime @updatedAt
-  createdAt   DateTime @default(now())
+  ageWeek     String        @default("W18")
+  season      String        @default("Summer")
+  updatedAt   DateTime      @updatedAt
+  createdAt   DateTime      @default(now())
 
   sheds       Shed[]
+  logs        ActivityLog[]
 }
 
 model Shed {
   id        String   @id @default(uuid())
   farmId    String
   farm      Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  name      String   // e.g., "Shed 1"
+  name      String
   type      String   // "Female" | "Male"
   order     Int      @default(0)
 
@@ -34,7 +46,7 @@ model Part {
   id        String   @id @default(uuid())
   shedId    String
   shed      Shed     @relation(fields: [shedId], references: [id], onDelete: Cascade)
-  name      String   // e.g., "Part A", "Part B"
+  name      String
   order     Int      @default(0)
 
   lines     Line[]
@@ -44,6 +56,23 @@ model Line {
   id        String   @id @default(uuid())
   partId    String
   part      Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
-  name      String   // e.g., "Line 1"
-  weights   Float[]  // Array of bird weights in grams
+  name      String
+  weights   Float[]
+}
+
+model ActivityLog {
+  id          String   @id @default(uuid())
+  farmId      String
+  farm        Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userName    String   // Snapshot of user name
+  action      String   // e.g. "Weighed 15 Birds in Shed 1 › Part A › Line 1"
+  shedName    String?
+  partName    String?
+  lineName    String?
+  sampleCount Int      @default(0)
+  avgWeight   Float?
+  status      String   @default("COMPLETED") // "LIVE" | "COMPLETED"
+  createdAt   DateTime @default(now())
 }

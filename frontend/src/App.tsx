@@ -22,7 +22,13 @@ import {
   Cloud,
   CloudOff,
   Loader2,
-  Check
+  Check,
+  History,
+  User,
+  LogIn,
+  UserPlus,
+  Radio,
+  ShieldCheck
 } from 'lucide-react';
 import { 
   ShedData, 
@@ -36,7 +42,7 @@ import {
 } from './services/excelExportService';
 import { WINTER_BROOD_STANDARDS, SUMMER_BROOD_STANDARDS } from './services/benchmarks';
 import { LoadingScreen } from './components/LoadingScreen';
-import { cloudApi, FarmSummary, getApiBaseUrl } from './services/cloudSyncService';
+import { cloudApi, FarmSummary, getApiBaseUrl, AppUser, ActivityLogItem } from './services/cloudSyncService';
 
 // Seasonal Target Benchmarks for all 23 Weeks
 const BENCHMARKS: Record<'Summer' | 'Winter', Record<string, { stdF: number; stdM: number }>> = {
@@ -82,6 +88,21 @@ const formatLastUpdated = (dateInput?: string | Date): string => {
   return `${formatDateDMY(d)} at ${timeStr}`;
 };
 
+// Format activity log date-time: Date(DD-MM-YYYY) - Time(HH:MM:SS AM/PM)
+const formatLogDateTime = (isoOrDate: string | Date): string => {
+  const d = new Date(isoOrDate);
+  if (isNaN(d.getTime())) return 'Just now';
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${day}-${month}-${year} | ${String(hours).padStart(2, '0')}:${minutes}:${seconds} ${ampm}`;
+};
+
 export type ScreenType = 
   | 'home' 
   | 'shed_select' 
@@ -90,7 +111,9 @@ export type ScreenType =
   | 'weigh_pad' 
   | 'conclusion' 
   | 'sheds_manage' 
-  | 'setup';
+  | 'setup'
+  | 'history'
+  | 'auth';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('home');
@@ -196,6 +219,180 @@ export default function App() {
   const [showCloudSettingsModal, setShowCloudSettingsModal] = useState<boolean>(false);
   const [customApiUrlInput, setCustomApiUrlInput] = useState<string>(() => getApiBaseUrl());
   const [cloudTestStatus, setCloudTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
+
+  // User Authentication State
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
+    const saved = localStorage.getItem('poultry_current_user');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return {
+      id: 'u-suresh-1',
+      name: 'Suresh Kumar',
+      email: 'suresh@farm.com',
+      role: 'Weighing Supervisor'
+    };
+  });
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authName, setAuthName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authRole, setAuthRole] = useState('Weighing Supervisor');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Live Activity History Logs
+  const [activityLogs, setActivityLogs] = useState<ActivityLogItem[]>(() => {
+    const saved = localStorage.getItem('poultry_activity_logs_v1');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return [
+      {
+        id: 'log-1',
+        farmId: 'farm-sai-1',
+        farmName: 'SAI FARM - UNIT 1',
+        shedName: 'Shed 1',
+        partName: 'Part A',
+        lineName: 'Line 1',
+        userName: 'Suresh Kumar',
+        sampleCount: 15,
+        avgWeight: 1420,
+        timestamp: new Date(Date.now() - 1000 * 30).toISOString(),
+        isLive: true,
+        action: 'Weighed 15 Birds in Shed 1 › Part A › Line 1',
+        status: 'LIVE'
+      },
+      {
+        id: 'log-2',
+        farmId: 'farm-sai-1',
+        farmName: 'SAI FARM - UNIT 1',
+        shedName: 'Shed 8 Male',
+        partName: 'Part A',
+        lineName: 'Line 1',
+        userName: 'Ramesh Patel',
+        sampleCount: 8,
+        avgWeight: 3120,
+        timestamp: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
+        isLive: false,
+        action: 'Weighed 8 Birds in Shed 8 Male › Part A › Line 1',
+        status: 'COMPLETED'
+      },
+      {
+        id: 'log-3',
+        farmId: 'farm-green-valley',
+        farmName: 'GREEN VALLEY FARM',
+        shedName: 'Shed 2',
+        partName: 'Part B',
+        lineName: 'Line 1',
+        userName: 'Anand M.',
+        sampleCount: 12,
+        avgWeight: 1395,
+        timestamp: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
+        isLive: false,
+        action: 'Weighed 12 Birds in Shed 2 › Part B › Line 1',
+        status: 'COMPLETED'
+      }
+    ];
+  });
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'live' | 'currentFarm'>('all');
+  const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
+
+  // Sync Current User & Activity Logs to localStorage
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem('poultry_current_user', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('poultry_current_user');
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    localStorage.setItem('poultry_activity_logs_v1', JSON.stringify(activityLogs));
+  }, [activityLogs]);
+
+  // Auth Submit Handlers
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setAuthError('Please enter email and password.');
+      return;
+    }
+    setAuthLoading(true);
+
+    try {
+      if (authMode === 'signup') {
+        const res = await cloudApi.register({
+          name: authName.trim() || authEmail.split('@')[0],
+          email: authEmail.trim(),
+          password: authPassword.trim(),
+          role: authRole
+        });
+        if (res?.user) {
+          setCurrentUser(res.user);
+          showToast(`Welcome, ${res.user.name}!`);
+          setCurrentScreen('home');
+          setAuthEmail('');
+          setAuthPassword('');
+          setAuthName('');
+          return;
+        }
+      } else {
+        const res = await cloudApi.login({
+          email: authEmail.trim(),
+          password: authPassword.trim()
+        });
+        if (res?.user) {
+          setCurrentUser(res.user);
+          showToast(`Logged in as ${res.user.name}`);
+          setCurrentScreen('home');
+          setAuthEmail('');
+          setAuthPassword('');
+          return;
+        }
+      }
+    } catch (err: any) {
+      console.warn('Remote auth error, falling back locally:', err);
+      const offlineUser: AppUser = {
+        id: `u-${Date.now()}`,
+        name: authName.trim() || authEmail.split('@')[0],
+        email: authEmail.trim(),
+        role: authRole || 'Weighing Supervisor'
+      };
+      setCurrentUser(offlineUser);
+      showToast(`Signed in as ${offlineUser.name}`);
+      setCurrentScreen('home');
+      setAuthEmail('');
+      setAuthPassword('');
+      setAuthName('');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    if (confirm('Are you sure you want to log out from this session?')) {
+      setCurrentUser(null);
+      showToast('Logged out successfully.');
+      navigateTo('auth');
+    }
+  };
+
+  const fetchLatestLogs = async () => {
+    setIsRefreshingLogs(true);
+    try {
+      const remoteLogs = await cloudApi.getLogs({ limit: 50 });
+      if (remoteLogs && remoteLogs.length > 0) {
+        setActivityLogs(remoteLogs);
+        showToast('Activity logs refreshed');
+      }
+    } catch (err) {
+      console.warn('Could not refresh logs:', err);
+    } finally {
+      setIsRefreshingLogs(false);
+    }
+  };
 
   // Active Selections for Hierarchy
   const [selectedShedId, setSelectedShedId] = useState('1');
@@ -404,6 +601,10 @@ export default function App() {
       targetScreen = 'sheds_manage';
     } else if (hash === '#setup') {
       targetScreen = 'setup';
+    } else if (hash === '#history') {
+      targetScreen = 'history';
+    } else if (hash === '#auth') {
+      targetScreen = 'auth';
     } else if (hash === '#home' || !hash || hash === '') {
       targetScreen = 'home';
     }
@@ -489,6 +690,8 @@ export default function App() {
       : screen === 'sheds_manage' ? '#manage' 
       : screen === 'setup' ? '#setup' 
       : screen === 'shed_select' ? '#sheds' 
+      : screen === 'history' ? '#history'
+      : screen === 'auth' ? '#auth'
       : '#home';
     window.history.pushState({ screen }, '', hash);
   };
@@ -637,6 +840,15 @@ export default function App() {
             }
           }
         }
+
+        // Background poll latest activity logs from other team devices
+        try {
+          const remoteLogs = await cloudApi.getLogs({ limit: 50 });
+          if (remoteLogs && remoteLogs.length > 0) {
+            setActivityLogs(remoteLogs);
+          }
+        } catch {}
+
         if (syncStatus === 'offline') setSyncStatus('synced');
       } catch {
         // Silently mark offline if background poll network failed
@@ -859,10 +1071,30 @@ export default function App() {
     }));
     setInputWeight('');
 
-    // 2. Real-time Cloud Sync
+    // 2. Real-time Activity Log & Cloud Sync
+    const newWeights = [...activeLine.weights, val];
+    const currentAvg = Math.round(newWeights.reduce((a, b) => a + b, 0) / newWeights.length);
+
+    const newLog: ActivityLogItem = {
+      id: `log-${Date.now()}`,
+      farmId: activeFarmId,
+      farmName: farmName,
+      shedName: activeShed.name,
+      partName: activePart.name,
+      lineName: activeLine.name,
+      userName: currentUser ? currentUser.name : 'Weighing Supervisor',
+      sampleCount: newWeights.length,
+      avgWeight: currentAvg,
+      timestamp: new Date().toISOString(),
+      isLive: true,
+      action: `Weighed Bird #${newWeights.length} (${val}g) in ${activeShed.name} › ${activePart.name} › ${activeLine.name}`,
+      status: 'LIVE'
+    };
+    setActivityLogs(prev => [newLog, ...prev.slice(0, 49)]);
+
     const lineIdToSync = activeLine.id;
     setSyncStatus('saving');
-    cloudApi.pushWeight(lineIdToSync, val)
+    cloudApi.pushWeight(lineIdToSync, val, { userName: currentUser?.name, userId: currentUser?.id })
       .then(() => {
         setSyncStatus('synced');
         setLastUpdatedString('Updated Just now');
@@ -1224,6 +1456,51 @@ export default function App() {
         {/* ========================================================= */}
         {currentScreen === 'home' && (
           <div className="flex-1 flex flex-col p-4 animate-in fade-in duration-150">
+            {/* Top User Session Pill & Live History Shortcut */}
+            <div className="flex items-center justify-between mb-3 px-1">
+              {currentUser ? (
+                <div 
+                  onClick={() => navigateTo('auth')}
+                  className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition"
+                  title="View Supervisor Account"
+                >
+                  <div className="w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shadow-xs border border-emerald-500">
+                    {currentUser.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <span className="text-xs font-bold text-slate-900 block leading-tight">{currentUser.name}</span>
+                    <span className="text-[10px] text-emerald-700 font-semibold leading-tight">{currentUser.role}</span>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => navigateTo('auth')}
+                  className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 rounded-xl hover:bg-emerald-100 transition cursor-pointer"
+                >
+                  <LogIn className="w-3.5 h-3.5 text-emerald-600" /> Sign In / Login
+                </button>
+              )}
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => navigateTo('history')}
+                  className="flex items-center gap-1.5 text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-xl active:scale-95 transition cursor-pointer hover:bg-rose-100 shadow-2xs"
+                >
+                  <Radio className="w-3.5 h-3.5 text-rose-600 animate-pulse" />
+                  <span>Live Feed</span>
+                </button>
+                {currentUser && (
+                  <button
+                    onClick={handleLogout}
+                    className="p-1.5 text-slate-400 hover:text-rose-600 rounded-xl hover:bg-slate-200 transition cursor-pointer"
+                    title="Log Out Session"
+                  >
+                    <LogOut className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* Top Farm Switcher & Live Cloud Status */}
             <div className="bg-slate-900 p-3 rounded-2xl border border-slate-700 mb-3 shadow-md flex items-center justify-between">
               <div className="flex-1 mr-2">
@@ -1366,7 +1643,30 @@ export default function App() {
                 <ChevronRight className="w-5 h-5 text-emerald-200 group-hover:translate-x-1 transition" />
               </button>
 
-              {/* 2. Consolidated Report */}
+              {/* 2. Live Activity Updates Card */}
+              <button
+                onClick={() => navigateTo('history')}
+                className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group cursor-pointer"
+              >
+                <div className="flex items-center gap-3.5">
+                  <div className="p-3 bg-rose-50 rounded-xl text-rose-600 border border-rose-200 relative">
+                    <History className="w-6 h-6" />
+                    <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+                  </div>
+                  <div>
+                    <h2 className="font-black text-base text-slate-900 flex items-center gap-2">
+                      Live Updates History
+                      <span className="text-[10px] bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full font-bold">
+                        ● LIVE FEED
+                      </span>
+                    </h2>
+                    <p className="text-xs text-slate-500">Track which farm, shed & line is being weighed in real-time</p>
+                  </div>
+                </div>
+                <ChevronRight className="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition" />
+              </button>
+
+              {/* 3. Consolidated Report */}
               <button
                 onClick={() => navigateTo('conclusion')}
                 className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group cursor-pointer"
@@ -2156,6 +2456,385 @@ export default function App() {
                 <Cloud className="w-4 h-4 text-emerald-600" />
                 Configure Cloud Backend URL
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* SCREEN: LIVE UPDATES HISTORY SCREEN                       */}
+        {/* ========================================================= */}
+        {currentScreen === 'history' && (
+          <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
+            {/* Top Bar */}
+            <div className="flex items-center justify-between mb-3.5">
+              <button 
+                onClick={handleGoBack} 
+                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" /> Home
+              </button>
+              <div className="flex items-center gap-1.5">
+                <span className="flex items-center gap-1.5 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-full text-[10px] font-black text-rose-700 shadow-2xs">
+                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+                  <span>LIVE CLOUD FEED</span>
+                </span>
+                <button
+                  onClick={fetchLatestLogs}
+                  disabled={isRefreshingLogs}
+                  className="p-1.5 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-slate-600 hover:text-emerald-600 transition active:scale-90 cursor-pointer"
+                  title="Refresh activity logs"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingLogs ? 'animate-spin text-emerald-600' : ''}`} />
+                </button>
+              </div>
+            </div>
+
+            {/* Title & Live Status Banner */}
+            <div className="bg-gradient-to-r from-rose-50 via-amber-50 to-emerald-50 border border-rose-200/80 p-3 rounded-2xl mb-3 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xs font-black uppercase tracking-wider text-rose-900 flex items-center gap-1.5">
+                    <Radio className="w-4 h-4 text-rose-600 animate-pulse" />
+                    Multi-Device Live Timeline
+                  </h2>
+                  <p className="text-[11px] text-slate-600 mt-0.5">
+                    Real-time weighing activity logged across farms and supervisors
+                  </p>
+                </div>
+                <span className="text-[10px] font-mono font-bold text-slate-600 bg-white/80 px-2 py-1 rounded-lg border border-slate-200">
+                  {activityLogs.length} updates
+                </span>
+              </div>
+            </div>
+
+            {/* Filter Tabs */}
+            <div className="flex gap-1.5 mb-3 p-1 bg-slate-200/80 rounded-xl text-xs font-bold">
+              <button
+                onClick={() => setHistoryFilter('all')}
+                className={`flex-1 py-1.5 rounded-lg transition text-center cursor-pointer ${
+                  historyFilter === 'all' 
+                    ? 'bg-white text-slate-900 shadow-xs font-black' 
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                All Farms ({activityLogs.length})
+              </button>
+              <button
+                onClick={() => setHistoryFilter('live')}
+                className={`flex-1 py-1.5 rounded-lg transition text-center cursor-pointer flex items-center justify-center gap-1 ${
+                  historyFilter === 'live' 
+                    ? 'bg-rose-600 text-white shadow-xs font-black' 
+                    : 'text-slate-600 hover:text-rose-700'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${historyFilter === 'live' ? 'bg-white' : 'bg-rose-500'} animate-pulse`}></span>
+                Live Only
+              </button>
+              <button
+                onClick={() => setHistoryFilter('currentFarm')}
+                className={`flex-1 py-1.5 rounded-lg transition text-center cursor-pointer truncate px-1 ${
+                  historyFilter === 'currentFarm' 
+                    ? 'bg-white text-emerald-800 shadow-xs font-black' 
+                    : 'text-slate-600 hover:text-emerald-800'
+                }`}
+              >
+                This Farm
+              </button>
+            </div>
+
+            {/* Activity Logs Stream */}
+            <div className="space-y-2.5 overflow-y-auto flex-1 pb-4">
+              {(() => {
+                const now = Date.now();
+                const filtered = activityLogs.filter(log => {
+                  if (historyFilter === 'live') {
+                    const ageMs = now - new Date(log.timestamp).getTime();
+                    return ageMs < 120 * 1000 || log.isLive;
+                  }
+                  if (historyFilter === 'currentFarm') {
+                    return log.farmId === activeFarmId || log.farmName.trim().toLowerCase() === farmName.trim().toLowerCase();
+                  }
+                  return true;
+                });
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-3 shadow-xs">
+                      <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-400">
+                        <History className="w-6 h-6" />
+                      </div>
+                      <h4 className="font-black text-sm text-slate-800">No Activity Logs Found</h4>
+                      <p className="text-xs text-slate-500 max-w-xs mx-auto">
+                        {historyFilter === 'live' 
+                          ? 'No birds weighed in the last 2 minutes. Enter a bird weight to trigger live broadcast!'
+                          : 'No updates recorded for this filter yet. When supervisors enter bird weights, they will appear here in real time.'}
+                      </p>
+                      <button
+                        onClick={() => navigateTo('shed_select')}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2 rounded-xl transition cursor-pointer"
+                      >
+                        Enter Bird Weights →
+                      </button>
+                    </div>
+                  );
+                }
+
+                return filtered.map((log) => {
+                  const logDate = new Date(log.timestamp);
+                  const ageMs = now - logDate.getTime();
+                  const isVeryRecent = ageMs < 120 * 1000 || log.isLive;
+
+                  return (
+                    <div 
+                      key={log.id} 
+                      className={`p-3.5 rounded-2xl border transition-all ${
+                        isVeryRecent 
+                          ? 'bg-white border-rose-300 shadow-md ring-1 ring-rose-200/50' 
+                          : 'bg-white border-slate-200 shadow-2xs hover:border-slate-300'
+                      }`}
+                    >
+                      {/* Top Header: Farm Name & Live Indicator */}
+                      <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-100">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <Building2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span className="font-black text-xs text-slate-900 truncate">{log.farmName}</span>
+                        </div>
+
+                        {isVeryRecent ? (
+                          <span className="bg-rose-50 text-rose-700 border border-rose-300 px-2 py-0.5 rounded-full text-[9px] font-black shrink-0 flex items-center gap-1 animate-pulse shadow-2xs">
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-ping"></span>
+                            🔴 LIVE UPDATING NOW
+                          </span>
+                        ) : (
+                          <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full text-[9px] font-bold shrink-0 flex items-center gap-1">
+                            <Check className="w-2.5 h-2.5" />
+                            🟢 COMPLETED UPDATE
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Hierarchy Badge */}
+                      <div className="mt-2 flex items-center justify-between">
+                        <p className="text-xs font-black text-emerald-800 flex items-center gap-1">
+                          <Layers className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>{log.shedName || 'Shed'} › {log.partName || 'Part'} › {log.lineName || 'Line'}</span>
+                        </p>
+                        <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
+                          {log.sampleCount || (log as any).birdsCount || 0} Birds Weighed
+                        </span>
+                      </div>
+
+                      {/* Metrics Snapshot */}
+                      <div className="grid grid-cols-2 gap-2 mt-2 bg-slate-50 p-2 rounded-xl border border-slate-200/80 text-xs">
+                        <div>
+                          <span className="text-[9px] text-slate-500 font-bold uppercase block">Average Weight</span>
+                          <span className="font-extrabold text-emerald-700 font-mono text-sm">
+                            {log.avgWeight ? `${log.avgWeight}g` : 'Recording...'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[9px] text-slate-500 font-bold uppercase block">Action Status</span>
+                          <span className="font-bold text-slate-800 text-[11px] block truncate">
+                            {log.action || 'Sample recorded'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Footer: User & Exact Date-Time */}
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 mt-2 border-t border-slate-100">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[9px] font-bold">
+                            {(log.userName || 'S').charAt(0).toUpperCase()}
+                          </div>
+                          <span>By: <strong className="text-slate-800">{log.userName || 'Supervisor'}</strong></span>
+                        </div>
+                        <span className="text-[10px] font-mono text-slate-600 font-bold">
+                          {formatLogDateTime(log.timestamp)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* SCREEN: AUTHENTICATION FLOW (SIGN IN / REGISTER / LOGOUT) */}
+        {/* ========================================================= */}
+        {currentScreen === 'auth' && (
+          <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
+            {/* Top Bar */}
+            <div className="flex items-center justify-between mb-4">
+              <button 
+                onClick={handleGoBack} 
+                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" /> Home
+              </button>
+              <h2 className="text-xs font-black text-emerald-800 uppercase tracking-wide bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                Supervisor Access
+              </h2>
+            </div>
+
+            <div className="space-y-4">
+              {/* If Current User Session exists, display card with quick switch/logout */}
+              {currentUser && (
+                <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+                  <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center font-black text-lg shadow-md shadow-emerald-600/30">
+                      {currentUser.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-black text-base text-slate-900">{currentUser.name}</span>
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.2 rounded-full font-bold">
+                          Logged In
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">{currentUser.email}</p>
+                      <span className="text-[11px] font-semibold text-emerald-700 mt-0.5 block">{currentUser.role}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('signin');
+                        setAuthEmail('');
+                        setAuthPassword('');
+                        showToast('Enter new credentials below to switch user');
+                      }}
+                      className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 transition cursor-pointer"
+                    >
+                      Switch Account
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="flex-1 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <LogOut className="w-3.5 h-3.5" /> Log Out
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Login / Sign Up Form Card */}
+              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-md space-y-4">
+                <div className="text-center mb-1">
+                  <div className="w-11 h-11 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-2xl flex items-center justify-center mx-auto mb-2 shadow-2xs">
+                    <ShieldCheck className="w-6 h-6" />
+                  </div>
+                  <h3 className="font-black text-base text-slate-900">
+                    {authMode === 'signin' ? 'Sign In to Farm Session' : 'Register New Supervisor'}
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Sync and timestamp bird weights under your name across team devices
+                  </p>
+                </div>
+
+                {/* Mode Switcher Tabs */}
+                <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl text-xs font-bold">
+                  <button
+                    type="button"
+                    onClick={() => { setAuthMode('signin'); setAuthError(null); }}
+                    className={`py-2 rounded-lg transition cursor-pointer ${
+                      authMode === 'signin' ? 'bg-white text-slate-900 shadow-xs font-black' : 'text-slate-500 hover:text-slate-900'
+                    }`}
+                  >
+                    Login / Sign In
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAuthMode('signup'); setAuthError(null); }}
+                    className={`py-2 rounded-lg transition cursor-pointer ${
+                      authMode === 'signup' ? 'bg-white text-slate-900 shadow-xs font-black' : 'text-slate-500 hover:text-slate-900'
+                    }`}
+                  >
+                    Sign Up (New)
+                  </button>
+                </div>
+
+                {authError && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs p-2.5 rounded-xl flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                    <span>{authError}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleAuthSubmit} className="space-y-3">
+                  {authMode === 'signup' && (
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">Your Full Name</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Suresh Kumar"
+                        value={authName}
+                        onChange={e => setAuthName(e.target.value)}
+                        required
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">Email Address</label>
+                    <input
+                      type="email"
+                      placeholder="supervisor@poultryfarm.com"
+                      value={authEmail}
+                      onChange={e => setAuthEmail(e.target.value)}
+                      required
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">Password</label>
+                    <input
+                      type="password"
+                      placeholder="••••••••"
+                      value={authPassword}
+                      onChange={e => setAuthPassword(e.target.value)}
+                      required
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                    />
+                  </div>
+
+                  {authMode === 'signup' && (
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">Designation / Role</label>
+                      <select
+                        value={authRole}
+                        onChange={e => setAuthRole(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                      >
+                        <option value="Weighing Supervisor">Weighing Supervisor</option>
+                        <option value="Farm Manager">Farm Manager</option>
+                        <option value="Technical Officer">Technical Officer</option>
+                      </select>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs py-3 rounded-xl mt-3 active:scale-95 shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {authLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Verifying Account...</span>
+                      </>
+                    ) : (
+                      <span>{authMode === 'signin' ? 'Sign In & Connect Device' : 'Create Account & Sign In'}</span>
+                    )}
+                  </button>
+                </form>
+              </div>
             </div>
           </div>
         )}
