@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { healthRouter } from './routes/healthz.js';
@@ -16,7 +16,7 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 app.use(cors({
   origin: CORS_ORIGIN === '*' ? '*' : CORS_ORIGIN.split(',').map(s => s.trim()),
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 }));
 app.use(express.json({ limit: '10mb' }));
 
@@ -25,37 +25,45 @@ app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
-    if (req.path !== '/healthz') {
+    if (req.path !== '/healthz' && req.path !== '/health') {
       console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`);
     }
   });
   next();
 });
 
-// Health check
-app.get('/healthz', (_req, res) => res.send('OK'));
+// 1. Health check & Diagnostics Routers (Handles /healthz, /health, /api/healthz, /api/health, /api/health/db)
 app.use(healthRouter);
 
-// Multi-Farm Cloud Routes
+// 2. Multi-Farm Cloud Routes (Mounted on /api and aliased on root so URL with or without /api always works)
 app.use('/api', farmRouter);
+app.use('/', farmRouter);
 
-// Benchmarks & Export Routers
+// 3. Benchmarks & Export Routers
 app.use('/api/benchmarks', benchmarkRouter);
+app.use('/benchmarks', benchmarkRouter);
 app.use('/api/export', exportRouter);
+app.use('/export', exportRouter);
 
-// Root route
-app.get('/', (_req, res) => {
+// 4. Root information endpoint
+const rootHandler = (_req: Request, res: Response) => {
   res.json({
     name: 'Poultry Body Weight Tracker - Multi-Farm Real-Time Cloud API',
+    status: 'online',
     version: '3.0.0',
     documentation: '/healthz',
+    healthCheck: '/healthz',
+    databaseCheck: '/api/health/db',
+    apiPrefix: '/api',
     endpoints: [
-      'GET    /healthz',
+      'GET    /healthz (or /api/health)',
+      'GET    /api/health/db',
       'GET    /api/farms',
       'POST   /api/farms',
       'GET    /api/farms/:id',
       'PUT    /api/farms/:id/details',
       'DELETE /api/farms/:id',
+      'PUT    /api/farms/:id/sync',
       'POST   /api/sheds',
       'DELETE /api/sheds/:shedId',
       'PUT    /api/sheds/:shedId',
@@ -67,22 +75,35 @@ app.get('/', (_req, res) => {
       'POST   /api/lines/:lineId/weight',
       'DELETE /api/lines/:lineId/weight/:index',
       'POST   /api/lines/:lineId/clear',
-      'PUT    /api/farms/:id/sync',
+      'POST   /api/auth/register',
+      'POST   /api/auth/login',
+      'GET    /api/auth/users',
+      'GET    /api/logs',
+      'POST   /api/logs',
       'GET    /api/benchmarks'
     ]
   });
-});
+};
 
-const server = app.listen(PORT, () => {
-  console.log(`🚀 Poultry Sync Server running on port ${PORT}`);
-  console.log(`📡 Health check available at http://localhost:${PORT}/healthz`);
-});
+app.get('/', rootHandler);
+app.get('/api', rootHandler);
 
-process.on('SIGTERM', () => {
-  console.log('SIGTERM signal received: closing HTTP server');
-  server.close(() => {
-    console.log('HTTP server closed');
+// Start server if not running in test mode
+let server: any = null;
+if (process.env.NODE_ENV !== 'test') {
+  server = app.listen(PORT, () => {
+    console.log(`🚀 Poultry Sync Server running on port ${PORT}`);
+    console.log(`📡 Health check available at http://localhost:${PORT}/healthz`);
   });
-});
+
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM signal received: closing HTTP server');
+    if (server) {
+      server.close(() => {
+        console.log('HTTP server closed');
+      });
+    }
+  });
+}
 
 export default app;

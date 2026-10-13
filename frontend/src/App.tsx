@@ -42,7 +42,15 @@ import {
 } from './services/excelExportService';
 import { WINTER_BROOD_STANDARDS, SUMMER_BROOD_STANDARDS } from './services/benchmarks';
 import { LoadingScreen } from './components/LoadingScreen';
-import { cloudApi, FarmSummary, getApiBaseUrl, AppUser, ActivityLogItem } from './services/cloudSyncService';
+import { 
+  cloudApi, 
+  FarmSummary, 
+  getApiBaseUrl, 
+  normalizeApiUrl, 
+  offlineQueue, 
+  AppUser, 
+  ActivityLogItem 
+} from './services/cloudSyncService';
 
 // Seasonal Target Benchmarks for all 23 Weeks
 const BENCHMARKS: Record<'Summer' | 'Winter', Record<string, { stdF: number; stdM: number }>> = {
@@ -219,6 +227,8 @@ export default function App() {
   const [showCloudSettingsModal, setShowCloudSettingsModal] = useState<boolean>(false);
   const [customApiUrlInput, setCustomApiUrlInput] = useState<string>(() => getApiBaseUrl());
   const [cloudTestStatus, setCloudTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
+  const [cloudTestResult, setCloudTestResult] = useState<any>(null);
+  const [pendingSyncCount, setPendingSyncCount] = useState<number>(() => offlineQueue.count());
 
   // User Authentication State
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
@@ -814,6 +824,11 @@ export default function App() {
   // Real-Time Auto-Refresh / Background Cloud Polling (Every 15s)
   useEffect(() => {
     const pollInterval = setInterval(async () => {
+      // If offline queue has pending items, attempt to flush them first
+      if (offlineQueue.count() > 0) {
+        await flushPendingQueue();
+      }
+
       // Do not interrupt if user is on weigh pad actively typing
       if (currentScreenRef.current === 'weigh_pad' && inputWeight) return;
 
@@ -863,6 +878,11 @@ export default function App() {
     setIsRefreshingCloud(true);
     setSyncStatus('refreshing');
     try {
+      // First flush pending offline items if any
+      if (offlineQueue.count() > 0) {
+        await flushPendingQueue();
+      }
+
       const remoteFarms = await cloudApi.getFarms();
       if (remoteFarms && remoteFarms.length > 0) {
         setFarmsList(remoteFarms);
@@ -964,34 +984,100 @@ export default function App() {
     }
   };
 
+  // Flush Pending Offline Queue
+  const flushPendingQueue = useCallback(async () => {
+    if (offlineQueue.count() === 0) {
+      setPendingSyncCount(0);
+      return;
+    }
+    try {
+      setSyncStatus('saving');
+      const { successCount, remainingCount } = await offlineQueue.flush();
+      setPendingSyncCount(remainingCount);
+      if (successCount > 0) {
+        setSyncStatus('synced');
+        setLastUpdatedString('Updated Just now');
+        showToast(`Synced ${successCount} offline weight record${successCount > 1 ? 's' : ''}!`);
+        try {
+          const full = await cloudApi.getFarmDetails(activeFarmId);
+          if (full && full.sheds) {
+            setSheds(full.sheds);
+            setLastServerUpdatedAt(full.updatedAt);
+          }
+        } catch {}
+      } else if (remainingCount > 0) {
+        setSyncStatus('offline');
+      }
+    } catch (err) {
+      console.warn('Queue flush error:', err);
+      setSyncStatus('offline');
+    }
+  }, [activeFarmId]);
+
+  // Auto-sync when internet connectivity is restored
+  useEffect(() => {
+    const handleOnline = () => {
+      showToast('Internet restored! Syncing offline records...');
+      flushPendingQueue();
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [flushPendingQueue]);
+
   // Test Cloud Connection Handler
   const handleTestCloudConnection = async () => {
     setCloudTestStatus('testing');
+    setCloudTestResult(null);
     try {
-      const url = customApiUrlInput.trim().replace(/\/+$/, '');
-      const healthUrl = url.endsWith('/api') ? url.replace(/\/api$/, '/healthz') : `${url}/healthz`;
-      const res = await fetch(healthUrl, { method: 'GET' });
-      if (res.ok) {
+      const result = await cloudApi.checkHealth(customApiUrlInput.trim());
+      setCloudTestResult(result);
+      if (result.online) {
         setCloudTestStatus('success');
-        showToast('Connection Successful! Cloud backend is online.');
+        if (result.databaseConnected) {
+          showToast(`Connected! Render PostgreSQL is live (${result.latencyMs || 0}ms)`);
+        } else {
+          showToast(`Backend online, but DB is ${result.databaseStatus || 'disconnected'}`);
+        }
       } else {
         setCloudTestStatus('failed');
-        showToast(`Connection error: Status ${res.status}`);
+        showToast(result.error || 'Connection Failed');
       }
-    } catch {
+    } catch (err: any) {
       setCloudTestStatus('failed');
+      setCloudTestResult({
+        online: false,
+        error: err?.message || 'Could not reach backend URL'
+      });
       showToast('Could not reach backend URL');
     }
   };
 
-  // Save Custom Cloud API URL
-  const handleSaveCloudSettings = () => {
-    const trimmed = customApiUrlInput.trim().replace(/\/+$/, '');
-    if (trimmed) {
-      localStorage.setItem('poultry_custom_api_url', trimmed);
-      showToast('Cloud API URL saved');
-      setShowCloudSettingsModal(false);
-      handleManualRefresh();
+  // Save Custom Cloud API URL & Sync Immediately
+  const handleSaveCloudSettings = async () => {
+    const trimmed = customApiUrlInput.trim();
+    if (!trimmed) {
+      showToast('Please enter a valid backend URL');
+      return;
+    }
+    const normalized = normalizeApiUrl(trimmed);
+    localStorage.setItem('poultry_custom_api_url', normalized);
+    setCustomApiUrlInput(normalized);
+    showToast('Backend URL saved!');
+    setShowCloudSettingsModal(false);
+
+    try {
+      setSyncStatus('refreshing');
+      await flushPendingQueue();
+      await cloudApi.syncFullFarm(activeFarmId, {
+        name: farmName,
+        flockDate: date,
+        ageWeek,
+        season,
+        sheds
+      }).catch(() => {});
+      await handleManualRefresh();
+    } catch (e) {
+      console.warn('Post-save sync error:', e);
     }
   };
 
@@ -1100,7 +1186,16 @@ export default function App() {
         setLastUpdatedString('Updated Just now');
       })
       .catch((err) => {
-        console.warn('Weight sync error (offline):', err);
+        console.warn('Weight sync error (offline, queuing):', err);
+        offlineQueue.enqueue({
+          type: 'PUSH_WEIGHT',
+          payload: {
+            lineId: lineIdToSync,
+            weight: val,
+            meta: { userName: currentUser?.name, userId: currentUser?.id }
+          }
+        });
+        setPendingSyncCount(offlineQueue.count());
         setSyncStatus('offline');
       });
   };
@@ -1137,7 +1232,12 @@ export default function App() {
         setLastUpdatedString('Updated Just now');
       })
       .catch((err) => {
-        console.warn('Delete weight cloud error (offline):', err);
+        console.warn('Delete weight cloud error (offline, queuing):', err);
+        offlineQueue.enqueue({
+          type: 'DELETE_WEIGHT',
+          payload: { lineId: lineIdToSync, index: idx }
+        });
+        setPendingSyncCount(offlineQueue.count());
         setSyncStatus('offline');
       });
   };
@@ -1167,7 +1267,17 @@ export default function App() {
           setSyncStatus('synced');
           setLastUpdatedString('Updated Just now');
         })
-        .catch(() => setSyncStatus('offline'));
+        .catch(() => {
+          offlineQueue.enqueue({
+            type: 'SYNC_FARM',
+            payload: {
+              farmId: activeFarmId,
+              data: { name: farmName, flockDate: date, ageWeek, season, sheds }
+            }
+          });
+          setPendingSyncCount(offlineQueue.count());
+          setSyncStatus('offline');
+        });
     }
   };
 
@@ -1532,7 +1642,9 @@ export default function App() {
                 {syncStatus === 'saving' ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />
-                    <span className="text-amber-600 font-bold">Saving to Cloud...</span>
+                    <span className="text-amber-600 font-bold">
+                      {pendingSyncCount > 0 ? `Syncing (${pendingSyncCount} pending)...` : 'Saving to Cloud...'}
+                    </span>
                   </>
                 ) : syncStatus === 'refreshing' ? (
                   <>
@@ -1540,10 +1652,21 @@ export default function App() {
                     <span className="text-sky-600 font-bold">Syncing...</span>
                   </>
                 ) : syncStatus === 'offline' ? (
-                  <>
+                  <div className="flex items-center gap-1.5">
                     <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-                    <span className="text-amber-600 font-bold">Offline (Local Cache)</span>
-                  </>
+                    <span className="text-amber-600 font-bold">
+                      Offline {pendingSyncCount > 0 ? `(${pendingSyncCount} pending)` : '(Local Cache)'}
+                    </span>
+                    {pendingSyncCount > 0 && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); flushPendingQueue(); }}
+                        className="text-[10px] bg-amber-100 hover:bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded font-black cursor-pointer transition active:scale-95"
+                        title="Upload pending offline records now"
+                      >
+                        Sync Now
+                      </button>
+                    )}
+                  </div>
                 ) : (
                   <>
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -2437,8 +2560,16 @@ export default function App() {
                     showToast('Farm details synced to Cloud!');
                   })
                   .catch(() => {
+                    offlineQueue.enqueue({
+                      type: 'SYNC_FARM',
+                      payload: {
+                        farmId: activeFarmId,
+                        data: { name: farmName, flockDate: date, ageWeek, season, sheds }
+                      }
+                    });
+                    setPendingSyncCount(offlineQueue.count());
                     setSyncStatus('offline');
-                    showToast('Saved locally (Cloud offline)');
+                    showToast('Saved locally (Queued for Cloud Sync)');
                   });
                 navigateTo('home');
               }}
@@ -3236,6 +3367,7 @@ export default function App() {
                     onChange={(e) => {
                       setCustomApiUrlInput(e.target.value);
                       setCloudTestStatus('idle');
+                      setCloudTestResult(null);
                     }}
                     placeholder="https://your-backend.onrender.com/api"
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-sky-600 focus:bg-white transition"
@@ -3245,34 +3377,82 @@ export default function App() {
                   </p>
                 </div>
 
-                <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-200">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2.5 h-2.5 rounded-full ${
-                      cloudTestStatus === 'success' ? 'bg-emerald-500' :
-                      cloudTestStatus === 'failed' ? 'bg-rose-500' :
-                      cloudTestStatus === 'testing' ? 'bg-amber-500 animate-spin' : 'bg-slate-400'
-                    }`} />
-                    <span className="text-[11px] font-semibold text-slate-700">
-                      {cloudTestStatus === 'idle' && 'Status: Ready to test'}
-                      {cloudTestStatus === 'testing' && 'Testing connection...'}
-                      {cloudTestStatus === 'success' && 'Connected to Render PostgreSQL!'}
-                      {cloudTestStatus === 'failed' && 'Connection Failed (Check URL/Service)'}
-                    </span>
+                {/* Connection Status Box */}
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2.5 h-2.5 rounded-full ${
+                        cloudTestStatus === 'success' ? 'bg-emerald-500' :
+                        cloudTestStatus === 'failed' ? 'bg-rose-500' :
+                        cloudTestStatus === 'testing' ? 'bg-amber-500 animate-spin' : 'bg-slate-400'
+                      }`} />
+                      <span className="text-[11px] font-bold text-slate-800">
+                        {cloudTestStatus === 'idle' && 'Status: Ready to test'}
+                        {cloudTestStatus === 'testing' && 'Testing connection & PostgreSQL...'}
+                        {cloudTestStatus === 'success' && 'Backend Service Online'}
+                        {cloudTestStatus === 'failed' && 'Connection Failed'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleTestCloudConnection}
+                      disabled={cloudTestStatus === 'testing'}
+                      className="bg-sky-600 hover:bg-sky-700 text-white border border-sky-600 px-3 py-1 rounded-lg text-[10px] font-bold active:scale-95 transition cursor-pointer shadow-xs disabled:opacity-50"
+                    >
+                      {cloudTestStatus === 'testing' ? 'Testing...' : 'Test Ping'}
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleTestCloudConnection}
-                    disabled={cloudTestStatus === 'testing'}
-                    className="bg-white hover:bg-slate-100 text-sky-700 border border-slate-300 px-2.5 py-1 rounded-lg text-[10px] font-bold active:scale-95 transition cursor-pointer"
-                  >
-                    Test Ping
-                  </button>
+
+                  {/* Detailed Diagnostics */}
+                  {cloudTestResult && (
+                    <div className={`text-[10px] p-2 rounded-lg border ${
+                      cloudTestResult.online
+                        ? cloudTestResult.databaseConnected
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                          : 'bg-amber-50 border-amber-200 text-amber-800'
+                        : 'bg-rose-50 border-rose-200 text-rose-800'
+                    }`}>
+                      {cloudTestResult.online ? (
+                        <div className="space-y-0.5">
+                          <p className="font-bold flex items-center gap-1">
+                            ✓ Server reachable ({cloudTestResult.latencyMs || 0}ms latency)
+                          </p>
+                          <p>
+                            Database: {cloudTestResult.databaseConnected ? (
+                              <span className="font-bold text-emerald-700">✓ PostgreSQL Connected & Operational</span>
+                            ) : (
+                              <span className="font-bold text-amber-700">⚠️ {cloudTestResult.databaseMessage || 'PostgreSQL not connected'}</span>
+                            )}
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="font-semibold leading-relaxed">
+                          ⚠️ {cloudTestResult.error || 'Server unreachable'}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Offline Queue Notice */}
+                  {pendingSyncCount > 0 && (
+                    <div className="flex items-center justify-between bg-amber-50 border border-amber-200 p-2 rounded-lg text-[10px] text-amber-900">
+                      <span>Offline queue: <strong>{pendingSyncCount}</strong> pending records</span>
+                      <button
+                        type="button"
+                        onClick={flushPendingQueue}
+                        className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-2 py-0.5 rounded text-[10px] cursor-pointer"
+                      >
+                        Sync Queue
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded-xl border border-slate-100 space-y-1">
                   <p className="font-bold text-slate-700">Multi-Device Real-Time Sync Tips:</p>
-                  <p>• Point both phones to the same Render backend URL.</p>
-                  <p>• When you record weights on Phone A, Phone B updates in real-time!</p>
+                  <p>• Point both phones to the exact same Backend URL.</p>
+                  <p>• When you record weights on Phone A, Phone B updates in real-time.</p>
+                  <p className="text-[10px] text-slate-400 pt-0.5">Note: Accepts either base URL (e.g. <code>...onrender.com</code>) or <code>/api</code> suffix.</p>
                 </div>
 
                 <div className="flex gap-2 pt-2">
@@ -3281,6 +3461,8 @@ export default function App() {
                     onClick={() => {
                       localStorage.removeItem('poultry_custom_api_url');
                       setCustomApiUrlInput(getApiBaseUrl());
+                      setCloudTestStatus('idle');
+                      setCloudTestResult(null);
                       showToast('Reset to default URL');
                     }}
                     className="bg-slate-100 hover:bg-slate-200 py-2.5 px-3 rounded-xl text-xs font-bold text-slate-600 active:scale-95 transition cursor-pointer"

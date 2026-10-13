@@ -46,19 +46,38 @@ export interface FullFarmData {
   sheds: ShedData[];
 }
 
-// Get the base API URL (default to env var, fallback to relative /api or localhost:10000/api)
+// Normalize API URL to ensure valid protocol and clean /api suffix without duplicates
+export function normalizeApiUrl(rawUrl: string): string {
+  let trimmed = (rawUrl || '').trim().replace(/\/+$/, '');
+  if (!trimmed) {
+    return 'https://poultry-weight-backend.onrender.com/api';
+  }
+  // Default to https if no protocol specified
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    trimmed = `https://${trimmed}`;
+  }
+  // Remove any duplicate trailing slashes
+  trimmed = trimmed.replace(/\/+$/, '');
+  // Ensure the URL ends with /api
+  if (!trimmed.endsWith('/api')) {
+    trimmed = `${trimmed}/api`;
+  }
+  return trimmed;
+}
+
+// Get the base API URL (custom > env var > localhost > production Render)
 export function getApiBaseUrl(): string {
   const custom = localStorage.getItem('poultry_custom_api_url');
   if (custom && custom.trim()) {
-    return custom.trim().replace(/\/+$/, '');
+    return normalizeApiUrl(custom);
   }
   const envUrl = import.meta.env.VITE_API_URL;
   if (envUrl && envUrl.trim()) {
-    return envUrl.trim().replace(/\/+$/, '');
+    return normalizeApiUrl(envUrl);
   }
-  // If running on localhost Vite (port 5173), target backend default port 10000
-  if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-    return 'http://localhost:10000/api';
+  // Local development fallback
+  if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+    return 'http://localhost:5000/api';
   }
   // Production fallback on Render
   return 'https://poultry-weight-backend.onrender.com/api';
@@ -286,5 +305,158 @@ export const cloudApi = {
     });
     if (!res.ok) throw new Error(`Failed to create log (${res.status})`);
     return res.json();
+  },
+
+  // 23. Real-Time Diagnostics & Health Check
+  async checkHealth(targetBaseUrl?: string): Promise<{
+    online: boolean;
+    status: string;
+    databaseConnected: boolean;
+    databaseStatus: string;
+    databaseMessage?: string;
+    databaseProvider?: string;
+    latencyMs?: number;
+    error?: string;
+    testedUrl: string;
+  }> {
+    const base = targetBaseUrl ? normalizeApiUrl(targetBaseUrl) : getApiBaseUrl();
+    const rootHost = base.replace(/\/api$/, '');
+    const endpointsToTry = [
+      `${base}/health`,
+      `${rootHost}/healthz`,
+      `${base}/healthz`,
+      `${rootHost}/health`,
+    ];
+
+    const start = Date.now();
+    let lastError = '';
+    let lastStatus = 0;
+    let isNoServer = false;
+
+    for (const url of endpointsToTry) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 9000);
+        const res = await fetch(url, { method: 'GET', signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        // Check if Render returned no-server header or status
+        const routingHeader = res.headers.get('x-render-routing');
+        if (routingHeader === 'no-server' || res.status === 404) {
+          lastStatus = res.status;
+          isNoServer = true;
+          continue;
+        }
+
+        if (res.ok) {
+          const latencyMs = Date.now() - start;
+          const data = await res.json().catch(() => ({ status: 'healthy', database: { status: 'unknown' } }));
+          const dbConnected = data?.database?.status === 'connected' || data?.database === 'healthy';
+          return {
+            online: true,
+            status: data?.status || 'healthy',
+            databaseConnected: dbConnected,
+            databaseStatus: data?.database?.status || (dbConnected ? 'connected' : 'disconnected'),
+            databaseMessage: data?.database?.message,
+            databaseProvider: data?.database?.provider || 'postgresql',
+            latencyMs,
+            testedUrl: url,
+          };
+        } else {
+          lastStatus = res.status;
+        }
+      } catch (err: any) {
+        lastError = err?.message || 'Network request failed';
+      }
+    }
+
+    let errorDetail = 'Could not reach backend URL.';
+    if (isNoServer) {
+      errorDetail = 'Render Service Not Found (404 no-server). Please verify your Web Service name in Render Dashboard or deploy the service.';
+    } else if (lastError.toLowerCase().includes('abort')) {
+      errorDetail = 'Request timed out (9s). If using Render free tier, service may be cold-booting (takes 30-50s). Please retry in a few seconds.';
+    } else if (lastError) {
+      errorDetail = `${lastError} (Check internet or CORS settings).`;
+    }
+
+    return {
+      online: false,
+      status: 'unreachable',
+      databaseConnected: false,
+      databaseStatus: 'unreachable',
+      error: errorDetail,
+      testedUrl: base,
+    };
+  },
+};
+
+// --------------------------------------------------------------------------
+// Offline Sync Queue - Ensures zero data loss when offline
+// --------------------------------------------------------------------------
+export interface PendingSyncItem {
+  id: string;
+  type: 'PUSH_WEIGHT' | 'DELETE_WEIGHT' | 'SYNC_FARM';
+  payload: any;
+  timestamp: string;
+  retries: number;
+}
+
+export const offlineQueue = {
+  getQueue(): PendingSyncItem[] {
+    try {
+      const saved = localStorage.getItem('poultry_offline_queue_v1');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  },
+
+  enqueue(action: Omit<PendingSyncItem, 'id' | 'timestamp' | 'retries'>): void {
+    const queue = this.getQueue();
+    const item: PendingSyncItem = {
+      ...action,
+      id: `queue-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: new Date().toISOString(),
+      retries: 0,
+    };
+    queue.push(item);
+    localStorage.setItem('poultry_offline_queue_v1', JSON.stringify(queue));
+  },
+
+  count(): number {
+    return this.getQueue().length;
+  },
+
+  clear(): void {
+    localStorage.removeItem('poultry_offline_queue_v1');
+  },
+
+  async flush(): Promise<{ successCount: number; remainingCount: number }> {
+    const queue = this.getQueue();
+    if (queue.length === 0) return { successCount: 0, remainingCount: 0 };
+
+    let successCount = 0;
+    const remaining: PendingSyncItem[] = [];
+
+    for (const item of queue) {
+      try {
+        if (item.type === 'PUSH_WEIGHT') {
+          await cloudApi.pushWeight(item.payload.lineId, item.payload.weight, item.payload.meta);
+          successCount++;
+        } else if (item.type === 'DELETE_WEIGHT') {
+          await cloudApi.deleteWeight(item.payload.lineId, item.payload.index);
+          successCount++;
+        } else if (item.type === 'SYNC_FARM') {
+          await cloudApi.syncFullFarm(item.payload.farmId, item.payload.data);
+          successCount++;
+        }
+      } catch (err) {
+        item.retries += 1;
+        remaining.push(item);
+      }
+    }
+
+    localStorage.setItem('poultry_offline_queue_v1', JSON.stringify(remaining));
+    return { successCount, remainingCount: remaining.length };
   },
 };

@@ -6,7 +6,7 @@ services:
     plan: free
     region: oregon
     rootDir: backend
-    buildCommand: "npm install && npm run prisma:generate && npm run build && npx prisma db push && npm run seed"
+    buildCommand: "npm install && npm run prisma:generate && npm run build && npm run db:init"
     startCommand: "npm start"
     healthCheckPath: /healthz
     autoDeploy: true
