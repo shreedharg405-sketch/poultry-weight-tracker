@@ -7,6 +7,16 @@ export interface AppUser {
   role: string;
 }
 
+export interface FarmAudit {
+  lastSubmittedAt?: string;    // ISO timestamp
+  lastSubmittedBy?: string;    // User Name
+  lastSubmittedRole?: string;  // Role
+  totalBirdsAtLastSubmit?: number;
+  femaleAvgWeight?: number;
+  maleAvgWeight?: number;
+  isPendingSubmission?: boolean; // True if local staged entries exist since last submit
+}
+
 export interface ActivityLogItem {
   id: string;
   farmId: string;
@@ -19,9 +29,11 @@ export interface ActivityLogItem {
   lineName?: string;
   sampleCount: number;
   avgWeight?: number;
-  status: string; // 'LIVE' | 'COMPLETED'
+  femaleAvgWeight?: number;
+  maleAvgWeight?: number;
+  status: string; // 'COMPLETED'
   timestamp: string; // ISO string
-  isLive: boolean;
+  isLive?: boolean;
 }
 
 export interface FarmSummary {
@@ -33,6 +45,7 @@ export interface FarmSummary {
   updatedAt: string;
   createdAt?: string;
   _count?: { sheds: number };
+  audit?: FarmAudit;
 }
 
 export interface FullFarmData {
@@ -44,6 +57,7 @@ export interface FullFarmData {
   updatedAt: string;
   createdAt?: string;
   sheds: ShedData[];
+  audit?: FarmAudit;
 }
 
 // Normalize API URL to ensure valid protocol and clean /api suffix without duplicates
@@ -94,7 +108,14 @@ export const cloudApi = {
   },
 
   // 2. Create new farm
-  async createFarm(data: { name: string; flockDate?: string; ageWeek?: string; season?: string }): Promise<FullFarmData> {
+  async createFarm(data: {
+    name: string;
+    flockDate?: string;
+    ageWeek?: string;
+    season?: string;
+    shedCount?: number;
+    defaultSexSplit?: string;
+  }): Promise<FullFarmData> {
     const res = await fetch(`${getApiBaseUrl()}/farms`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -237,7 +258,14 @@ export const cloudApi = {
   },
 
   // 17. Full Farm Sync
-  async syncFullFarm(farmId: string, data: { name: string; flockDate: string; ageWeek: string; season: string; sheds: ShedData[] }): Promise<FullFarmData> {
+  async syncFullFarm(farmId: string, data: {
+    name: string;
+    flockDate: string;
+    ageWeek: string;
+    season: string;
+    sheds: ShedData[];
+    audit?: FarmAudit;
+  }): Promise<FullFarmData> {
     const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/sync`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

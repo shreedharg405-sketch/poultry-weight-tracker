@@ -195,43 +195,23 @@ export const memoryLogs: MemActivityLog[] = [
     id: 'log-1',
     farmId: 'farm-sai-1',
     farmName: 'SAI FARM - UNIT 1',
-    userName: 'Suresh Kumar',
-    action: 'Weighed 15 Birds in Shed 1 › Part A › Line 1',
-    shedName: 'Shed 1',
-    partName: 'Part A',
-    lineName: 'Line 1',
-    sampleCount: 15,
+    userName: 'Suresh Kumar (Weighing Supervisor)',
+    action: 'Batch Weighing Submitted • 240 Birds (♀ Act: 1420g, ♂ Act: 3120g)',
+    sampleCount: 240,
     avgWeight: 1420,
-    status: 'LIVE',
-    createdAt: new Date(Date.now() - 1000 * 30), // 30 sec ago
+    status: 'COMPLETED',
+    createdAt: new Date(Date.now() - 1000 * 60 * 30),
   },
   {
     id: 'log-2',
-    farmId: 'farm-sai-1',
-    farmName: 'SAI FARM - UNIT 1',
-    userName: 'Ramesh Patel',
-    action: 'Weighed 8 Birds in Shed 8 Male › Part A › Line 1',
-    shedName: 'Shed 8 Male',
-    partName: 'Part A',
-    lineName: 'Line 1',
-    sampleCount: 8,
-    avgWeight: 3120,
-    status: 'COMPLETED',
-    createdAt: new Date(Date.now() - 1000 * 60 * 15), // 15 mins ago
-  },
-  {
-    id: 'log-3',
     farmId: 'farm-green-valley',
     farmName: 'GREEN VALLEY FARM',
-    userName: 'Anand M.',
-    action: 'Weighed 12 Birds in Shed 2 › Part B › Line 1',
-    shedName: 'Shed 2',
-    partName: 'Part B',
-    lineName: 'Line 1',
-    sampleCount: 12,
+    userName: 'Anand M. (Flock Manager)',
+    action: 'Batch Weighing Submitted • 180 Birds (♀ Act: 1395g, ♂ Act: 2980g)',
+    sampleCount: 180,
     avgWeight: 1395,
     status: 'COMPLETED',
-    createdAt: new Date(Date.now() - 1000 * 60 * 45), // 45 mins ago
+    createdAt: new Date(Date.now() - 1000 * 60 * 120),
   },
 ];
 
@@ -288,22 +268,24 @@ farmRouter.get('/farms', async (_req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 2. POST /api/farms - Create new farm with default sheds
+// 2. POST /api/farms - Create new farm with dynamic sheds and sex split
 // --------------------------------------------------------------------------
 farmRouter.post('/farms', async (req: Request, res: Response) => {
-  const { name, flockDate, ageWeek, season } = req.body;
+  const { name, flockDate, ageWeek, season, shedCount, defaultSexSplit } = req.body;
   const farmName = name?.trim() || 'New Farm Unit';
   const farmDate = flockDate || new Date().toISOString().split('T')[0];
   const farmAge = ageWeek || 'W18';
   const farmSeason = season || 'Summer';
   const farmId = crypto.randomUUID();
+  const count = Math.max(1, Math.min(30, Number(shedCount) || 10));
+  const sexSplit = defaultSexSplit || 'last_male'; // 'last_male' | 'all_female' | 'all_male'
 
   try {
     if (await checkDb()) {
-      // Build 10 default sheds
+      // Build dynamic sheds based on requested count and sex split
       const shedsData = [];
-      for (let i = 1; i <= 10; i++) {
-        const isMale = i === 8;
+      for (let i = 1; i <= count; i++) {
+        const isMale = sexSplit === 'all_male' ? true : (sexSplit === 'all_female' ? false : (count > 1 ? i === count : false));
         shedsData.push({
           name: isMale ? `Shed ${i} Male` : `Shed ${i}`,
           type: isMale ? 'Male' : 'Female',
@@ -356,7 +338,30 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
     console.warn('Prisma create /farms error, fallback to memory:', err);
   }
 
-  // Memory fallback
+  // Memory fallback with dynamic count
+  const fallbackSheds: MemShed[] = [];
+  for (let i = 1; i <= count; i++) {
+    const isMale = sexSplit === 'all_male' ? true : (sexSplit === 'all_female' ? false : (count > 1 ? i === count : false));
+    const shedId = `shed-${farmId}-${i}`;
+    const partAId = `part-${shedId}-a`;
+    fallbackSheds.push({
+      id: shedId,
+      farmId,
+      name: isMale ? `Shed ${i} Male` : `Shed ${i}`,
+      type: isMale ? 'Male' : 'Female',
+      order: i,
+      parts: [
+        {
+          id: partAId,
+          shedId,
+          name: 'Part A',
+          order: 1,
+          lines: [{ id: `line-${partAId}-1`, partId: partAId, name: 'Line 1', weights: [] }],
+        },
+      ],
+    });
+  }
+
   const newMemFarm: MemFarm = {
     id: farmId,
     name: farmName,
@@ -365,13 +370,7 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
     season: farmSeason,
     createdAt: new Date(),
     updatedAt: new Date(),
-    sheds: generateDefaultSheds(farmId).map(s => ({
-      ...s,
-      parts: s.parts.map(p => ({
-        ...p,
-        lines: p.lines.map(l => ({ ...l, weights: [] })),
-      })),
-    })),
+    sheds: fallbackSheds,
   };
   memoryFarms.unshift(newMemFarm);
   return res.status(201).json(newMemFarm);
@@ -977,7 +976,7 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
   const farmId = req.params.id;
-  const { sheds, name, flockDate, ageWeek, season } = req.body;
+  const { sheds, name, flockDate, ageWeek, season, audit } = req.body;
   const now = new Date();
 
   try {
@@ -1061,7 +1060,9 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
           },
         },
       });
-      return res.json(refreshed || farm);
+      const resultObj = (refreshed || farm) as any;
+      if (audit) resultObj.audit = audit;
+      return res.json(resultObj);
     }
   } catch (err) {
     console.warn('Prisma full sync error, fallback to memory:', err);
@@ -1079,6 +1080,7 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
       createdAt: now,
       sheds: sheds || generateDefaultSheds(farmId),
     };
+    if (audit) (memFarm as any).audit = audit;
     memoryFarms.unshift(memFarm);
   } else {
     if (name) memFarm.name = name.trim();
@@ -1086,6 +1088,7 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
     if (ageWeek) memFarm.ageWeek = ageWeek;
     if (season) memFarm.season = season;
     if (Array.isArray(sheds)) memFarm.sheds = sheds;
+    if (audit) (memFarm as any).audit = audit;
     memFarm.updatedAt = now;
   }
 
