@@ -47,6 +47,9 @@ import {
 import { WINTER_BROOD_STANDARDS, SUMMER_BROOD_STANDARDS } from './services/benchmarks';
 import { LoadingScreen } from './components/LoadingScreen';
 import { SharedLoginScreen } from './components/SharedLoginScreen';
+import { SupervisorDashboard } from './components/SupervisorDashboard';
+import { ManagerAdminDashboard } from './components/ManagerAdminDashboard';
+import { DedicatedSubmitScreen } from './components/DedicatedSubmitScreen';
 import { 
   cloudApi, 
   FarmSummary, 
@@ -131,6 +134,7 @@ export type ScreenType =
   | 'sheds_manage' 
   | 'setup'
   | 'history'
+  | 'submit_page'
   | 'auth';
 
 export default function App() {
@@ -204,18 +208,56 @@ export default function App() {
   const stdWeightFemale = BENCHMARKS[season][ageWeek]?.stdF || 1905;
   const stdWeightMale = BENCHMARKS[season][ageWeek]?.stdM || 1880;
 
-  // Multi-Farm Management & Real-Time Cloud Sync State
-  const [farmsList, setFarmsList] = useState<FarmSummary[]>([
-    {
-      id: 'farm-sai-1',
-      name: 'SAI FARM - UNIT 1',
-      flockDate: new Date().toISOString().split('T')[0],
-      ageWeek: 'W18',
-      season: 'Summer',
-      updatedAt: new Date().toISOString(),
-      _count: { sheds: 10 }
+  // Multi-Farm Management & Real-Time Cloud Sync State (Req 1 & 2)
+  const [farmsList, setFarmsList] = useState<FarmSummary[]>(() => {
+    const saved = localStorage.getItem('poultry_farms_list_v2');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
     }
-  ]);
+    return [
+      {
+        id: 'farm-sai-1',
+        name: 'SAI FARM - UNIT 1',
+        flockDate: new Date().toISOString().split('T')[0],
+        ageWeek: 'W18',
+        season: 'Summer',
+        status: 'DRAFT',
+        assignedUserNames: ['Suresh Kumar (Supervisor)', 'Ramesh (Supervisor)', 'John (Incharge)', 'Suresh Kumar'],
+        updatedAt: new Date().toISOString(),
+        _count: { sheds: 10 }
+      },
+      {
+        id: 'farm-zara-1',
+        name: 'Zara Unit-I',
+        flockDate: new Date().toISOString().split('T')[0],
+        ageWeek: 'W16',
+        season: 'Summer',
+        status: 'COMPLETED',
+        assignedUserNames: ['Ramesh (Supervisor)', 'John (Incharge)', 'Suresh Kumar'],
+        updatedAt: new Date().toISOString(),
+        _count: { sheds: 8 },
+        audit: {
+          lastSubmittedAt: 'Date(12-10-2026) - Time(11:30:00 AM)',
+          submittedBy: 'Ramesh (Supervisor)',
+          submittedRole: 'Supervisor',
+          totalBirdsSubmitted: 180,
+          femaleAvgWeight: 1410,
+          maleAvgWeight: 3050,
+        }
+      },
+      {
+        id: 'farm-sai-2',
+        name: 'Sai Farm Unit-2',
+        flockDate: new Date().toISOString().split('T')[0],
+        ageWeek: 'W20',
+        season: 'Winter',
+        status: 'DRAFT',
+        assignedUserNames: ['John (Incharge)', 'Anil (Incharge)'],
+        updatedAt: new Date().toISOString(),
+        _count: { sheds: 12 }
+      }
+    ];
+  });
   const [activeFarmId, setActiveFarmId] = useState<string>('farm-sai-1');
   const [syncStatus, setSyncStatus] = useState<'synced' | 'saving' | 'offline' | 'refreshing'>('synced');
   const [lastUpdatedString, setLastUpdatedString] = useState<string>('Just now');
@@ -303,11 +345,60 @@ export default function App() {
     if (currentUser.userRole) return currentUser.userRole;
     if (currentUser.role === 'Admin') return 'Admin';
     if (currentUser.role === 'Manager' || currentUser.role === 'Farm Manager') return 'Manager';
+    if (currentUser.role === 'Incharge') return 'Incharge';
     return 'Supervisor';
   }, [currentUser]);
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isSwitchingUser, setIsSwitchingUser] = useState<boolean>(false);
+
+  // Save farmsList changes locally
+  useEffect(() => {
+    localStorage.setItem('poultry_farms_list_v2', JSON.stringify(farmsList));
+  }, [farmsList]);
+
+  // Farm Access Assignment filtering (Req 2)
+  const accessibleFarms = useMemo(() => {
+    if (currentUserRole === 'Admin' || currentUserRole === 'Manager') {
+      return farmsList;
+    }
+    const currentName = (currentUser?.userName || currentUser?.name || '').trim().toLowerCase();
+    if (!currentName) return farmsList;
+    return farmsList.filter(f => {
+      if (!f.assignedUserNames || f.assignedUserNames.length === 0) return false;
+      return f.assignedUserNames.some(u => {
+        const uNorm = u.toLowerCase().replace(/\s*\(.*?\)/g, '').trim();
+        const curNorm = currentName.replace(/\s*\(.*?\)/g, '').trim();
+        return u.toLowerCase().includes(currentName) || 
+               currentName.includes(uNorm) || 
+               uNorm.includes(curNorm);
+      });
+    });
+  }, [currentUserRole, currentUser, farmsList]);
+
+  // Auto-switch to assigned farm if current active farm is not in supervisor's accessible farms
+  useEffect(() => {
+    if (currentUserRole === 'Supervisor' || currentUserRole === 'Incharge') {
+      if (accessibleFarms.length > 0) {
+        const isCurrentActiveValid = accessibleFarms.some(f => f.id === activeFarmId);
+        if (!isCurrentActiveValid) {
+          switchFarm(accessibleFarms[0].id, true);
+        }
+      }
+    }
+  }, [accessibleFarms, activeFarmId, currentUserRole]);
+
+  // Current active farm summary object
+  const currentActiveFarmSummary = useMemo(() => {
+    return farmsList.find(f => f.id === activeFarmId) || farmsList[0] || null;
+  }, [farmsList, activeFarmId]);
+
+  // Farm Assignment Hub handler for Managers & Admins
+  const handleAssignUserToFarm = (farmId: string, assignedUsers: string[]) => {
+    setFarmsList(prev => prev.map(f => f.id === farmId ? { ...f, assignedUserNames: assignedUsers } : f));
+    const target = farmsList.find(f => f.id === farmId);
+    showToast(`Updated operator assignments for ${target?.name || 'farm'}`);
+  };
 
   // Shared Farm Login Handler (Single Account Model + Role-Based Identity)
   const handleSharedLoginSuccess = (user: { name: string; role: UserRole }) => {
@@ -338,7 +429,7 @@ export default function App() {
   };
 
   const handleOpenNewFarmModal = () => {
-    if (currentUserRole === 'Supervisor') {
+    if (currentUserRole === 'Supervisor' || currentUserRole === 'Incharge') {
       showToast('Restricted: Manager or Admin permission required to create new farms.');
       return;
     }
@@ -356,7 +447,7 @@ export default function App() {
         id: 'log-1',
         farmId: 'farm-sai-1',
         farmName: 'SAI FARM - UNIT 1',
-        userName: 'Suresh Kumar (Weighing Supervisor)',
+        userName: 'Suresh Kumar - Supervisor',
         action: 'Batch Weighing Submitted • 240 Birds (♀ Act: 1420g, ♂ Act: 3120g)',
         sampleCount: 240,
         avgWeight: 1420,
@@ -370,7 +461,7 @@ export default function App() {
         id: 'log-2',
         farmId: 'farm-green-valley',
         farmName: 'GREEN VALLEY FARM',
-        userName: 'Anand M. (Flock Manager)',
+        userName: 'Anand M. - Incharge',
         action: 'Batch Weighing Submitted • 180 Birds (♀ Act: 1395g, ♂ Act: 2980g)',
         sampleCount: 180,
         avgWeight: 1395,
@@ -633,8 +724,10 @@ export default function App() {
       targetScreen = 'sheds_manage';
     } else if (hash === '#setup') {
       targetScreen = 'setup';
-    } else if (hash === '#history') {
+    } else if (hash === '#history' || hash === '#submissions') {
       targetScreen = 'history';
+    } else if (hash === '#submit') {
+      targetScreen = 'submit_page';
     } else if (hash === '#auth') {
       targetScreen = 'auth';
     } else if (hash === '#home' || !hash || hash === '') {
@@ -682,6 +775,7 @@ export default function App() {
       if (active === 'weigh_pad') setCurrentScreen('line_select');
       else if (active === 'line_select') setCurrentScreen('part_select');
       else if (active === 'part_select') setCurrentScreen('shed_select');
+      else if (active === 'submit_page') setCurrentScreen('home');
       else if (active === 'home') setShowExitConfirm(true);
       else setCurrentScreen('home');
     }
@@ -717,12 +811,19 @@ export default function App() {
   };
 
   const navigateTo = (screen: ScreenType) => {
+    // Permission guard (Req 1 & 6)
+    if (screen === 'setup' && (currentUserRole === 'Supervisor' || currentUserRole === 'Incharge')) {
+      showToast('Permission Denied: System configuration is restricted to Administrator.');
+      return;
+    }
+
     setCurrentScreen(screen);
     const hash = screen === 'conclusion' ? '#conclusion' 
       : screen === 'sheds_manage' ? '#manage' 
       : screen === 'setup' ? '#setup' 
       : screen === 'shed_select' ? '#sheds' 
-      : screen === 'history' ? '#history'
+      : screen === 'history' ? '#submissions'
+      : screen === 'submit_page' ? '#submit'
       : screen === 'auth' ? '#auth'
       : '#home';
     window.history.pushState({ screen }, '', hash);
@@ -1502,7 +1603,7 @@ export default function App() {
       farmId: activeFarmId,
       farmName: farmName,
       userId: currentUser?.id,
-      userName: `${userDisplayName} (${userRole})`,
+      userName: `${userDisplayName} - ${userRole}`,
       action: `Batch Weighing Submitted • ${totalBirdsWeighed} Birds (♀ Act: ${femaleAvg > 0 ? femaleAvg + 'g' : 'N/A'}, ♂ Act: ${maleAvg > 0 ? maleAvg + 'g' : 'N/A'})`,
       sampleCount: totalBirdsWeighed,
       avgWeight: femaleAvg || maleAvg,
@@ -1531,7 +1632,7 @@ export default function App() {
       // Also post consolidated batch log to backend
       await cloudApi.createLog({
         farmId: activeFarmId,
-        userName: `${userDisplayName} (${userRole})`,
+        userName: `${userDisplayName} - ${userRole}`,
         action: newSubmissionLog.action,
         sampleCount: totalBirdsWeighed,
         avgWeight: femaleAvg || maleAvg,
@@ -1541,7 +1642,7 @@ export default function App() {
       setSyncStatus('synced');
       setLastUpdatedString('Updated Just now');
       setLastServerUpdatedAt(timestampISO);
-      showToast(`Farm weighing 100% complete! Submitted successfully by ${userDisplayName}.`);
+      showToast('Farm submitted successfully! You may now download the official worksheet.');
     } catch (err) {
       console.warn('Batch submit offline error, queuing full sync:', err);
       offlineQueue.enqueue({
@@ -1879,434 +1980,67 @@ export default function App() {
         ) : (
           <>
         {/* ========================================================= */}
-        {/* 1. APP HOME DASHBOARD                                     */}
+        {/* 1. DUAL DASHBOARD ARCHITECTURE (Req 1 & 5)                */}
         {/* ========================================================= */}
         {currentScreen === 'home' && (
-          <div className="flex-1 flex flex-col p-4 animate-in fade-in duration-150">
-            {/* Top User Session Pill & Live History Shortcut */}
-            <div className="flex items-center justify-between mb-3 px-1">
-              {currentUser ? (
-                <div 
-                  onClick={() => navigateTo('auth')}
-                  className="flex items-center gap-2 cursor-pointer hover:opacity-90 transition bg-white px-2.5 py-1.5 rounded-xl border border-slate-200/90 shadow-2xs"
-                  title="View Shared Farm Account & Role"
-                >
-                  <div className={`w-7 h-7 rounded-lg text-white flex items-center justify-center font-bold text-xs shadow-xs ${
-                    currentUserRole === 'Admin' ? 'bg-purple-600' :
-                    currentUserRole === 'Manager' ? 'bg-sky-600' : 'bg-emerald-600'
-                  }`}>
-                    {(currentUser.userName || currentUser.name).charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <span className="text-xs font-bold text-slate-900 block leading-tight truncate max-w-[120px]">
-                      {currentUser.userName || currentUser.name}
-                    </span>
-                    <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border ${
-                      currentUserRole === 'Admin' ? 'bg-purple-50 text-purple-700 border-purple-200' :
-                      currentUserRole === 'Manager' ? 'bg-sky-50 text-sky-700 border-sky-200' :
-                      'bg-emerald-50 text-emerald-700 border-emerald-200'
-                    }`}>
-                      {currentUserRole}
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={() => navigateTo('auth')}
-                  className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 rounded-xl hover:bg-emerald-100 transition cursor-pointer"
-                >
-                  <LogIn className="w-3.5 h-3.5 text-emerald-600" /> Sign In / Login
-                </button>
-              )}
+          currentUserRole === 'Admin' || currentUserRole === 'Manager' ? (
+            // Dashboard B: Executive Overview (Manager & Admin)
+            <ManagerAdminDashboard
+              currentUser={currentUser}
+              farms={farmsList}
+              activeFarmId={activeFarmId}
+              onSelectFarm={(farmId) => {
+                switchFarm(farmId);
+              }}
+              onOpenConclusion={(farmId) => {
+                switchFarm(farmId);
+                navigateTo('conclusion');
+              }}
+              onAssignUser={handleAssignUserToFarm}
+              onViewSubmissionsUpdate={() => navigateTo('history')}
+              onOpenSetup={() => navigateTo('setup')}
+              onOpenAuth={() => navigateTo('auth')}
+              onLogout={handleLogout}
+              onNewFarm={handleOpenNewFarmModal}
+            />
+          ) : (
+            // Dashboard A: Field Operator Dashboard (Supervisor & Incharge)
+            <SupervisorDashboard
+              currentUser={currentUser}
+              activeFarm={currentActiveFarmSummary}
+              assignedFarms={accessibleFarms}
+              completionStats={completionStats}
+              farmStatus={farmStatus}
+              formattedDateTime={formattedDateTime}
+              onSelectFarm={(farmId) => {
+                switchFarm(farmId);
+              }}
+              onStartWeighing={navigateToShedSelect}
+              onOpenSubmitPage={() => navigateTo('submit_page')}
+              onViewSubmissionsUpdate={() => navigateTo('history')}
+              onOpenAuth={() => navigateTo('auth')}
+              onLogout={handleLogout}
+            />
+          )
+        )}
 
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => navigateTo('history')}
-                  className="flex items-center gap-1.5 text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-xl active:scale-95 transition cursor-pointer hover:bg-rose-100 shadow-2xs"
-                >
-                  <Radio className="w-3.5 h-3.5 text-rose-600 animate-pulse" />
-                  <span>Live Feed</span>
-                </button>
-                {currentUser && (
-                  <button
-                    onClick={handleLogout}
-                    className="p-1.5 text-slate-400 hover:text-rose-600 rounded-xl hover:bg-slate-200 transition cursor-pointer"
-                    title="Log Out Session"
-                  >
-                    <LogOut className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Top Farm Switcher with Dedicated Farm Details Button (Req 1 & 4) */}
-            <div className="bg-slate-900 p-3 rounded-2xl border border-slate-700 mb-3 shadow-md flex items-center justify-between">
-              <div className="flex-1 mr-2">
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-[9px] uppercase font-bold text-slate-400 block">Select Farm Unit</label>
-                  <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${
-                    farmStatus === 'DRAFT' 
-                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' 
-                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                  }`}>
-                    {farmStatus === 'DRAFT' ? (
-                      <>
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                        <span>🟡 DRAFT IN PROGRESS ({completionStats.completedLinesCount} of {completionStats.totalLinesCount} lines completed)</span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                        <span>🟢 COMPLETED & SUBMITTED</span>
-                      </>
-                    )}
-                  </span>
-                </div>
-                <select
-                  value={activeFarmId}
-                  onChange={(e) => switchFarm(e.target.value)}
-                  className="w-full bg-slate-950 text-emerald-400 font-bold text-xs rounded-lg px-2.5 py-1.5 border border-slate-700 focus:outline-none focus:border-emerald-500 truncate cursor-pointer"
-                >
-                  {farmsList.map((farm) => (
-                    <option key={farm.id} value={farm.id}>
-                      {farm.name} ({farm.ageWeek}) — {farm.status === 'COMPLETED' ? '🟢 COMPLETED' : '🟡 DRAFT'}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-center gap-1.5 self-end">
-                <button
-                  type="button"
-                  onClick={() => setShowFarmDetailsModal(true)}
-                  className="bg-slate-800 hover:bg-slate-700 active:scale-95 text-emerald-400 border border-slate-700 font-bold px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-1 shrink-0 transition cursor-pointer"
-                  title="View Dedicated Farm Details & Audit"
-                >
-                  <FileText className="w-3.5 h-3.5" /> Details
-                </button>
-                <button
-                  type="button"
-                  onClick={handleOpenNewFarmModal}
-                  className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-slate-950 font-black px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-1 shrink-0 transition cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" /> New Farm
-                </button>
-              </div>
-            </div>
-
-            {/* Progress & Draft Indicator Banner (Req 1) */}
-            <div className="flex items-center justify-between p-2.5 rounded-xl border mb-3 bg-slate-800/90 border-slate-700 shadow-sm">
-              <div className="flex items-center gap-2">
-                {farmStatus === 'DRAFT' ? (
-                  <>
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
-                    <div>
-                      <span className="text-xs font-bold text-amber-300">
-                        🟡 DRAFT IN PROGRESS ({completionStats.completedLinesCount} of {completionStats.totalLinesCount} lines completed)
-                      </span>
-                      <span className="text-[10px] text-slate-400 block">
-                        {completionStats.incompleteLines.length > 0 
-                          ? `${completionStats.incompleteLines.length} lines remaining to unlock submission`
-                          : '100% Weighed! Ready for final submission.'}
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0" />
-                    <div>
-                      <span className="text-xs font-bold text-emerald-400">🟢 COMPLETED & SUBMITTED</span>
-                      <span className="text-[10px] text-slate-400 block">
-                        Submitted by {farmAudit?.submittedBy || farmAudit?.lastSubmittedBy || 'Supervisor'} at {farmAudit?.lastSubmittedAt || 'Recent'}
-                      </span>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <span className="text-xs font-mono font-bold text-slate-300 shrink-0">
-                {completionStats.progressPercent}% Done
-              </span>
-            </div>
-
-            {/* PROMINENT BATCH SUBMIT BANNER / ACTION ON HOME (Req 1 & 2) */}
-            <div className={`mb-3 p-3.5 rounded-2xl border shadow-xs flex items-center justify-between transition-all ${
-              farmStatus === 'DRAFT' 
-                ? 'bg-amber-500/10 border-amber-500/40 text-amber-950' 
-                : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-950'
-            }`}>
-              <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                <div className={`p-2 rounded-xl shrink-0 ${
-                  farmStatus === 'DRAFT' ? 'bg-amber-500 text-white animate-pulse' : 'bg-emerald-600 text-white'
-                }`}>
-                  <UploadCloud className="w-4 h-4" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-black truncate">
-                      {farmStatus === 'DRAFT' ? 'Draft Farm Weighing' : 'Farm Weighing Completed'}
-                    </span>
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold shrink-0 ${
-                      farmStatus === 'DRAFT' ? 'bg-amber-200 text-amber-900 font-extrabold' : 'bg-emerald-200 text-emerald-900'
-                    }`}>
-                      {farmStatus === 'DRAFT' ? '🟡 DRAFT' : '🟢 COMPLETED'}
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-slate-500 truncate">
-                    {farmStatus === 'COMPLETED' && farmAudit?.lastSubmittedAt 
-                      ? `Submitted: ${farmAudit.lastSubmittedAt}`
-                      : completionStats.isFarm100PercentWeighed
-                        ? '100% Weighed! Ready for final submission.'
-                        : `${completionStats.incompleteLines.length} lines unweighed before submission.`}
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleCompleteFarmSubmission}
-                disabled={isSubmittingBatch}
-                className={`font-black px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer shrink-0 disabled:opacity-50 transition ${
-                  !completionStats.isFarm100PercentWeighed
-                    ? 'bg-amber-600/90 hover:bg-amber-600 text-white shadow-amber-600/20'
-                    : 'bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white shadow-emerald-600/20'
-                }`}
-              >
-                {isSubmittingBatch ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Submitting...</span>
-                  </>
-                ) : !completionStats.isFarm100PercentWeighed ? (
-                  <>
-                    <Lock className="w-3.5 h-3.5 text-amber-200" />
-                    <span>Submit (Locked)</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle className="w-3.5 h-3.5" />
-                    <span>Submit Farm Weighing</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* Cloud Sync Status Indicator */}
-            <div className="flex items-center justify-between px-1 mb-3 text-[11px] text-slate-500 font-medium">
-              <div className="flex items-center gap-1.5">
-                {syncStatus === 'saving' ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />
-                    <span className="text-amber-600 font-bold">
-                      {pendingSyncCount > 0 ? `Syncing (${pendingSyncCount} pending)...` : 'Saving to Cloud...'}
-                    </span>
-                  </>
-                ) : syncStatus === 'refreshing' ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 text-sky-500 animate-spin" />
-                    <span className="text-sky-600 font-bold">Syncing...</span>
-                  </>
-                ) : syncStatus === 'offline' ? (
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-                    <span className="text-amber-600 font-bold">
-                      Offline {pendingSyncCount > 0 ? `(${pendingSyncCount} pending)` : '(Local Cache)'}
-                    </span>
-                    {pendingSyncCount > 0 && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); flushPendingQueue(); }}
-                        className="text-[10px] bg-amber-100 hover:bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded font-black cursor-pointer transition active:scale-95"
-                        title="Upload pending offline records now"
-                      >
-                        Sync Now
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <>
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span className="text-emerald-700 font-bold">Live Cloud Sync Active</span>
-                  </>
-                )}
-              </div>
-
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-slate-500">Last Updated: {lastUpdatedString}</span>
-                <button
-                  onClick={handleManualRefresh}
-                  disabled={isRefreshingCloud}
-                  title="Pull latest weights from Cloud"
-                  className="p-1 hover:bg-slate-200 text-slate-500 hover:text-emerald-600 rounded-md transition active:scale-90 cursor-pointer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingCloud ? 'animate-spin text-emerald-600' : ''}`} />
-                </button>
-                <button
-                  onClick={() => setShowCloudSettingsModal(true)}
-                  title="Configure Cloud Backend URL"
-                  className="p-1 hover:bg-slate-200 text-slate-500 hover:text-slate-800 rounded-md transition active:scale-90 cursor-pointer"
-                >
-                  <Cloud className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Top Quick Profile Card */}
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs mb-4">
-              {/* Top Row: Flock Status & Live Date/Time (Responsive flex layout prevents text overlap) */}
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1.5 pb-2.5 border-b border-slate-100">
-                <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 inline-block shrink-0">
-                  Poultry Flock Live
-                </span>
-                <span className="text-[10px] sm:text-xs font-mono font-bold text-amber-800 bg-amber-50 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-lg border border-amber-200 shadow-2xs leading-tight whitespace-nowrap">
-                  {formattedDateTime}
-                </span>
-              </div>
-
-              {/* Full Width Farm Name (Never Truncated with ...) */}
-              <h1 className="text-lg sm:text-xl font-black text-slate-900 mt-2.5 tracking-tight flex items-center gap-2 break-words leading-snug">
-                <Building2 className="w-5 h-5 text-emerald-600 shrink-0" />
-                <span className="break-words">{farmName}</span>
-              </h1>
-
-              {/* Tag Details */}
-              <div className="flex items-center gap-2 mt-3 pt-2.5 border-t border-slate-100 text-xs">
-                <span className="bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg font-bold border border-slate-200">
-                  Age: {ageWeek}
-                </span>
-                <span className="bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg border border-slate-200">
-                  {season} Brood
-                </span>
-                <span className="bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg border border-slate-200 font-mono">
-                  {sheds.length} Sheds
-                </span>
-              </div>
-            </div>
-
-            {/* Quick KPI Overview */}
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <div className="bg-white p-3 rounded-2xl border border-slate-200 text-center shadow-xs">
-                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Female Avg (♀)</span>
-                <div className="text-xl font-black text-emerald-600 font-mono mt-1">{consolidated.fStats.avg}g</div>
-                <div className="text-[10px] text-slate-400 font-mono mt-0.5">
-                  Target: {stdWeightFemale}g (Std Uniformity: {consolidated.fStats.sPct}%)
-                </div>
-              </div>
-              <div className="bg-white p-3 rounded-2xl border border-slate-200 text-center shadow-xs">
-                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Male Avg (♂)</span>
-                <div className="text-xl font-black text-blue-600 font-mono mt-1">{consolidated.mStats.avg}g</div>
-                <div className="text-[10px] text-slate-400 font-mono mt-0.5">
-                  Target: {stdWeightMale}g (Std Uniformity: {consolidated.mStats.sPct}%)
-                </div>
-              </div>
-            </div>
-
-            {/* Task Action Menu */}
-            <div className="space-y-3 flex-1">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 px-1">Flock Operations</p>
-
-              {/* 1. Enter Weights */}
-              <button
-                onClick={navigateToShedSelect}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-md shadow-emerald-600/20 text-white group cursor-pointer"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-white/20 rounded-xl text-white">
-                    <Scale className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h2 className="font-black text-base text-white">Enter Bird Weights</h2>
-                    <p className="text-xs text-emerald-100">Shed › Part › Line weighing cards</p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-emerald-200 group-hover:translate-x-1 transition" />
-              </button>
-
-              {/* 2. Live Activity Updates Card */}
-              <button
-                onClick={() => navigateTo('history')}
-                className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group cursor-pointer"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-rose-50 rounded-xl text-rose-600 border border-rose-200 relative">
-                    <History className="w-6 h-6" />
-                    <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-                  </div>
-                  <div>
-                    <h2 className="font-black text-base text-slate-900 flex items-center gap-2">
-                      Live Updates History
-                      <span className="text-[10px] bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full font-bold">
-                        ● LIVE FEED
-                      </span>
-                    </h2>
-                    <p className="text-xs text-slate-500">Track which farm, shed & line is being weighed in real-time</p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition" />
-              </button>
-
-              {/* 3. Consolidated Report */}
-              <button
-                onClick={() => navigateTo('conclusion')}
-                className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group cursor-pointer"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-amber-50 rounded-xl text-amber-600 border border-amber-200">
-                    <Sparkles className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h2 className="font-black text-base text-slate-900">Consolidated Conclusion</h2>
-                    <p className="text-xs text-slate-500">Master report, Uniformity %, CV%</p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition" />
-              </button>
-
-              {/* 3. Manage Sheds */}
-              <button
-                onClick={() => navigateTo('sheds_manage')}
-                className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group cursor-pointer"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-sky-50 rounded-xl text-sky-600 border border-sky-200">
-                    <Layers className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h2 className="font-black text-base text-slate-900">Manage & Compare Sheds</h2>
-                    <p className="text-xs text-slate-500">Add, rename, delete sheds & view stats</p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition" />
-              </button>
-
-              {/* 4. Setup */}
-              <button
-                onClick={() => navigateTo('setup')}
-                className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl flex items-center justify-between text-left shadow-xs border border-slate-200 group cursor-pointer"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-purple-50 rounded-xl text-purple-600 border border-purple-200">
-                    <Settings className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h2 className="font-black text-base text-slate-900">Farm & Flock Details</h2>
-                    <p className="text-xs text-slate-500">Change Name, Date, Age & Export Excel</p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition" />
-              </button>
-            </div>
-
-            {/* Quick Export in Footer */}
-            <div className="mt-4 pt-3 border-t border-slate-200">
-              <button
-                onClick={handleDownloadExcel}
-                className="w-full bg-white hover:bg-slate-100 text-slate-800 py-3 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 border border-slate-300 shadow-xs active:scale-95 transition cursor-pointer"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                <span>Save / Share Complete 13-Sheet .xlsx</span>
-              </button>
-            </div>
-          </div>
+        {/* ========================================================= */}
+        {/* DEDICATED FULL-SCREEN SUBMISSION PAGE (Req 3)             */}
+        {/* ========================================================= */}
+        {currentScreen === 'submit_page' && (
+          <DedicatedSubmitScreen
+            farm={currentActiveFarmSummary}
+            completionStats={completionStats}
+            farmStatus={farmStatus}
+            farmAudit={farmAudit}
+            syncStatus={syncStatus}
+            pendingSyncCount={pendingSyncCount}
+            isSubmittingBatch={isSubmittingBatch}
+            onBack={handleGoBack}
+            onSubmitSuccess={handleCompleteFarmSubmission}
+            onDownloadExcel={handleDownloadExcel}
+            onJumpToLine={jumpToIncompleteLine}
+          />
         )}
 
         {/* ========================================================= */}
@@ -2792,38 +2526,27 @@ export default function App() {
               </span>
             </div>
 
-            {/* Prominent Submit Farm Weighing Bar on Weigh Pad (Req 2 & 3) */}
+            {/* Navigation to Dedicated Submit Screen (Req 3) */}
             <div className="mt-2">
               <button
                 type="button"
-                onClick={handleCompleteFarmSubmission}
-                disabled={isSubmittingBatch}
-                className={`w-full font-black py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition cursor-pointer disabled:opacity-50 ${
-                  !completionStats.isFarm100PercentWeighed
-                    ? 'bg-amber-600/90 hover:bg-amber-600 text-white shadow-amber-600/20'
-                    : 'bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white shadow-emerald-600/25'
-                }`}
+                onClick={() => navigateTo('submit_page')}
+                className="w-full font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-between bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-white shadow-md active:scale-95 transition cursor-pointer"
               >
-                {isSubmittingBatch ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Submitting Farm Weighing Batch...</span>
-                  </>
-                ) : !completionStats.isFarm100PercentWeighed ? (
-                  <>
-                    <Lock className="w-4 h-4 text-amber-200" />
-                    <span>
-                      Submit Farm Weighing (Locked - {completionStats.incompleteLines.length} Pending Lines)
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle className="w-4 h-4" />
-                    <span>
-                      Submit Farm Weighing {farmStatus === 'DRAFT' ? '(Ready)' : '(Completed)'}
-                    </span>
-                  </>
-                )}
+                <div className="flex items-center gap-2">
+                  <UploadCloud className="w-4 h-4 text-emerald-400" />
+                  <span>Go to Dedicated Submit Screen</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    completionStats.isFarm100PercentWeighed
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  }`}>
+                    {completionStats.progressPercent}% Weighed
+                  </span>
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                </div>
               </button>
             </div>
           </div>
@@ -3171,7 +2894,7 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* SCREEN: LIVE UPDATES HISTORY SCREEN                       */}
+        {/* SCREEN: SUBMISSIONS UPDATE LOG SCREEN (Req 4)             */}
         {/* ========================================================= */}
         {currentScreen === 'history' && (
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
@@ -3184,35 +2907,35 @@ export default function App() {
                 <ArrowLeft className="w-4 h-4" /> Home
               </button>
               <div className="flex items-center gap-1.5">
-                <span className="flex items-center gap-1.5 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-full text-[10px] font-black text-rose-700 shadow-2xs">
-                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-                  <span>LIVE CLOUD FEED</span>
+                <span className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full text-[10px] font-black text-emerald-700 shadow-2xs">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span>SUBMISSIONS UPDATE</span>
                 </span>
                 <button
                   onClick={fetchLatestLogs}
                   disabled={isRefreshingLogs}
                   className="p-1.5 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-slate-600 hover:text-emerald-600 transition active:scale-90 cursor-pointer"
-                  title="Refresh activity logs"
+                  title="Refresh submissions update"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingLogs ? 'animate-spin text-emerald-600' : ''}`} />
                 </button>
               </div>
             </div>
 
-            {/* Title & Live Status Banner */}
-            <div className="bg-gradient-to-r from-rose-50 via-amber-50 to-emerald-50 border border-rose-200/80 p-3 rounded-2xl mb-3 shadow-2xs">
+            {/* Title & Status Banner */}
+            <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 border border-emerald-200/80 p-3 rounded-2xl mb-3 shadow-2xs">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-xs font-black uppercase tracking-wider text-rose-900 flex items-center gap-1.5">
-                    <Radio className="w-4 h-4 text-rose-600 animate-pulse" />
-                    Multi-Device Live Timeline
+                  <h2 className="text-xs font-black uppercase tracking-wider text-emerald-900 flex items-center gap-1.5">
+                    <History className="w-4 h-4 text-emerald-600" />
+                    Submissions Update Log
                   </h2>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    Real-time weighing activity logged across farms and supervisors
+                    Verified batch submissions finalized across farm units
                   </p>
                 </div>
                 <span className="text-[10px] font-mono font-bold text-slate-600 bg-white/80 px-2 py-1 rounded-lg border border-slate-200">
-                  {activityLogs.length} updates
+                  {activityLogs.length} submissions
                 </span>
               </div>
             </div>
@@ -3230,17 +2953,6 @@ export default function App() {
                 All Farms ({activityLogs.length})
               </button>
               <button
-                onClick={() => setHistoryFilter('live')}
-                className={`flex-1 py-1.5 rounded-lg transition text-center cursor-pointer flex items-center justify-center gap-1 ${
-                  historyFilter === 'live' 
-                    ? 'bg-rose-600 text-white shadow-xs font-black' 
-                    : 'text-slate-600 hover:text-rose-700'
-                }`}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full ${historyFilter === 'live' ? 'bg-white' : 'bg-rose-500'} animate-pulse`}></span>
-                Live Only
-              </button>
-              <button
                 onClick={() => setHistoryFilter('currentFarm')}
                 className={`flex-1 py-1.5 rounded-lg transition text-center cursor-pointer truncate px-1 ${
                   historyFilter === 'currentFarm' 
@@ -3252,15 +2964,10 @@ export default function App() {
               </button>
             </div>
 
-            {/* Activity Logs Stream */}
+            {/* Submissions Update Logs Stream */}
             <div className="space-y-2.5 overflow-y-auto flex-1 pb-4">
               {(() => {
-                const now = Date.now();
                 const filtered = activityLogs.filter(log => {
-                  if (historyFilter === 'live') {
-                    const ageMs = now - new Date(log.timestamp).getTime();
-                    return ageMs < 120 * 1000 || log.isLive;
-                  }
                   if (historyFilter === 'currentFarm') {
                     return log.farmId === activeFarmId || log.farmName.trim().toLowerCase() === farmName.trim().toLowerCase();
                   }
@@ -3273,11 +2980,9 @@ export default function App() {
                       <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-400">
                         <History className="w-6 h-6" />
                       </div>
-                      <h4 className="font-black text-sm text-slate-800">No Activity Logs Found</h4>
+                      <h4 className="font-black text-sm text-slate-800">No Submissions Recorded</h4>
                       <p className="text-xs text-slate-500 max-w-xs mx-auto">
-                        {historyFilter === 'live' 
-                          ? 'No birds weighed in the last 2 minutes. Enter a bird weight to trigger live broadcast!'
-                          : 'No updates recorded for this filter yet. When supervisors enter bird weights, they will appear here in real time.'}
+                        No batch submissions recorded yet. When a farm batch is finalized via the Submit page, it will be logged here.
                       </p>
                       <button
                         onClick={() => navigateTo('shed_select')}
@@ -3290,16 +2995,12 @@ export default function App() {
                 }
 
                 return filtered.map((log) => {
-                  const logDate = new Date(log.timestamp);
-                  const ageMs = now - logDate.getTime();
-                  const isVeryRecent = ageMs < 120 * 1000 || log.isLive;
-
                   return (
                     <div 
                       key={log.id} 
                       className="p-3.5 rounded-2xl border bg-white border-slate-200 shadow-2xs hover:border-slate-300 transition-all"
                     >
-                      {/* Top Header: Farm Name & Completed Status */}
+                      {/* Top Header: Farm Unit Name & COMPLETED Status */}
                       <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-100">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -3308,22 +3009,28 @@ export default function App() {
 
                         <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 rounded-full text-[9px] font-black shrink-0 flex items-center gap-1">
                           <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                          SUBMISSION COMPLETED
+                          COMPLETED
                         </span>
                       </div>
 
-                      {/* Scope / Summary Metrics */}
-                      <div className="mt-2.5 grid grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-xs">
+                      {/* Summary Metrics: Total Birds Sampled & Overall Average Weight */}
+                      <div className="mt-2.5 grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-xs">
                         <div>
-                          <span className="text-[9px] text-slate-500 font-bold uppercase block">Total Weighed</span>
+                          <span className="text-[9px] text-slate-500 font-bold uppercase block">Total Birds Sampled</span>
                           <span className="font-extrabold text-slate-900 text-sm font-mono">
                             {log.sampleCount || 0} Birds
                           </span>
                         </div>
                         <div>
+                          <span className="text-[9px] text-emerald-600 font-bold uppercase block">Overall Avg Weight</span>
+                          <span className="font-extrabold text-emerald-700 text-sm font-mono">
+                            {log.avgWeight ? `${log.avgWeight}g` : (log.femaleAvgWeight || log.maleAvgWeight ? `${log.femaleAvgWeight || log.maleAvgWeight}g` : 'N/A')}
+                          </span>
+                        </div>
+                        <div>
                           <span className="text-[9px] text-pink-600 font-bold uppercase block">Female Act B.Wt</span>
                           <span className="font-extrabold text-pink-700 text-sm font-mono">
-                            {log.femaleAvgWeight ? `${log.femaleAvgWeight}g` : (log.avgWeight ? `${log.avgWeight}g` : 'N/A')}
+                            {log.femaleAvgWeight ? `${log.femaleAvgWeight}g` : 'N/A'}
                           </span>
                         </div>
                         <div>
@@ -3335,12 +3042,14 @@ export default function App() {
                       </div>
 
                       {/* Action summary text */}
-                      <p className="mt-2 text-[11px] font-semibold text-slate-700 bg-slate-50/60 px-2 py-1 rounded-lg border border-slate-100">
-                        {log.action}
-                      </p>
+                      {log.action && (
+                        <p className="mt-2 text-[11px] font-semibold text-slate-700 bg-slate-50/60 px-2 py-1 rounded-lg border border-slate-100">
+                          {log.action}
+                        </p>
+                      )}
 
-                      {/* Footer: Submitted By & Formatted Timestamp: Date(DD-MM-YYYY) - Time(HH:MM:SS AM/PM) */}
-                      <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 mt-2 border-t border-slate-100">
+                      {/* Footer: Submitted By (User Name & Role) and Submission Time: Date(DD-MM-YYYY) - Time(HH:MM:SS AM/PM) */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between text-[11px] text-slate-500 pt-2 mt-2 border-t border-slate-100 gap-1.5">
                         <div className="flex items-center gap-1.5">
                           <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[9px] font-bold">
                             {(log.userName || 'S').charAt(0).toUpperCase()}
@@ -4223,12 +3932,12 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        handleCompleteFarmSubmission();
                         setShowFarmDetailsModal(false);
+                        navigateTo('submit_page');
                       }}
                       className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer"
                     >
-                      Submit Now
+                      Go to Submit Screen
                     </button>
                   </div>
                 )}
@@ -4244,7 +3953,7 @@ export default function App() {
                   className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5"
                 >
                   <History className="w-3.5 h-3.5" />
-                  View Audit Logs
+                  View Submissions Update
                 </button>
                 <button
                   type="button"

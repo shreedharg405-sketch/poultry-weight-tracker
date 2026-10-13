@@ -1,6 +1,6 @@
 import { ShedData } from './excelExportService';
 
-export type UserRole = 'Admin' | 'Manager' | 'Supervisor';
+export type UserRole = 'Admin' | 'Manager' | 'Supervisor' | 'Incharge';
 
 export interface AppUser {
   id: string;
@@ -58,6 +58,7 @@ export interface FarmSummary {
   season: 'Summer' | 'Winter';
   status?: FarmStatus;
   progressPercentage?: number;
+  assignedUserNames?: string[];
   updatedAt: string;
   createdAt?: string;
   _count?: { sheds: number };
@@ -72,10 +73,23 @@ export interface FullFarmData {
   season: 'Summer' | 'Winter';
   status?: FarmStatus;
   progressPercentage?: number;
+  assignedUserNames?: string[];
   updatedAt: string;
   createdAt?: string;
   sheds: ShedData[];
   audit?: FarmAudit;
+}
+
+export interface FarmData {
+  id: string;
+  name: string;
+  flockDate: string;
+  ageWeek: string;
+  season: 'Summer' | 'Winter';
+  status: 'DRAFT' | 'COMPLETED';
+  assignedUserNames: string[];
+  audit?: FarmAudit;
+  sheds: ShedData[];
 }
 
 // Normalize API URL to ensure valid protocol and clean /api suffix without duplicates

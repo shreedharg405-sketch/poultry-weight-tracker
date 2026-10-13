@@ -3,7 +3,7 @@ import { Lock, User, Briefcase, ShieldCheck, AlertCircle } from 'lucide-react';
 import { UserRole } from '../services/cloudSyncService';
 
 export interface SharedLoginProps {
-  onLoginSuccess: (user: { name: string; role: 'Admin' | 'Manager' | 'Supervisor' }) => void;
+  onLoginSuccess: (user: { name: string; role: UserRole }) => void;
   onCancel?: () => void;
   initialName?: string;
   initialRole?: UserRole;
@@ -118,11 +118,13 @@ export const SharedLoginScreen: React.FC<SharedLoginProps> = ({
           <option value="Admin">Admin (All Controls & Cloud Settings)</option>
           <option value="Manager">Manager (Read-Only Cloud Link)</option>
           <option value="Supervisor">Supervisor (Field Weighing & Drafts)</option>
+          <option value="Incharge">Incharge (Field Weighing & Drafts)</option>
         </select>
         <div className="mt-1 text-[10px] text-slate-400">
-          {role === 'Admin' && '🟣 Full authority: Configure cloud endpoints, manage and delete records.'}
-          {role === 'Manager' && '🔵 Operational oversight: Record flock data & multi-shed batches (Read-only cloud link).'}
-          {role === 'Supervisor' && '🟢 Field operations: Line weight entry and draft staging (Read-only cloud link).'}
+          {role === 'Admin' && '🟣 Full authority: Master overview, farm assignment & cloud integration.'}
+          {role === 'Manager' && '🔵 Supervisory oversight: Master roster, user assignments & conclusions.'}
+          {role === 'Supervisor' && '🟢 Field operations: Assigned farm weighing, draft staging & submissions.'}
+          {role === 'Incharge' && '🟢 Field operations: Assigned farm weighing, draft staging & submissions.'}
         </div>
       </div>
 
