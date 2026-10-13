@@ -1,14 +1,18 @@
 import { ShedData } from './excelExportService';
 
-export type UserRole = 'Admin' | 'Manager' | 'Supervisor' | 'Incharge';
+export type UserRole = 'Admin' | 'Manager' | 'Supervisor' | 'In-Charge' | 'Incharge';
 
 export interface AppUser {
   id: string;
+  username: string;
   name: string;
   email?: string;
-  role: UserRole | string;
+  role: UserRole;
   userRole?: UserRole;
   userName?: string;
+  status?: 'ACTIVE' | 'INACTIVE';
+  assignedFarms?: string[];
+  token?: string;
   isAuthenticated?: boolean;
 }
 
@@ -309,39 +313,179 @@ export const cloudApi = {
     return res.json();
   },
 
-  // 18. Register
-  async register(data: { name: string; email: string; password: string; role?: string }): Promise<{ user: AppUser }> {
-    const res = await fetch(`${getApiBaseUrl()}/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Registration failed' }));
-      throw new Error(err.error || `Registration failed (${res.status})`);
+  // 18. Login (Username & Password for all roles)
+  async login(data: { username: string; password: string }): Promise<{ token: string; user: AppUser }> {
+    const cleanUsername = data.username.trim().toLowerCase();
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (res.ok) {
+        return res.json();
+      }
+      const err = await res.json().catch(() => ({ error: 'Invalid username or password.' }));
+      throw new Error(err.error || 'Invalid username or password.');
+    } catch (networkErr: any) {
+      if (networkErr.message && networkErr.message.includes('Invalid username or password')) {
+        throw networkErr;
+      }
+      if (networkErr.message && networkErr.message.includes('deactivated')) {
+        throw networkErr;
+      }
+      if (networkErr.message && networkErr.message.includes('Too many failed')) {
+        throw networkErr;
+      }
+
+      // Offline fallback authentication
+      const offlineUsers: Array<{ username: string; name: string; password: string; role: UserRole; assignedFarms: string[]; status: 'ACTIVE' | 'INACTIVE' }> = [
+        { username: 'admin', name: 'System Administrator', password: 'Admin@123', role: 'Admin', assignedFarms: ['*'], status: 'ACTIVE' },
+        { username: 'manager', name: 'Flock Manager', password: 'Manager@123', role: 'Manager', assignedFarms: ['*'], status: 'ACTIVE' },
+        { username: 'supervisor', name: 'Suresh Kumar', password: 'Super@123', role: 'Supervisor', assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'], status: 'ACTIVE' },
+        { username: 'incharge', name: 'Ramesh Patel', password: 'Incharge@123', role: 'In-Charge', assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'], status: 'ACTIVE' },
+      ];
+
+      const customOfflineStr = localStorage.getItem('poultry_offline_users');
+      if (customOfflineStr) {
+        try {
+          const custom = JSON.parse(customOfflineStr);
+          if (Array.isArray(custom)) offlineUsers.push(...custom);
+        } catch {}
+      }
+
+      const match = offlineUsers.find(u => u.username.toLowerCase() === cleanUsername);
+      if (match && match.password === data.password.trim()) {
+        if (match.status === 'INACTIVE') {
+          throw new Error('Account is deactivated. Please contact your Administrator.');
+        }
+        return {
+          token: `offline-${Date.now()}`,
+          user: {
+            id: `u-${match.username}`,
+            username: match.username,
+            name: match.name,
+            role: match.role,
+            status: match.status,
+            assignedFarms: match.assignedFarms,
+            isAuthenticated: true,
+          }
+        };
+      }
+
+      throw new Error('Invalid username or password.');
     }
-    return res.json();
   },
 
-  // 19. Login
-  async login(data: { email: string; password: string }): Promise<{ user: AppUser }> {
-    const res = await fetch(`${getApiBaseUrl()}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Login failed' }));
-      throw new Error(err.error || `Login failed (${res.status})`);
+  // 19. Get Current User Session (Token Verification)
+  async getMe(token: string): Promise<{ user: AppUser }> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/auth/me`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (!res.ok) throw new Error('Session invalid');
+      return res.json();
+    } catch {
+      // Local session fallback
+      const saved = localStorage.getItem('poultry_current_user');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.isAuthenticated) return { user: parsed };
+      }
+      throw new Error('Session expired');
     }
-    return res.json();
   },
 
-  // 20. Get Users
+  // 20. Logout
+  async logout(): Promise<void> {
+    try {
+      await fetch(`${getApiBaseUrl()}/auth/logout`, { method: 'POST' }).catch(() => {});
+    } finally {
+      localStorage.removeItem('poultry_auth_token');
+      localStorage.removeItem('poultry_current_user');
+    }
+  },
+
+  // 21. Get User Accounts (Admin & Manager)
   async getUsers(): Promise<AppUser[]> {
-    const res = await fetch(`${getApiBaseUrl()}/auth/users`);
-    if (!res.ok) throw new Error(`Failed to fetch users (${res.status})`);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/auth/users`);
+      if (res.ok) return res.json();
+    } catch {}
+
+    // Fallback list
+    const defaults: AppUser[] = [
+      { id: 'u-admin-1', username: 'admin', name: 'System Administrator', role: 'Admin', status: 'ACTIVE', assignedFarms: ['*'] },
+      { id: 'u-manager-1', username: 'manager', name: 'Flock Manager', role: 'Manager', status: 'ACTIVE', assignedFarms: ['*'] },
+      { id: 'u-supervisor-1', username: 'supervisor', name: 'Suresh Kumar', role: 'Supervisor', status: 'ACTIVE', assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'] },
+      { id: 'u-incharge-1', username: 'incharge', name: 'Ramesh Patel', role: 'In-Charge', status: 'ACTIVE', assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'] },
+    ];
+    const custom = localStorage.getItem('poultry_offline_users');
+    if (custom) {
+      try {
+        const parsed = JSON.parse(custom);
+        if (Array.isArray(parsed)) {
+          return [...defaults, ...parsed.map((p: any, i: number) => ({ id: `u-custom-${i}`, ...p }))];
+        }
+      } catch {}
+    }
+    return defaults;
+  },
+
+  // 22. Create User Account (Admin Only)
+  async createUser(data: { username: string; name: string; password: string; role: UserRole; assignedFarms?: string[] }): Promise<AppUser> {
+    const res = await fetch(`${getApiBaseUrl()}/auth/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to create user' }));
+      throw new Error(err.error || `Failed to create user (${res.status})`);
+    }
     return res.json();
+  },
+
+  // 23. Update User Account / Assign Farms / Status (Admin Only)
+  async updateUser(id: string, data: { name?: string; role?: UserRole; status?: 'ACTIVE' | 'INACTIVE'; assignedFarms?: string[]; password?: string }): Promise<AppUser> {
+    const res = await fetch(`${getApiBaseUrl()}/auth/users/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to update user' }));
+      throw new Error(err.error || `Failed to update user (${res.status})`);
+    }
+    return res.json();
+  },
+
+  // 24. Reset User Password (Admin Only)
+  async resetUserPassword(id: string, newPassword: string): Promise<void> {
+    const res = await fetch(`${getApiBaseUrl()}/auth/users/${id}/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newPassword }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to reset password' }));
+      throw new Error(err.error || `Failed to reset password (${res.status})`);
+    }
+  },
+
+  // 25. Delete User Account (Admin Only)
+  async deleteUser(id: string): Promise<boolean> {
+    const res = await fetch(`${getApiBaseUrl()}/auth/users/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to delete user' }));
+      throw new Error(err.error || `Failed to delete user (${res.status})`);
+    }
+    return res.ok;
   },
 
   // 21. Get Activity Logs

@@ -46,7 +46,7 @@ import {
 } from './services/excelExportService';
 import { WINTER_BROOD_STANDARDS, SUMMER_BROOD_STANDARDS } from './services/benchmarks';
 import { LoadingScreen } from './components/LoadingScreen';
-import { SharedLoginScreen } from './components/SharedLoginScreen';
+import { LoginScreen } from './components/LoginScreen';
 import { SupervisorDashboard } from './components/SupervisorDashboard';
 import { ManagerAdminDashboard } from './components/ManagerAdminDashboard';
 import { DedicatedSubmitScreen } from './components/DedicatedSubmitScreen';
@@ -315,7 +315,7 @@ export default function App() {
   const [cloudTestResult, setCloudTestResult] = useState<any>(null);
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(() => offlineQueue.count());
 
-  // User Authentication State (Single Shared Farm Account Model + Role-Based Access)
+  // User Authentication State (Individual Account Model + Role-Based Auto-Routing)
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
     const saved = localStorage.getItem('poultry_current_user');
     if (saved) {
@@ -326,15 +326,19 @@ export default function App() {
           const normalizedRole: UserRole = 
             rawRole === 'Admin' ? 'Admin' :
             (rawRole === 'Manager' || rawRole === 'Farm Manager') ? 'Manager' :
+            (rawRole === 'In-Charge' || rawRole === 'Incharge') ? 'In-Charge' :
             'Supervisor';
-          const name = parsed.userName || parsed.name || 'Suresh Kumar';
+          const name = parsed.name || parsed.userName || 'Operator';
           return {
             id: parsed.id || 'u-user-1',
+            username: parsed.username || name.toLowerCase().replace(/\s+/g, '.'),
             name,
             userName: name,
             email: parsed.email || `${name.toLowerCase().replace(/\s+/g, '.')}@farm.local`,
             role: normalizedRole,
             userRole: normalizedRole,
+            status: parsed.status || 'ACTIVE',
+            assignedFarms: parsed.assignedFarms || [],
             isAuthenticated: true,
           };
         }
@@ -345,43 +349,97 @@ export default function App() {
 
   const currentUserRole: UserRole = useMemo(() => {
     if (!currentUser) return 'Supervisor';
-    if (currentUser.userRole) return currentUser.userRole;
-    if (currentUser.role === 'Admin') return 'Admin';
-    if (currentUser.role === 'Manager' || currentUser.role === 'Farm Manager') return 'Manager';
-    if (currentUser.role === 'Incharge') return 'Incharge';
+    const r = (currentUser.role || currentUser.userRole || '') as string;
+    if (r === 'Admin') return 'Admin';
+    if (r === 'Manager' || r === 'Farm Manager') return 'Manager';
+    if (r === 'In-Charge' || r === 'Incharge') return 'In-Charge';
     return 'Supervisor';
   }, [currentUser]);
 
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    try {
+      const token = localStorage.getItem('poultry_auth_token');
+      const savedUser = localStorage.getItem('poultry_current_user');
+      if (token && savedUser) {
+        const parsed = JSON.parse(savedUser);
+        return !!(parsed && parsed.isAuthenticated);
+      }
+    } catch {}
+    return false;
+  });
   const [isSwitchingUser, setIsSwitchingUser] = useState<boolean>(false);
+
+  // Session verification on mount with backend validation
+  useEffect(() => {
+    const token = localStorage.getItem('poultry_auth_token');
+    if (token) {
+      cloudApi.getMe(token).then(res => {
+        if (res && res.user) {
+          const u = res.user;
+          const normalizedRole: UserRole = 
+            u.role === 'Admin' ? 'Admin' :
+            u.role === 'Manager' ? 'Manager' :
+            (u.role === 'In-Charge' || u.role === 'Incharge') ? 'In-Charge' : 'Supervisor';
+          const authUser: AppUser = {
+            id: u.id,
+            username: u.username,
+            name: u.name,
+            userName: u.name,
+            email: u.email || `${u.username}@farm.local`,
+            role: normalizedRole,
+            userRole: normalizedRole,
+            status: u.status,
+            assignedFarms: u.assignedFarms || [],
+            isAuthenticated: true,
+          };
+          setCurrentUser(authUser);
+          localStorage.setItem('poultry_current_user', JSON.stringify(authUser));
+          setIsAuthenticated(true);
+        }
+      }).catch(err => {
+        console.warn('Session verification fallback/error:', err);
+        if (err?.message?.includes('Invalid') || err?.message?.includes('expired') || err?.status === 401) {
+          handleLogout();
+        }
+      });
+    }
+  }, []);
 
   // Save farmsList changes locally
   useEffect(() => {
     localStorage.setItem('poultry_farms_list_v2', JSON.stringify(farmsList));
   }, [farmsList]);
 
-  // Farm Access Assignment filtering (Req 2)
+  // Farm Access Assignment filtering: Admins and Managers see all farms;
+  // Supervisors and In-Charges see ONLY explicitly assigned farms
   const accessibleFarms = useMemo(() => {
     if (currentUserRole === 'Admin' || currentUserRole === 'Manager') {
       return farmsList;
     }
     const currentName = (currentUser?.userName || currentUser?.name || '').trim().toLowerCase();
-    if (!currentName) return farmsList;
+    const currentUsername = (currentUser?.username || '').trim().toLowerCase();
+    const assignedIds = currentUser?.assignedFarms || [];
+
     return farmsList.filter(f => {
+      // 1. Direct farm ID match from user's account assignedFarms
+      if (assignedIds.includes(f.id) || assignedIds.includes(f.name)) return true;
+      // 2. Name or username match in farm's assignedUserNames
       if (!f.assignedUserNames || f.assignedUserNames.length === 0) return false;
       return f.assignedUserNames.some(u => {
-        const uNorm = u.toLowerCase().replace(/\s*\(.*?\)/g, '').trim();
+        const uLower = u.toLowerCase();
+        const uNorm = uLower.replace(/\s*\(.*?\)/g, '').trim();
         const curNorm = currentName.replace(/\s*\(.*?\)/g, '').trim();
-        return u.toLowerCase().includes(currentName) || 
-               currentName.includes(uNorm) || 
-               uNorm.includes(curNorm);
+        return (
+          (currentName && (uLower.includes(currentName) || currentName.includes(uNorm) || uNorm.includes(curNorm))) ||
+          (currentUsername && (uLower.includes(currentUsername) || uNorm === currentUsername))
+        );
       });
     });
   }, [currentUserRole, currentUser, farmsList]);
 
   // Auto-switch to assigned farm if current active farm is not in supervisor's accessible farms
   useEffect(() => {
-    if (currentUserRole === 'Supervisor' || currentUserRole === 'Incharge') {
+    if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
       if (accessibleFarms.length > 0) {
         const isCurrentActiveValid = accessibleFarms.some(f => f.id === activeFarmId);
         if (!isCurrentActiveValid) {
@@ -403,36 +461,32 @@ export default function App() {
     showToast(`Updated operator assignments for ${target?.name || 'farm'}`);
   };
 
-  // Shared Farm Login Handler (Single Account Model + Role-Based Identity)
-  const handleSharedLoginSuccess = (user: { name: string; role: UserRole }) => {
-    const newUser: AppUser = {
-      id: `u-${Date.now()}`,
-      name: user.name,
-      userName: user.name,
-      email: `${user.name.toLowerCase().replace(/\s+/g, '.')}@farm.local`,
-      role: user.role,
-      userRole: user.role,
+  // Login Success Handler (Stores JWT Token & User Profile, Auto-Routes by Role)
+  const handleLoginSuccess = (user: AppUser, token: string) => {
+    const rawRole = user.role || user.userRole || 'Supervisor';
+    const normalizedRole: UserRole = 
+      rawRole === 'Admin' ? 'Admin' :
+      rawRole === 'Manager' ? 'Manager' :
+      (rawRole === 'In-Charge' || rawRole === 'Incharge') ? 'In-Charge' : 'Supervisor';
+
+    const authUser: AppUser = {
+      ...user,
+      userName: user.name || user.userName || user.username,
+      role: normalizedRole,
+      userRole: normalizedRole,
       isAuthenticated: true,
     };
-    setCurrentUser(newUser);
-    // Explicitly persist role-based session: { isAuthenticated: true, userName, userRole }
-    localStorage.setItem('poultry_current_user', JSON.stringify({
-      isAuthenticated: true,
-      userName: user.name,
-      userRole: user.role,
-      name: user.name,
-      role: user.role,
-      id: newUser.id,
-      email: newUser.email,
-    }));
+    setCurrentUser(authUser);
+    localStorage.setItem('poultry_auth_token', token);
+    localStorage.setItem('poultry_current_user', JSON.stringify(authUser));
     setIsAuthenticated(true);
     setIsSwitchingUser(false);
-    showToast(`Welcome, ${user.name} (${user.role})!`);
+    showToast(`Welcome, ${authUser.name} (${authUser.role})!`);
     setCurrentScreen('home');
   };
 
   const handleOpenNewFarmModal = () => {
-    if (currentUserRole === 'Supervisor' || currentUserRole === 'Incharge') {
+    if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
       showToast('Restricted: Manager or Admin permission required to create new farms.');
       return;
     }
@@ -494,15 +548,17 @@ export default function App() {
 
 
 
-  const handleLogout = () => {
-    if (confirm('Are you sure you want to log out from this session?')) {
-      setCurrentUser(null);
-      localStorage.removeItem('poultry_current_user');
-      setIsAuthenticated(false);
-      setIsSwitchingUser(false);
-      showToast('Logged out successfully.');
-      navigateTo('auth');
-    }
+  const handleLogout = async () => {
+    try {
+      await cloudApi.logout();
+    } catch {}
+    localStorage.removeItem('poultry_auth_token');
+    localStorage.removeItem('poultry_current_user');
+    setCurrentUser(null);
+    setIsAuthenticated(false);
+    setIsSwitchingUser(false);
+    showToast('Logged out successfully.');
+    setCurrentScreen('home');
   };
 
   const fetchLatestLogs = async () => {
@@ -815,7 +871,7 @@ export default function App() {
 
   const navigateTo = (screen: ScreenType) => {
     // Permission guard (Req 1 & 6)
-    if (screen === 'setup' && (currentUserRole === 'Supervisor' || currentUserRole === 'Incharge')) {
+    if (screen === 'setup' && (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge')) {
       showToast('Permission Denied: System configuration is restricted to Administrator.');
       return;
     }
@@ -1966,20 +2022,7 @@ export default function App() {
         <div className="w-full max-w-md min-h-screen bg-slate-50 border-x border-slate-200 flex flex-col shadow-2xl relative pb-6">
         
         {!isAuthenticated ? (
-          <div className="flex-1 flex flex-col justify-center p-4">
-            <div className="text-center mb-4">
-              <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-600/10 border border-emerald-500/30 text-emerald-500 mb-2 shadow-xs">
-                <ShieldCheck className="w-8 h-8" />
-              </div>
-              <h2 className="text-base font-black text-slate-900">Farm Team Authentication</h2>
-              <p className="text-xs text-slate-500">Shared Password & Role Identity Access</p>
-            </div>
-            <SharedLoginScreen 
-              initialName={currentUser?.userName || currentUser?.name || ''}
-              initialRole={currentUserRole}
-              onLoginSuccess={handleSharedLoginSuccess} 
-            />
-          </div>
+          <LoginScreen onLoginSuccess={handleLoginSuccess} />
         ) : (
           <>
         {/* ========================================================= */}
@@ -3173,10 +3216,10 @@ export default function App() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <SharedLoginScreen 
-                    onLoginSuccess={(user) => {
+                  <LoginScreen 
+                    onLoginSuccess={(user, token) => {
                       setIsSwitchingUser(false);
-                      handleSharedLoginSuccess(user);
+                      handleLoginSuccess(user, token);
                     }}
                     onCancel={currentUser ? () => setIsSwitchingUser(false) : undefined}
                   />

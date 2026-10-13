@@ -112,7 +112,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               Field Operations Workspace
             </span>
             <h2 className="text-sm font-black text-white mt-0.5">
-              Supervisor & Incharge Dashboard
+              {(userRole === 'In-Charge' || userRole === 'Incharge') ? 'In-Charge Dashboard' : 'Supervisor Dashboard'}
             </h2>
           </div>
           <span className="text-[10px] font-mono font-bold text-emerald-200 bg-emerald-950/60 px-2 py-0.5 rounded-lg border border-emerald-600/40">
