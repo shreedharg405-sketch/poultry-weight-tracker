@@ -96,7 +96,7 @@ weighingRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     try {
-      await prisma.weighingRecord.delete({ where: { id } });
+      await (prisma as any).weighingRecord?.delete({ where: { id } });
     } catch {
       // In-memory or ignored
     }

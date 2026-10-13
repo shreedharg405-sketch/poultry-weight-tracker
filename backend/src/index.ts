@@ -2,16 +2,14 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { healthRouter } from './routes/healthz.js';
-import { flockRouter } from './routes/flocks.js';
-import { shedRouter } from './routes/sheds.js';
-import { weighingRouter } from './routes/weighings.js';
+import { farmRouter } from './routes/farms.js';
 import { benchmarkRouter } from './routes/benchmarks.js';
 import { exportRouter } from './routes/export.js';
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
 // Middlewares
@@ -34,37 +32,49 @@ app.use((req, res, next) => {
   next();
 });
 
-// Routes
-app.use(healthRouter); // /healthz
-app.use('/api/sheds', shedRouter);
-app.use('/api/flocks', flockRouter);
-app.use('/api/weighings', weighingRouter);
-app.use('/api/weighing', weighingRouter);
+// Health check
+app.get('/healthz', (_req, res) => res.send('OK'));
+app.use(healthRouter);
+
+// Multi-Farm Cloud Routes
+app.use('/api', farmRouter);
+
+// Benchmarks & Export Routers
 app.use('/api/benchmarks', benchmarkRouter);
 app.use('/api/export', exportRouter);
 
 // Root route
-app.get('/', (req, res) => {
+app.get('/', (_req, res) => {
   res.json({
-    name: 'Poultry Body Weight & Uniformity Management API (Shed-Wise Edition)',
-    version: '2.0.0',
+    name: 'Poultry Body Weight Tracker - Multi-Farm Real-Time Cloud API',
+    version: '3.0.0',
     documentation: '/healthz',
     endpoints: [
-      '/healthz',
-      '/api/sheds',
-      '/api/sheds/:id/summary?week=12',
-      '/api/sheds/compare?week=12',
-      '/api/flocks',
-      '/api/weighings',
-      '/api/benchmarks',
-      '/api/export/shed/:id/week/:week/csv',
-      '/api/export/weighing/:id/csv'
+      'GET    /healthz',
+      'GET    /api/farms',
+      'POST   /api/farms',
+      'GET    /api/farms/:id',
+      'PUT    /api/farms/:id/details',
+      'DELETE /api/farms/:id',
+      'POST   /api/sheds',
+      'DELETE /api/sheds/:shedId',
+      'PUT    /api/sheds/:shedId',
+      'POST   /api/parts',
+      'DELETE /api/parts/:partId',
+      'PUT    /api/parts/:partId',
+      'POST   /api/lines',
+      'DELETE /api/lines/:lineId',
+      'POST   /api/lines/:lineId/weight',
+      'DELETE /api/lines/:lineId/weight/:index',
+      'POST   /api/lines/:lineId/clear',
+      'PUT    /api/farms/:id/sync',
+      'GET    /api/benchmarks'
     ]
   });
 });
 
 const server = app.listen(PORT, () => {
-  console.log(`🚀 Poultry Shed-Wise API server running on port ${PORT}`);
+  console.log(`🚀 Poultry Sync Server running on port ${PORT}`);
   console.log(`📡 Health check available at http://localhost:${PORT}/healthz`);
 });
 

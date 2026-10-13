@@ -3,7 +3,7 @@ import { downloadExcelFile } from '../utils/fileDownloader';
 import { WINTER_BROOD_STANDARDS, SUMMER_BROOD_STANDARDS } from './benchmarks';
 
 export interface PenLine {
-  id: number;
+  id: number | string;
   name: string;
   weights: number[];
 }

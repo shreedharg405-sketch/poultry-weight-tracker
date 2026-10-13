@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   Building2, 
   Calendar, 
@@ -17,7 +17,12 @@ import {
   AlertCircle,
   FileSpreadsheet,
   CheckCircle2,
-  LogOut
+  LogOut,
+  RefreshCw,
+  Cloud,
+  CloudOff,
+  Loader2,
+  Check
 } from 'lucide-react';
 import { 
   ShedData, 
@@ -31,6 +36,7 @@ import {
 } from './services/excelExportService';
 import { WINTER_BROOD_STANDARDS, SUMMER_BROOD_STANDARDS } from './services/benchmarks';
 import { LoadingScreen } from './components/LoadingScreen';
+import { cloudApi, FarmSummary, getApiBaseUrl } from './services/cloudSyncService';
 
 // Seasonal Target Benchmarks for all 23 Weeks
 const BENCHMARKS: Record<'Summer' | 'Winter', Record<string, { stdF: number; stdM: number }>> = {
@@ -60,6 +66,20 @@ const formatTime12H = (d: Date): string => {
   const ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12 || 12;
   return `${String(hours).padStart(2, '0')}:${minutes}:${seconds} ${ampm}`;
+};
+
+// Format Last Updated string (e.g., "Updated Today at 10:45 AM")
+const formatLastUpdated = (dateInput?: string | Date): string => {
+  if (!dateInput) return 'Just now';
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return 'Just now';
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const timeStr = formatTime12H(d);
+  if (isToday) {
+    return `Today at ${timeStr}`;
+  }
+  return `${formatDateDMY(d)} at ${timeStr}`;
 };
 
 export type ScreenType = 
@@ -143,10 +163,44 @@ export default function App() {
   const stdWeightFemale = BENCHMARKS[season][ageWeek]?.stdF || 1905;
   const stdWeightMale = BENCHMARKS[season][ageWeek]?.stdM || 1880;
 
+  // Multi-Farm Management & Real-Time Cloud Sync State
+  const [farmsList, setFarmsList] = useState<FarmSummary[]>([
+    {
+      id: 'farm-sai-1',
+      name: 'SAI FARM - UNIT 1',
+      flockDate: new Date().toISOString().split('T')[0],
+      ageWeek: 'W18',
+      season: 'Summer',
+      updatedAt: new Date().toISOString(),
+      _count: { sheds: 10 }
+    }
+  ]);
+  const [activeFarmId, setActiveFarmId] = useState<string>('farm-sai-1');
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'saving' | 'offline' | 'refreshing'>('synced');
+  const [lastUpdatedString, setLastUpdatedString] = useState<string>('Just now');
+  const [lastServerUpdatedAt, setLastServerUpdatedAt] = useState<string>('');
+  const [isRefreshingCloud, setIsRefreshingCloud] = useState<boolean>(false);
+
+  // New Farm Modal State
+  const [showNewFarmModal, setShowNewFarmModal] = useState<boolean>(false);
+  const [newFarmName, setNewFarmName] = useState<string>('');
+  const [newFarmFlockDate, setNewFarmFlockDate] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
+  const [newFarmAgeWeek, setNewFarmAgeWeek] = useState<string>('W18');
+  const [newFarmSeason, setNewFarmSeason] = useState<'Summer' | 'Winter'>('Summer');
+  const [isCreatingFarm, setIsCreatingFarm] = useState<boolean>(false);
+
+  // Cloud API Settings Modal State
+  const [showCloudSettingsModal, setShowCloudSettingsModal] = useState<boolean>(false);
+  const [customApiUrlInput, setCustomApiUrlInput] = useState<string>(() => getApiBaseUrl());
+  const [cloudTestStatus, setCloudTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
+
   // Active Selections for Hierarchy
   const [selectedShedId, setSelectedShedId] = useState('1');
   const [selectedPartId, setSelectedPartId] = useState('part-1-a');
-  const [selectedLineId, setSelectedLineId] = useState(1);
+  const [selectedLineId, setSelectedLineId] = useState<number | string>(1);
   const [inputWeight, setInputWeight] = useState('');
 
   // Modals & In-App Confirmations
@@ -156,7 +210,7 @@ export default function App() {
   const [editingShed, setEditingShed] = useState<{ id: string; name: string; type: 'Female' | 'Male' } | null>(null);
   const [editingPart, setEditingPart] = useState<{ id: string; name: string } | null>(null);
   const [partPendingDelete, setPartPendingDelete] = useState<{ id: string; name: string; totalWeights: number } | null>(null);
-  const [linePendingDelete, setLinePendingDelete] = useState<{ id: number; name: string; weights: number[] } | null>(null);
+  const [linePendingDelete, setLinePendingDelete] = useState<{ id: number | string; name: string; weights: number[] } | null>(null);
 
   // Toast Notification State
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -324,7 +378,7 @@ export default function App() {
 
   const handlePopState = (event?: PopStateEvent) => {
     const active = currentScreenRef.current;
-    const targetState = event?.state as { screen?: ScreenType; shedId?: string; partId?: string; lineId?: number } | null;
+    const targetState = event?.state as { screen?: ScreenType; shedId?: string; partId?: string; lineId?: number | string } | null;
     const hash = window.location.hash;
 
     // Restore hierarchy identifiers from event state if available
@@ -413,7 +467,7 @@ export default function App() {
     window.history.pushState({ screen: 'part_select', shedId, partId }, '', '#parts');
   };
 
-  const navigateToLineSelect = (shedId: string, partId: string, lineId?: number) => {
+  const navigateToLineSelect = (shedId: string, partId: string, lineId?: number | string) => {
     setSelectedShedId(shedId);
     setSelectedPartId(partId);
     if (lineId !== undefined) setSelectedLineId(lineId);
@@ -421,7 +475,7 @@ export default function App() {
     window.history.pushState({ screen: 'line_select', shedId, partId, lineId }, '', '#lines');
   };
 
-  const navigateToWeighPad = (shedId: string, partId: string, lineId: number) => {
+  const navigateToWeighPad = (shedId: string, partId: string, lineId: number | string) => {
     setSelectedShedId(shedId);
     setSelectedPartId(partId);
     setSelectedLineId(lineId);
@@ -454,29 +508,280 @@ export default function App() {
     window.history.go(-2);
   };
 
-  // Local Storage Persistence
-  useEffect(() => {
-    const saved = localStorage.getItem('poultry_flock_db_v3');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed.sheds) setSheds(parsed.sheds);
-        if (parsed.farmName) setFarmName(parsed.farmName);
-        if (parsed.date) setDate(parsed.date);
-        if (parsed.ageWeek) setAgeWeek(parsed.ageWeek);
-        if (parsed.season) setSeason(parsed.season);
-      } catch (e) {
-        console.error('Failed to load local storage:', e);
+  // Switch Active Farm
+  const switchFarm = useCallback(async (targetFarmId: string, silent = false) => {
+    setActiveFarmId(targetFarmId);
+    localStorage.setItem('poultry_active_farm_id', targetFarmId);
+    if (!silent) setSyncStatus('refreshing');
+
+    try {
+      const data = await cloudApi.getFarmDetails(targetFarmId);
+      if (data) {
+        setFarmName(data.name);
+        setDate(data.flockDate || new Date().toISOString().split('T')[0]);
+        setAgeWeek(data.ageWeek || 'W18');
+        setSeason((data.season as any) || 'Summer');
+        if (data.sheds && data.sheds.length > 0) {
+          setSheds(data.sheds);
+          setSelectedShedId(data.sheds[0].id);
+          const firstPart = data.sheds[0].parts[0];
+          if (firstPart) {
+            setSelectedPartId(firstPart.id);
+            if (firstPart.lines[0]) setSelectedLineId(firstPart.lines[0].id);
+          }
+        }
+        setLastServerUpdatedAt(data.updatedAt);
+        setLastUpdatedString(formatLastUpdated(data.updatedAt));
+        setSyncStatus('synced');
+        if (!silent) showToast(`Switched to ${data.name}`);
+        return;
+      }
+    } catch (err) {
+      console.warn('Switch farm cloud load error, falling back to local cache:', err);
+      setSyncStatus('offline');
+      // If offline, check local cache for this farm
+      const localCached = localStorage.getItem(`poultry_farm_${targetFarmId}`);
+      if (localCached) {
+        try {
+          const parsed = JSON.parse(localCached);
+          if (parsed.sheds) setSheds(parsed.sheds);
+          if (parsed.farmName) setFarmName(parsed.farmName);
+          if (parsed.date) setDate(parsed.date);
+          if (parsed.ageWeek) setAgeWeek(parsed.ageWeek);
+          if (parsed.season) setSeason(parsed.season);
+        } catch {}
       }
     }
   }, []);
 
+  // Initial Startup Bootstrap: Load Farms from Cloud with Offline Fallback
+  useEffect(() => {
+    async function initCloudFarms() {
+      // 1. First restore offline cached farms list immediately
+      const cachedFarms = localStorage.getItem('poultry_farms_list_v4');
+      const savedActive = localStorage.getItem('poultry_active_farm_id');
+      if (cachedFarms) {
+        try {
+          const parsed = JSON.parse(cachedFarms);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setFarmsList(parsed);
+            if (savedActive && parsed.some(f => f.id === savedActive)) {
+              setActiveFarmId(savedActive);
+            }
+          }
+        } catch {}
+      }
+
+      // 2. Fetch live farms from Render PostgreSQL
+      try {
+        const remoteFarms = await cloudApi.getFarms();
+        if (remoteFarms && remoteFarms.length > 0) {
+          setFarmsList(remoteFarms);
+          localStorage.setItem('poultry_farms_list_v4', JSON.stringify(remoteFarms));
+          const targetId = (savedActive && remoteFarms.some(f => f.id === savedActive)) 
+            ? savedActive 
+            : remoteFarms[0].id;
+          await switchFarm(targetId, true);
+          setSyncStatus('synced');
+          return;
+        }
+      } catch (err) {
+        console.warn('Could not connect to Cloud backend on startup, using offline cache:', err);
+        setSyncStatus('offline');
+      }
+    }
+
+    initCloudFarms();
+  }, [switchFarm]);
+
+  // Local Storage Persistence for active farm & offline redundancy
   useEffect(() => {
     localStorage.setItem(
       'poultry_flock_db_v3',
       JSON.stringify({ sheds, farmName, date, ageWeek, season })
     );
-  }, [sheds, farmName, date, ageWeek, season]);
+    if (activeFarmId) {
+      localStorage.setItem(
+        `poultry_farm_${activeFarmId}`,
+        JSON.stringify({ sheds, farmName, date, ageWeek, season })
+      );
+    }
+  }, [sheds, farmName, date, ageWeek, season, activeFarmId]);
+
+  // Real-Time Auto-Refresh / Background Cloud Polling (Every 15s)
+  useEffect(() => {
+    const pollInterval = setInterval(async () => {
+      // Do not interrupt if user is on weigh pad actively typing
+      if (currentScreenRef.current === 'weigh_pad' && inputWeight) return;
+
+      try {
+        const remoteFarms = await cloudApi.getFarms();
+        if (remoteFarms && remoteFarms.length > 0) {
+          setFarmsList(remoteFarms);
+          localStorage.setItem('poultry_farms_list_v4', JSON.stringify(remoteFarms));
+
+          const currentRemote = remoteFarms.find(f => f.id === activeFarmId);
+          if (currentRemote) {
+            if (currentRemote.updatedAt !== lastServerUpdatedAt) {
+              const full = await cloudApi.getFarmDetails(activeFarmId);
+              if (full && full.sheds) {
+                setSheds(full.sheds);
+                setFarmName(full.name);
+                setDate(full.flockDate);
+                setAgeWeek(full.ageWeek);
+                setSeason(full.season as any);
+                setLastServerUpdatedAt(full.updatedAt);
+                setLastUpdatedString(formatLastUpdated(full.updatedAt));
+                setSyncStatus('synced');
+              }
+            }
+          }
+        }
+        if (syncStatus === 'offline') setSyncStatus('synced');
+      } catch {
+        // Silently mark offline if background poll network failed
+      }
+    }, 15000);
+
+    return () => clearInterval(pollInterval);
+  }, [activeFarmId, lastServerUpdatedAt, inputWeight, syncStatus]);
+
+  // Manual Pull-To-Refresh from Cloud
+  const handleManualRefresh = async () => {
+    setIsRefreshingCloud(true);
+    setSyncStatus('refreshing');
+    try {
+      const remoteFarms = await cloudApi.getFarms();
+      if (remoteFarms && remoteFarms.length > 0) {
+        setFarmsList(remoteFarms);
+        localStorage.setItem('poultry_farms_list_v4', JSON.stringify(remoteFarms));
+      }
+      const full = await cloudApi.getFarmDetails(activeFarmId);
+      if (full && full.sheds) {
+        setSheds(full.sheds);
+        setFarmName(full.name);
+        setDate(full.flockDate);
+        setAgeWeek(full.ageWeek);
+        setSeason(full.season as any);
+        setLastServerUpdatedAt(full.updatedAt);
+        setLastUpdatedString(formatLastUpdated(full.updatedAt));
+      }
+      setSyncStatus('synced');
+      showToast('Cloud data synchronized!');
+    } catch {
+      setSyncStatus('offline');
+      showToast('Cloud offline: showing local data');
+    } finally {
+      setIsRefreshingCloud(false);
+    }
+  };
+
+  // Create New Farm Handler
+  const handleCreateFarm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newFarmName.trim()) {
+      showToast('Please enter a farm name');
+      return;
+    }
+    setIsCreatingFarm(true);
+    try {
+      const created = await cloudApi.createFarm({
+        name: newFarmName.trim(),
+        flockDate: newFarmFlockDate,
+        ageWeek: newFarmAgeWeek,
+        season: newFarmSeason,
+      });
+
+      if (created) {
+        const newSummary: FarmSummary = {
+          id: created.id,
+          name: created.name,
+          flockDate: created.flockDate,
+          ageWeek: created.ageWeek,
+          season: created.season,
+          updatedAt: created.updatedAt,
+          _count: { sheds: created.sheds?.length || 10 },
+        };
+        setFarmsList(prev => [newSummary, ...prev]);
+        setActiveFarmId(created.id);
+        localStorage.setItem('poultry_active_farm_id', created.id);
+        setFarmName(created.name);
+        setDate(created.flockDate);
+        setAgeWeek(created.ageWeek);
+        setSeason(created.season as any);
+        if (created.sheds && created.sheds.length > 0) {
+          setSheds(created.sheds);
+          setSelectedShedId(created.sheds[0].id);
+          const p1 = created.sheds[0].parts[0];
+          if (p1) {
+            setSelectedPartId(p1.id);
+            if (p1.lines[0]) setSelectedLineId(p1.lines[0].id);
+          }
+        }
+        setLastServerUpdatedAt(created.updatedAt);
+        setLastUpdatedString('Just now');
+        setSyncStatus('synced');
+        setShowNewFarmModal(false);
+        setNewFarmName('');
+        showToast(`Created Farm: ${created.name}`);
+      }
+    } catch (err: any) {
+      console.warn('Create farm cloud error, saving locally:', err);
+      const fallbackId = `farm-${Date.now()}`;
+      const newSummary: FarmSummary = {
+        id: fallbackId,
+        name: newFarmName.trim(),
+        flockDate: newFarmFlockDate,
+        ageWeek: newFarmAgeWeek,
+        season: newFarmSeason,
+        updatedAt: new Date().toISOString(),
+        _count: { sheds: sheds.length },
+      };
+      setFarmsList(prev => [newSummary, ...prev]);
+      setActiveFarmId(fallbackId);
+      setFarmName(newFarmName.trim());
+      setDate(newFarmFlockDate);
+      setAgeWeek(newFarmAgeWeek);
+      setSeason(newFarmSeason);
+      setShowNewFarmModal(false);
+      setNewFarmName('');
+      setSyncStatus('offline');
+      showToast(`Created offline: ${newFarmName.trim()}`);
+    } finally {
+      setIsCreatingFarm(false);
+    }
+  };
+
+  // Test Cloud Connection Handler
+  const handleTestCloudConnection = async () => {
+    setCloudTestStatus('testing');
+    try {
+      const url = customApiUrlInput.trim().replace(/\/+$/, '');
+      const healthUrl = url.endsWith('/api') ? url.replace(/\/api$/, '/healthz') : `${url}/healthz`;
+      const res = await fetch(healthUrl, { method: 'GET' });
+      if (res.ok) {
+        setCloudTestStatus('success');
+        showToast('Connection Successful! Cloud backend is online.');
+      } else {
+        setCloudTestStatus('failed');
+        showToast(`Connection error: Status ${res.status}`);
+      }
+    } catch {
+      setCloudTestStatus('failed');
+      showToast('Could not reach backend URL');
+    }
+  };
+
+  // Save Custom Cloud API URL
+  const handleSaveCloudSettings = () => {
+    const trimmed = customApiUrlInput.trim().replace(/\/+$/, '');
+    if (trimmed) {
+      localStorage.setItem('poultry_custom_api_url', trimmed);
+      showToast('Cloud API URL saved');
+      setShowCloudSettingsModal(false);
+      handleManualRefresh();
+    }
+  };
 
   // Active Pointers
   const activeShed = sheds.find(s => s.id === selectedShedId) || sheds[0];
@@ -535,6 +840,7 @@ export default function App() {
     const val = valToAdd !== undefined ? valToAdd : parseFloat(inputWeight);
     if (!val || isNaN(val) || val <= 0 || !activeShed || !activePart || !activeLine) return;
 
+    // 1. Optimistic local update (instant response)
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
@@ -552,10 +858,26 @@ export default function App() {
       };
     }));
     setInputWeight('');
+
+    // 2. Real-time Cloud Sync
+    const lineIdToSync = activeLine.id;
+    setSyncStatus('saving');
+    cloudApi.pushWeight(lineIdToSync, val)
+      .then(() => {
+        setSyncStatus('synced');
+        setLastUpdatedString('Updated Just now');
+      })
+      .catch((err) => {
+        console.warn('Weight sync error (offline):', err);
+        setSyncStatus('offline');
+      });
   };
 
   const handleDeleteWeight = (idx: number) => {
     if (!activeShed || !activePart || !activeLine) return;
+    const lineIdToSync = activeLine.id;
+
+    // 1. Optimistic local update
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
@@ -574,11 +896,24 @@ export default function App() {
         })
       };
     }));
+
+    // 2. Real-time Cloud Sync
+    setSyncStatus('saving');
+    cloudApi.deleteWeight(lineIdToSync, idx)
+      .then(() => {
+        setSyncStatus('synced');
+        setLastUpdatedString('Updated Just now');
+      })
+      .catch((err) => {
+        console.warn('Delete weight cloud error (offline):', err);
+        setSyncStatus('offline');
+      });
   };
 
   const handleClearLineWeights = () => {
     if (!activeShed || !activePart || !activeLine || activeLine.weights.length === 0) return;
     if (window.confirm(`Clear all ${activeLine.weights.length} weights in ${activeLine.name}?`)) {
+      const lineIdToSync = activeLine.id;
       setSheds(prev => prev.map(s => {
         if (s.id !== activeShed.id) return s;
         return {
@@ -593,6 +928,14 @@ export default function App() {
         };
       }));
       showToast(`Cleared weights in ${activeLine.name}`);
+
+      setSyncStatus('saving');
+      cloudApi.clearLineWeights(lineIdToSync)
+        .then(() => {
+          setSyncStatus('synced');
+          setLastUpdatedString('Updated Just now');
+        })
+        .catch(() => setSyncStatus('offline'));
     }
   };
 
@@ -611,6 +954,20 @@ export default function App() {
     setSelectedPartId(newPartId);
     setSelectedLineId(1);
     showToast(`${partName} added to ${activeShed.name}`);
+
+    setSyncStatus('saving');
+    cloudApi.addPart({ shedId: activeShed.id, name: partName })
+      .then((createdPart) => {
+        if (createdPart?.id) {
+          setSheds(prev => prev.map(s => s.id === activeShed.id ? {
+            ...s,
+            parts: s.parts.map(p => p.id === newPartId ? { ...p, id: createdPart.id, lines: createdPart.lines || p.lines } : p)
+          } : s));
+          setSelectedPartId(createdPart.id);
+        }
+        setSyncStatus('synced');
+      })
+      .catch(() => setSyncStatus('offline'));
   };
 
   const handleStartEditPart = (part: ShedPart) => {
@@ -620,15 +977,18 @@ export default function App() {
   const handleSaveEditPart = () => {
     if (!editingPart || !editingPart.name.trim() || !activeShed) return;
     const trimmed = editingPart.name.trim();
+    const partId = editingPart.id;
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
         ...s,
-        parts: s.parts.map(p => p.id === editingPart.id ? { ...p, name: trimmed } : p)
+        parts: s.parts.map(p => p.id === partId ? { ...p, name: trimmed } : p)
       };
     }));
     showToast(`Part renamed to "${trimmed}".`);
     setEditingPart(null);
+
+    cloudApi.updatePart(partId, trimmed).catch(() => {});
   };
 
   const handleDeletePart = (partId: string, e?: React.MouseEvent) => {
@@ -670,12 +1030,14 @@ export default function App() {
     }
     showToast(`${partName} deleted.`);
     setPartPendingDelete(null);
+
+    cloudApi.deletePart(partId).catch(() => {});
   };
 
   // --- LINE / PEN MANAGEMENT HANDLERS ---
   const handleAddLine = () => {
     if (!activeShed || !activePart) return;
-    const nextId = (activePart.lines.length ? Math.max(...activePart.lines.map(l => l.id)) : 0) + 1;
+    const nextId = (activePart.lines.length ? Math.max(...activePart.lines.map(l => typeof l.id === 'number' ? l.id : 0)) : 0) + 1;
     const newLineName = `Line ${nextId}`;
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
@@ -692,9 +1054,26 @@ export default function App() {
     }));
     setSelectedLineId(nextId);
     showToast(`${newLineName} added to ${activePart.name}`);
+
+    setSyncStatus('saving');
+    cloudApi.addLine({ partId: activePart.id, name: newLineName })
+      .then((createdLine) => {
+        if (createdLine?.id) {
+          setSheds(prev => prev.map(s => s.id === activeShed.id ? {
+            ...s,
+            parts: s.parts.map(p => p.id === activePart.id ? {
+              ...p,
+              lines: p.lines.map(l => l.id === nextId ? { ...l, id: createdLine.id } : l)
+            } : p)
+          } : s));
+          setSelectedLineId(createdLine.id);
+        }
+        setSyncStatus('synced');
+      })
+      .catch(() => setSyncStatus('offline'));
   };
 
-  const handleDeleteLine = (lineId: number, e?: React.MouseEvent) => {
+  const handleDeleteLine = (lineId: number | string, e?: React.MouseEvent) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -704,7 +1083,7 @@ export default function App() {
       showToast('A part must have at least 1 pen line.');
       return;
     }
-    const target = activePart.lines.find(l => l.id === lineId);
+    const target = activePart.lines.find(l => String(l.id) === String(lineId));
     if (!target) return;
 
     if (target.weights.length === 0) {
@@ -714,9 +1093,9 @@ export default function App() {
     }
   };
 
-  const executeDeleteLine = (lineId: number) => {
+  const executeDeleteLine = (lineId: number | string) => {
     if (!activeShed || !activePart) return;
-    const remaining = activePart.lines.filter(l => l.id !== lineId);
+    const remaining = activePart.lines.filter(l => String(l.id) !== String(lineId));
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
@@ -724,9 +1103,11 @@ export default function App() {
         parts: s.parts.map(p => p.id === activePart.id ? { ...p, lines: remaining } : p)
       };
     }));
-    setSelectedLineId(prev => (prev === lineId ? remaining[0].id : prev));
+    setSelectedLineId(prev => (String(prev) === String(lineId) ? remaining[0].id : prev));
     setLinePendingDelete(null);
     showToast('Line deleted.');
+
+    cloudApi.deleteLine(lineId).catch(() => {});
   };
 
   // --- SHED CREATION & EDITING ---
@@ -753,6 +1134,18 @@ export default function App() {
     setNewShedName('');
     setShowAddShedModal(false);
     showToast(`Created ${newShed.name}`);
+
+    setSyncStatus('saving');
+    cloudApi.addShed({ farmId: activeFarmId, name: newShedName.trim(), type: newShedType })
+      .then((createdShed) => {
+        if (createdShed?.id) {
+          setSheds(prev => prev.map(s => s.id === newId ? { ...s, id: createdShed.id, parts: createdShed.parts || s.parts } : s));
+          setSelectedShedId(createdShed.id);
+        }
+        setSyncStatus('synced');
+        setLastUpdatedString('Updated Just now');
+      })
+      .catch(() => setSyncStatus('offline'));
   };
 
   const handleStartEditShed = (shed: ShedData) => {
@@ -761,9 +1154,14 @@ export default function App() {
 
   const handleSaveEditShed = () => {
     if (!editingShed || !editingShed.name.trim()) return;
-    setSheds(prev => prev.map(s => s.id === editingShed.id ? { ...s, name: editingShed.name.trim(), type: editingShed.type } : s));
-    showToast(`Saved ${editingShed.name}`);
+    const trimmed = editingShed.name.trim();
+    const shedId = editingShed.id;
+    const shedType = editingShed.type;
+    setSheds(prev => prev.map(s => s.id === shedId ? { ...s, name: trimmed, type: shedType } : s));
+    showToast(`Saved ${trimmed}`);
     setEditingShed(null);
+
+    cloudApi.updateShed(shedId, { name: trimmed, type: shedType }).catch(() => {});
   };
 
   // --- COMPLETE 13-SHEET WORKBOOK EXPORT ---
@@ -826,6 +1224,77 @@ export default function App() {
         {/* ========================================================= */}
         {currentScreen === 'home' && (
           <div className="flex-1 flex flex-col p-4 animate-in fade-in duration-150">
+            {/* Top Farm Switcher & Live Cloud Status */}
+            <div className="bg-slate-900 p-3 rounded-2xl border border-slate-700 mb-3 shadow-md flex items-center justify-between">
+              <div className="flex-1 mr-2">
+                <label className="text-[9px] uppercase font-bold text-slate-400 block mb-0.5">Select Farm Unit</label>
+                <select
+                  value={activeFarmId}
+                  onChange={(e) => switchFarm(e.target.value)}
+                  className="w-full bg-slate-950 text-emerald-400 font-bold text-xs rounded-lg px-2.5 py-1.5 border border-slate-700 focus:outline-none focus:border-emerald-500 truncate cursor-pointer"
+                >
+                  {farmsList.map((farm) => (
+                    <option key={farm.id} value={farm.id}>
+                      {farm.name} ({farm.ageWeek})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                onClick={() => setShowNewFarmModal(true)}
+                className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-slate-950 font-black px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-1 shrink-0 self-end transition cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" /> New Farm
+              </button>
+            </div>
+
+            {/* Cloud Sync Status Indicator */}
+            <div className="flex items-center justify-between px-1 mb-3 text-[11px] text-slate-500 font-medium">
+              <div className="flex items-center gap-1.5">
+                {syncStatus === 'saving' ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                    <span className="text-amber-600 font-bold">Saving to Cloud...</span>
+                  </>
+                ) : syncStatus === 'refreshing' ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 text-sky-500 animate-spin" />
+                    <span className="text-sky-600 font-bold">Syncing...</span>
+                  </>
+                ) : syncStatus === 'offline' ? (
+                  <>
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                    <span className="text-amber-600 font-bold">Offline (Local Cache)</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span className="text-emerald-700 font-bold">Live Cloud Sync Active</span>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-slate-500">Last Updated: {lastUpdatedString}</span>
+                <button
+                  onClick={handleManualRefresh}
+                  disabled={isRefreshingCloud}
+                  title="Pull latest weights from Cloud"
+                  className="p-1 hover:bg-slate-200 text-slate-500 hover:text-emerald-600 rounded-md transition active:scale-90 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingCloud ? 'animate-spin text-emerald-600' : ''}`} />
+                </button>
+                <button
+                  onClick={() => setShowCloudSettingsModal(true)}
+                  title="Configure Cloud Backend URL"
+                  className="p-1 hover:bg-slate-200 text-slate-500 hover:text-slate-800 rounded-md transition active:scale-90 cursor-pointer"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
             {/* Top Quick Profile Card */}
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs mb-4">
               {/* Top Row: Flock Status & Live Date/Time (Responsive flex layout prevents text overlap) */}
@@ -1655,13 +2124,39 @@ export default function App() {
 
             <button
               onClick={() => {
-                showToast('Farm details saved!');
+                showToast('Syncing farm details to cloud...');
+                cloudApi.updateFarmDetails(activeFarmId, {
+                  name: farmName,
+                  flockDate: date,
+                  ageWeek,
+                  season
+                })
+                  .then(() => {
+                    setSyncStatus('synced');
+                    setLastUpdatedString('Updated Just now');
+                    showToast('Farm details synced to Cloud!');
+                  })
+                  .catch(() => {
+                    setSyncStatus('offline');
+                    showToast('Saved locally (Cloud offline)');
+                  });
                 navigateTo('home');
               }}
               className="w-full bg-purple-600 hover:bg-purple-700 py-3.5 rounded-xl font-black text-xs text-white shadow-md shadow-purple-600/20 active:scale-95 cursor-pointer"
             >
-              Save Details
+              Save Details & Sync Cloud
             </button>
+
+            <div className="mt-4 pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setShowCloudSettingsModal(true)}
+                className="w-full bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-2 cursor-pointer transition active:scale-95"
+              >
+                <Cloud className="w-4 h-4 text-emerald-600" />
+                Configure Cloud Backend URL
+              </button>
+            </div>
           </div>
         )}
 
@@ -1905,6 +2400,223 @@ export default function App() {
                 >
                   Yes, Delete Line
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODAL: CREATE NEW FARM (Part 1 & 4)                       */}
+        {/* ========================================================= */}
+        {showNewFarmModal && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
+              <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl border border-emerald-200">
+                    <Building2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-base text-slate-900">Add New Farm</h3>
+                    <p className="text-[11px] text-slate-500">Multi-Farm Cloud Synchronization</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowNewFarmModal(false)}
+                  className="text-slate-400 hover:text-slate-700 p-1 rounded-lg"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateFarm} className="space-y-3.5">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
+                    Farm Unit Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Green Valley Farm, Salem Unit 2"
+                    value={newFarmName}
+                    onChange={(e) => setNewFarmName(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
+                      Flock Date
+                    </label>
+                    <input
+                      type="date"
+                      value={newFarmFlockDate}
+                      onChange={(e) => setNewFarmFlockDate(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
+                      Age Week
+                    </label>
+                    <select
+                      value={newFarmAgeWeek}
+                      onChange={(e) => setNewFarmAgeWeek(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                    >
+                      {Object.keys(BENCHMARKS.Summer).map((w) => (
+                        <option key={w} value={w}>{w}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
+                    Brood Season Standard
+                  </label>
+                  <select
+                    value={newFarmSeason}
+                    onChange={(e) => setNewFarmSeason(e.target.value as any)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                  >
+                    <option value="Summer">Summer Brooding Curve</option>
+                    <option value="Winter">Winter Brooding Curve</option>
+                  </select>
+                </div>
+
+                <div className="bg-emerald-50/70 p-3 rounded-xl border border-emerald-200 text-[11px] text-emerald-800 flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <span>Will create standard 10 Sheds (Shed 1-10) with Female/Male partitions ready for weighing.</span>
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewFarmModal(false)}
+                    className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isCreatingFarm}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2.5 rounded-xl text-xs font-black text-slate-950 shadow-md shadow-emerald-600/20 active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    {isCreatingFarm ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Creating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Create Farm</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODAL: CLOUD BACKEND SETTINGS & CONNECTION TEST            */}
+        {/* ========================================================= */}
+        {showCloudSettingsModal && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
+              <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-sky-50 text-sky-600 rounded-xl border border-sky-200">
+                    <Cloud className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-base text-slate-900">Cloud Sync Settings</h3>
+                    <p className="text-[11px] text-slate-500">Render PostgreSQL Backend</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowCloudSettingsModal(false)}
+                  className="text-slate-400 hover:text-slate-700 p-1 rounded-lg"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
+                    Backend API Endpoint URL
+                  </label>
+                  <input
+                    type="text"
+                    value={customApiUrlInput}
+                    onChange={(e) => {
+                      setCustomApiUrlInput(e.target.value);
+                      setCloudTestStatus('idle');
+                    }}
+                    placeholder="https://your-backend.onrender.com/api"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-sky-600 focus:bg-white transition"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Default: {import.meta.env.VITE_API_URL || 'https://poultry-weight-backend.onrender.com/api'}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2.5 h-2.5 rounded-full ${
+                      cloudTestStatus === 'success' ? 'bg-emerald-500' :
+                      cloudTestStatus === 'failed' ? 'bg-rose-500' :
+                      cloudTestStatus === 'testing' ? 'bg-amber-500 animate-spin' : 'bg-slate-400'
+                    }`} />
+                    <span className="text-[11px] font-semibold text-slate-700">
+                      {cloudTestStatus === 'idle' && 'Status: Ready to test'}
+                      {cloudTestStatus === 'testing' && 'Testing connection...'}
+                      {cloudTestStatus === 'success' && 'Connected to Render PostgreSQL!'}
+                      {cloudTestStatus === 'failed' && 'Connection Failed (Check URL/Service)'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleTestCloudConnection}
+                    disabled={cloudTestStatus === 'testing'}
+                    className="bg-white hover:bg-slate-100 text-sky-700 border border-slate-300 px-2.5 py-1 rounded-lg text-[10px] font-bold active:scale-95 transition cursor-pointer"
+                  >
+                    Test Ping
+                  </button>
+                </div>
+
+                <div className="text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded-xl border border-slate-100 space-y-1">
+                  <p className="font-bold text-slate-700">Multi-Device Real-Time Sync Tips:</p>
+                  <p>• Point both phones to the same Render backend URL.</p>
+                  <p>• When you record weights on Phone A, Phone B updates in real-time!</p>
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      localStorage.removeItem('poultry_custom_api_url');
+                      setCustomApiUrlInput(getApiBaseUrl());
+                      showToast('Reset to default URL');
+                    }}
+                    className="bg-slate-100 hover:bg-slate-200 py-2.5 px-3 rounded-xl text-xs font-bold text-slate-600 active:scale-95 transition cursor-pointer"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveCloudSettings}
+                    className="flex-1 bg-sky-600 hover:bg-sky-500 py-2.5 rounded-xl text-xs font-black text-white shadow-md shadow-sky-600/20 active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    Save & Sync Now
+                  </button>
+                </div>
               </div>
             </div>
           </div>
