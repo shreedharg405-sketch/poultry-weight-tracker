@@ -50,6 +50,9 @@ interface MemFarm {
   flockDate: string;
   ageWeek: string;
   season: string;
+  status?: 'DRAFT' | 'COMPLETED';
+  progressPercentage?: number;
+  audit?: any;
   updatedAt: Date;
   createdAt: Date;
   sheds: MemShed[];
@@ -976,7 +979,7 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
   const farmId = req.params.id;
-  const { sheds, name, flockDate, ageWeek, season, audit } = req.body;
+  const { sheds, name, flockDate, ageWeek, season, status, progressPercentage, audit } = req.body;
   const now = new Date();
 
   try {
@@ -1061,6 +1064,8 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
         },
       });
       const resultObj = (refreshed || farm) as any;
+      if (status) resultObj.status = status;
+      if (progressPercentage !== undefined) resultObj.progressPercentage = progressPercentage;
       if (audit) resultObj.audit = audit;
       return res.json(resultObj);
     }
@@ -1070,23 +1075,28 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
 
   let memFarm = memoryFarms.find(f => f.id === farmId);
   if (!memFarm) {
-    memFarm = {
+    const newFarm: MemFarm = {
       id: farmId,
       name: name?.trim() || 'Synced Farm',
       flockDate: flockDate || new Date().toISOString().split('T')[0],
       ageWeek: ageWeek || 'W18',
       season: season || 'Summer',
+      status: status || 'DRAFT',
+      progressPercentage: progressPercentage || 0,
       updatedAt: now,
       createdAt: now,
       sheds: sheds || generateDefaultSheds(farmId),
+      audit: audit || undefined,
     };
-    if (audit) (memFarm as any).audit = audit;
-    memoryFarms.unshift(memFarm);
+    memoryFarms.unshift(newFarm);
+    memFarm = newFarm;
   } else {
     if (name) memFarm.name = name.trim();
     if (flockDate) memFarm.flockDate = flockDate;
     if (ageWeek) memFarm.ageWeek = ageWeek;
     if (season) memFarm.season = season;
+    if (status) memFarm.status = status;
+    if (progressPercentage !== undefined) memFarm.progressPercentage = progressPercentage;
     if (Array.isArray(sheds)) memFarm.sheds = sheds;
     if (audit) (memFarm as any).audit = audit;
     memFarm.updatedAt = now;

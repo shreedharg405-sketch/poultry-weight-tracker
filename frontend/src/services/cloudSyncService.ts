@@ -1,16 +1,30 @@
 import { ShedData } from './excelExportService';
 
+export type UserRole = 'Admin' | 'Manager' | 'Supervisor';
+
 export interface AppUser {
   id: string;
   name: string;
-  email: string;
-  role: string;
+  email?: string;
+  role: UserRole | string;
+  userRole?: UserRole;
+  userName?: string;
+  isAuthenticated?: boolean;
 }
 
+export type FarmStatus = 'DRAFT' | 'COMPLETED';
+
 export interface FarmAudit {
-  lastSubmittedAt?: string;    // ISO timestamp
+  status?: FarmStatus;
+  lastSavedAsDraftAt?: string;
+  lastEditedBy?: string;
+  lastEditedRole?: string;
+  lastSubmittedAt?: string;    // Formatted or ISO timestamp
   lastSubmittedBy?: string;    // User Name
   lastSubmittedRole?: string;  // Role
+  submittedBy?: string;
+  submittedRole?: string;
+  totalBirdsSubmitted?: number;
   totalBirdsAtLastSubmit?: number;
   femaleAvgWeight?: number;
   maleAvgWeight?: number;
@@ -42,6 +56,8 @@ export interface FarmSummary {
   flockDate: string;
   ageWeek: string;
   season: 'Summer' | 'Winter';
+  status?: FarmStatus;
+  progressPercentage?: number;
   updatedAt: string;
   createdAt?: string;
   _count?: { sheds: number };
@@ -54,6 +70,8 @@ export interface FullFarmData {
   flockDate: string;
   ageWeek: string;
   season: 'Summer' | 'Winter';
+  status?: FarmStatus;
+  progressPercentage?: number;
   updatedAt: string;
   createdAt?: string;
   sheds: ShedData[];
@@ -263,6 +281,8 @@ export const cloudApi = {
     flockDate: string;
     ageWeek: string;
     season: string;
+    status?: FarmStatus;
+    progressPercentage?: number;
     sheds: ShedData[];
     audit?: FarmAudit;
   }): Promise<FullFarmData> {
