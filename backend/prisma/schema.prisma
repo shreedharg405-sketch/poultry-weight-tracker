@@ -8,14 +8,18 @@ generator client {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  name      String
-  email     String   @unique
-  password  String   // Hashed password
-  role      String   @default("Supervisor")
-  createdAt DateTime @default(now())
+  id            String   @id @default(uuid())
+  username      String   @unique
+  name          String
+  email         String?  @unique
+  password      String   // Hashed password
+  role          String   @default("Supervisor") // "Admin" | "Manager" | "Supervisor" | "In-Charge"
+  status        String   @default("ACTIVE") // "ACTIVE" | "INACTIVE"
+  assignedFarms String[] @default([])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
 
-  logs      ActivityLog[]
+  logs          ActivityLog[]
 }
 
 model Farm {

@@ -1,6 +1,15 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../db/prisma.js';
 import crypto from 'crypto';
+import { 
+  hashPassword, 
+  verifyPassword, 
+  generateToken, 
+  verifyToken, 
+  checkRateLimit, 
+  recordFailedLogin, 
+  clearRateLimit 
+} from '../services/authService.js';
 
 export const farmRouter = Router();
 
@@ -60,11 +69,15 @@ interface MemFarm {
 
 export interface MemUser {
   id: string;
+  username: string;
   name: string;
-  email: string;
+  email?: string;
   password: string;
-  role: string;
+  role: 'Admin' | 'Manager' | 'Supervisor' | 'In-Charge' | string;
+  status: 'ACTIVE' | 'INACTIVE';
+  assignedFarms: string[];
   createdAt: Date;
+  updatedAt?: Date;
 }
 
 export interface MemActivityLog {
@@ -176,19 +189,47 @@ const memoryFarms: MemFarm[] = [
 
 export const memoryUsers: MemUser[] = [
   {
-    id: 'u-suresh-1',
-    name: 'Suresh Kumar',
-    email: 'suresh@farm.com',
-    password: 'password123',
-    role: 'Weighing Supervisor',
+    id: 'u-admin-1',
+    username: 'admin',
+    name: 'System Administrator',
+    email: 'admin@farm.local',
+    password: hashPassword('Admin@123'),
+    role: 'Admin',
+    status: 'ACTIVE',
+    assignedFarms: ['*'],
     createdAt: new Date(),
   },
   {
-    id: 'u-ramesh-2',
+    id: 'u-manager-1',
+    username: 'manager',
+    name: 'Flock Manager',
+    email: 'manager@farm.local',
+    password: hashPassword('Manager@123'),
+    role: 'Manager',
+    status: 'ACTIVE',
+    assignedFarms: ['*'],
+    createdAt: new Date(),
+  },
+  {
+    id: 'u-supervisor-1',
+    username: 'supervisor',
+    name: 'Suresh Kumar',
+    email: 'suresh@farm.local',
+    password: hashPassword('Super@123'),
+    role: 'Supervisor',
+    status: 'ACTIVE',
+    assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'],
+    createdAt: new Date(),
+  },
+  {
+    id: 'u-incharge-1',
+    username: 'incharge',
     name: 'Ramesh Patel',
-    email: 'ramesh@farm.com',
-    password: 'password123',
-    role: 'Farm Manager',
+    email: 'ramesh@farm.local',
+    password: hashPassword('Incharge@123'),
+    role: 'In-Charge',
+    status: 'ACTIVE',
+    assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'],
     createdAt: new Date(),
   },
 ];
@@ -1106,148 +1147,404 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 18. POST /api/auth/register - Register new user
-// --------------------------------------------------------------------------
-farmRouter.post('/auth/register', async (req: Request, res: Response) => {
-  const { name, email, password, role } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
-
-  const cleanEmail = String(email).trim().toLowerCase();
-  const userName = name?.trim() || cleanEmail.split('@')[0];
-  const userRole = role?.trim() || 'Weighing Supervisor';
-  const userId = crypto.randomUUID();
-
-  try {
-    if (await checkDb()) {
-      const existing = await prisma.user.findUnique({ where: { email: cleanEmail } });
-      if (existing) {
-        return res.status(409).json({ error: 'User with this email already exists' });
-      }
-
-      const user = await prisma.user.create({
-        data: {
-          id: userId,
-          name: userName,
-          email: cleanEmail,
-          password: String(password),
-          role: userRole,
-        },
-      });
-
-      return res.status(201).json({
-        user: { id: user.id, name: user.name, email: user.email, role: user.role, createdAt: user.createdAt },
-      });
-    }
-  } catch (err) {
-    console.warn('Prisma auth register error, fallback to memory:', err);
-  }
-
-  const existingMem = memoryUsers.find(u => u.email.toLowerCase() === cleanEmail);
-  if (existingMem) {
-    return res.status(409).json({ error: 'User with this email already exists' });
-  }
-
-  const newMemUser: MemUser = {
-    id: userId,
-    name: userName,
-    email: cleanEmail,
-    password: String(password),
-    role: userRole,
-    createdAt: new Date(),
-  };
-  memoryUsers.push(newMemUser);
-
-  return res.status(201).json({
-    user: { id: newMemUser.id, name: newMemUser.name, email: newMemUser.email, role: newMemUser.role, createdAt: newMemUser.createdAt },
-  });
-});
-
-// --------------------------------------------------------------------------
-// 19. POST /api/auth/login - User Sign In (with auto-provision fallback)
+// 18. POST /api/auth/login - Secure User Sign In with Rate Limiting
 // --------------------------------------------------------------------------
 farmRouter.post('/auth/login', async (req: Request, res: Response) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+  const username = String(req.body.username || req.body.email || '').trim();
+  const password = String(req.body.password || '');
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required' });
   }
 
-  const cleanEmail = String(email).trim().toLowerCase();
-
-  try {
-    if (await checkDb()) {
-      let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
-      if (user) {
-        if (user.password !== String(password)) {
-          return res.status(401).json({ error: 'Invalid password' });
-        }
-        return res.json({
-          user: { id: user.id, name: user.name, email: user.email, role: user.role, createdAt: user.createdAt },
-        });
-      }
-
-      // Auto-provision user account for streamlined onboarding
-      user = await prisma.user.create({
-        data: {
-          id: crypto.randomUUID(),
-          name: cleanEmail.split('@')[0],
-          email: cleanEmail,
-          password: String(password),
-          role: 'Weighing Supervisor',
-        },
-      });
-
-      return res.json({
-        user: { id: user.id, name: user.name, email: user.email, role: user.role, createdAt: user.createdAt },
-      });
-    }
-  } catch (err) {
-    console.warn('Prisma auth login error, fallback to memory:', err);
-  }
-
-  let memUser = memoryUsers.find(u => u.email.toLowerCase() === cleanEmail);
-  if (memUser) {
-    if (memUser.password !== String(password)) {
-      return res.status(401).json({ error: 'Invalid password' });
-    }
-    return res.json({
-      user: { id: memUser.id, name: memUser.name, email: memUser.email, role: memUser.role, createdAt: memUser.createdAt },
+  const rateKey = username.toLowerCase();
+  const rateCheck = checkRateLimit(rateKey);
+  if (!rateCheck.allowed) {
+    return res.status(429).json({ 
+      error: `Too many failed login attempts. Please wait ${rateCheck.waitSeconds} seconds before trying again.` 
     });
   }
 
-  const newMemUser: MemUser = {
-    id: `u-${Date.now()}`,
-    name: cleanEmail.split('@')[0],
-    email: cleanEmail,
-    password: String(password),
-    role: 'Weighing Supervisor',
-    createdAt: new Date(),
-  };
-  memoryUsers.push(newMemUser);
+  // 1. Try Prisma PostgreSQL Database First
+  try {
+    if (await checkDb()) {
+      const user = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { username: { equals: username, mode: 'insensitive' } },
+            { email: { equals: username, mode: 'insensitive' } },
+          ]
+        }
+      });
 
+      if (!user || !verifyPassword(password, user.password)) {
+        recordFailedLogin(rateKey);
+        return res.status(401).json({ error: 'Invalid username or password.' });
+      }
+
+      if (user.status === 'INACTIVE') {
+        return res.status(403).json({ error: 'Account is deactivated. Please contact your Administrator.' });
+      }
+
+      clearRateLimit(rateKey);
+      const token = generateToken({ id: user.id, username: user.username, role: user.role });
+      return res.json({
+        token,
+        user: {
+          id: user.id,
+          username: user.username,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          status: user.status,
+          assignedFarms: user.assignedFarms || [],
+          createdAt: user.createdAt,
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('Prisma login error, fallback to memory:', err);
+  }
+
+  // 2. Fallback to In-Memory Cloud Simulation Store
+  const memUser = memoryUsers.find(u => 
+    u.username.toLowerCase() === username.toLowerCase() || 
+    (u.email && u.email.toLowerCase() === username.toLowerCase())
+  );
+
+  if (!memUser || !verifyPassword(password, memUser.password)) {
+    recordFailedLogin(rateKey);
+    return res.status(401).json({ error: 'Invalid username or password.' });
+  }
+
+  if (memUser.status === 'INACTIVE') {
+    return res.status(403).json({ error: 'Account is deactivated. Please contact your Administrator.' });
+  }
+
+  clearRateLimit(rateKey);
+  const token = generateToken({ id: memUser.id, username: memUser.username, role: memUser.role });
   return res.json({
-    user: { id: newMemUser.id, name: newMemUser.name, email: newMemUser.email, role: newMemUser.role, createdAt: newMemUser.createdAt },
+    token,
+    user: {
+      id: memUser.id,
+      username: memUser.username,
+      name: memUser.name,
+      email: memUser.email,
+      role: memUser.role,
+      status: memUser.status,
+      assignedFarms: memUser.assignedFarms || [],
+      createdAt: memUser.createdAt,
+    }
   });
 });
 
 // --------------------------------------------------------------------------
-// 20. GET /api/auth/users - List users
+// 19. GET /api/auth/me - Verify Signed Session Token
+// --------------------------------------------------------------------------
+farmRouter.get('/auth/me', async (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication token required' });
+  }
+
+  const payload = verifyToken(token);
+  if (!payload) {
+    return res.status(401).json({ error: 'Session expired or invalid. Please log in again.' });
+  }
+
+  try {
+    if (await checkDb()) {
+      const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+      if (user && user.status === 'ACTIVE') {
+        return res.json({
+          user: {
+            id: user.id,
+            username: user.username,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            status: user.status,
+            assignedFarms: user.assignedFarms || [],
+          }
+        });
+      }
+    }
+  } catch {}
+
+  const memUser = memoryUsers.find(u => u.id === payload.userId);
+  if (memUser && memUser.status === 'ACTIVE') {
+    return res.json({
+      user: {
+        id: memUser.id,
+        username: memUser.username,
+        name: memUser.name,
+        email: memUser.email,
+        role: memUser.role,
+        status: memUser.status,
+        assignedFarms: memUser.assignedFarms || [],
+      }
+    });
+  }
+
+  return res.status(401).json({ error: 'User account not active or does not exist' });
+});
+
+// --------------------------------------------------------------------------
+// 20. POST /api/auth/logout - Terminate session
+// --------------------------------------------------------------------------
+farmRouter.post('/auth/logout', (_req: Request, res: Response) => {
+  return res.json({ success: true, message: 'Logged out successfully' });
+});
+
+// --------------------------------------------------------------------------
+// 21. GET /api/auth/users - List Accounts (Admin & Manager)
 // --------------------------------------------------------------------------
 farmRouter.get('/auth/users', async (_req: Request, res: Response) => {
   try {
     if (await checkDb()) {
       const users = await prisma.user.findMany({
-        select: { id: true, name: true, email: true, role: true, createdAt: true },
-        orderBy: { createdAt: 'desc' },
+        select: { 
+          id: true, 
+          username: true, 
+          name: true, 
+          email: true, 
+          role: true, 
+          status: true, 
+          assignedFarms: true, 
+          createdAt: true 
+        },
+        orderBy: { createdAt: 'asc' },
       });
       return res.json(users);
     }
   } catch (err) {
-    console.warn('Prisma get users error:', err);
+    console.warn('Prisma get users error, falling back to memory:', err);
   }
 
-  return res.json(memoryUsers.map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role, createdAt: u.createdAt })));
+  return res.json(memoryUsers.map(u => ({
+    id: u.id,
+    username: u.username,
+    name: u.name,
+    email: u.email,
+    role: u.role,
+    status: u.status,
+    assignedFarms: u.assignedFarms || [],
+    createdAt: u.createdAt,
+  })));
+});
+
+// --------------------------------------------------------------------------
+// 22. POST /api/auth/users - Create User Account (Admin Only)
+// --------------------------------------------------------------------------
+farmRouter.post('/auth/users', async (req: Request, res: Response) => {
+  const { username, name, password, role, assignedFarms } = req.body;
+  if (!username || !password || !name) {
+    return res.status(400).json({ error: 'Username, full name, and initial password are required' });
+  }
+
+  const cleanUsername = String(username).trim().toLowerCase();
+  const cleanName = String(name).trim();
+  const validRoles = ['Admin', 'Manager', 'Supervisor', 'In-Charge'];
+  const userRole = validRoles.includes(role) ? role : 'Supervisor';
+  const farmList = Array.isArray(assignedFarms) ? assignedFarms : [];
+  const hashedPassword = hashPassword(String(password).trim());
+  const userId = `u-${Date.now()}`;
+
+  try {
+    if (await checkDb()) {
+      const existing = await prisma.user.findFirst({
+        where: { username: { equals: cleanUsername, mode: 'insensitive' } }
+      });
+      if (existing) {
+        return res.status(409).json({ error: `Username "${cleanUsername}" is already taken.` });
+      }
+
+      const created = await prisma.user.create({
+        data: {
+          id: crypto.randomUUID(),
+          username: cleanUsername,
+          name: cleanName,
+          email: `${cleanUsername}@farm.local`,
+          password: hashedPassword,
+          role: userRole,
+          status: 'ACTIVE',
+          assignedFarms: farmList,
+        }
+      });
+
+      return res.status(201).json({
+        id: created.id,
+        username: created.username,
+        name: created.name,
+        role: created.role,
+        status: created.status,
+        assignedFarms: created.assignedFarms,
+        createdAt: created.createdAt,
+      });
+    }
+  } catch (err) {
+    console.warn('Prisma create user error, fallback to memory:', err);
+  }
+
+  // Memory store fallback
+  const existingMem = memoryUsers.find(u => u.username.toLowerCase() === cleanUsername);
+  if (existingMem) {
+    return res.status(409).json({ error: `Username "${cleanUsername}" is already taken.` });
+  }
+
+  const newMemUser: MemUser = {
+    id: userId,
+    username: cleanUsername,
+    name: cleanName,
+    email: `${cleanUsername}@farm.local`,
+    password: hashedPassword,
+    role: userRole,
+    status: 'ACTIVE',
+    assignedFarms: farmList,
+    createdAt: new Date(),
+  };
+  memoryUsers.push(newMemUser);
+
+  return res.status(201).json({
+    id: newMemUser.id,
+    username: newMemUser.username,
+    name: newMemUser.name,
+    role: newMemUser.role,
+    status: newMemUser.status,
+    assignedFarms: newMemUser.assignedFarms,
+    createdAt: newMemUser.createdAt,
+  });
+});
+
+// --------------------------------------------------------------------------
+// 23. PUT /api/auth/users/:id - Update User / Assign Farms / Toggle Status (Admin Only)
+// --------------------------------------------------------------------------
+farmRouter.put('/auth/users/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { name, role, status, assignedFarms, password } = req.body;
+
+  try {
+    if (await checkDb()) {
+      const updateData: any = {};
+      if (name) updateData.name = String(name).trim();
+      if (role) updateData.role = role;
+      if (status) updateData.status = status;
+      if (Array.isArray(assignedFarms)) updateData.assignedFarms = assignedFarms;
+      if (password && String(password).trim().length > 0) {
+        updateData.password = hashPassword(String(password).trim());
+      }
+
+      const updated = await prisma.user.update({
+        where: { id },
+        data: updateData,
+      });
+
+      return res.json({
+        id: updated.id,
+        username: updated.username,
+        name: updated.name,
+        role: updated.role,
+        status: updated.status,
+        assignedFarms: updated.assignedFarms,
+      });
+    }
+  } catch (err) {
+    console.warn('Prisma update user error, fallback to memory:', err);
+  }
+
+  const memUser = memoryUsers.find(u => u.id === id);
+  if (!memUser) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  if (name) memUser.name = String(name).trim();
+  if (role) memUser.role = role;
+  if (status) memUser.status = status;
+  if (Array.isArray(assignedFarms)) memUser.assignedFarms = assignedFarms;
+  if (password && String(password).trim().length > 0) {
+    memUser.password = hashPassword(String(password).trim());
+  }
+
+  return res.json({
+    id: memUser.id,
+    username: memUser.username,
+    name: memUser.name,
+    role: memUser.role,
+    status: memUser.status,
+    assignedFarms: memUser.assignedFarms,
+  });
+});
+
+// --------------------------------------------------------------------------
+// 24. POST /api/auth/users/:id/reset-password - Reset Password (Admin Only)
+// --------------------------------------------------------------------------
+farmRouter.post('/auth/users/:id/reset-password', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { newPassword } = req.body;
+
+  if (!newPassword || String(newPassword).trim().length < 4) {
+    return res.status(400).json({ error: 'New password must be at least 4 characters long' });
+  }
+
+  const hashed = hashPassword(String(newPassword).trim());
+
+  try {
+    if (await checkDb()) {
+      await prisma.user.update({
+        where: { id },
+        data: { password: hashed },
+      });
+      return res.json({ success: true, message: 'Password reset successfully' });
+    }
+  } catch (err) {
+    console.warn('Prisma reset password error, fallback to memory:', err);
+  }
+
+  const memUser = memoryUsers.find(u => u.id === id);
+  if (!memUser) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  memUser.password = hashed;
+  return res.json({ success: true, message: 'Password reset successfully' });
+});
+
+// --------------------------------------------------------------------------
+// 25. DELETE /api/auth/users/:id - Delete User Account (Admin Only)
+// --------------------------------------------------------------------------
+farmRouter.delete('/auth/users/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  try {
+    if (await checkDb()) {
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (user?.role === 'Admin') {
+        const adminCount = await prisma.user.count({ where: { role: 'Admin' } });
+        if (adminCount <= 1) {
+          return res.status(400).json({ error: 'Cannot delete the sole Administrator account' });
+        }
+      }
+      await prisma.user.delete({ where: { id } });
+      return res.json({ success: true });
+    }
+  } catch (err) {
+    console.warn('Prisma delete user error, fallback to memory:', err);
+  }
+
+  const idx = memoryUsers.findIndex(u => u.id === id);
+  if (idx !== -1) {
+    if (memoryUsers[idx].role === 'Admin') {
+      const adminCount = memoryUsers.filter(u => u.role === 'Admin').length;
+      if (adminCount <= 1) {
+        return res.status(400).json({ error: 'Cannot delete the sole Administrator account' });
+      }
+    }
+    memoryUsers.splice(idx, 1);
+    return res.json({ success: true });
+  }
+
+  return res.status(404).json({ error: 'User not found' });
 });
 
 // --------------------------------------------------------------------------

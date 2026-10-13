@@ -84,14 +84,13 @@ const formatDateDMY = (d: Date): string => {
   return `${day}-${month}-${year}`;
 };
 
-// Format 12-hour time with seconds
+// Format 12-hour time (Hour:Min only, no seconds)
 const formatTime12H = (d: Date): string => {
   let hours = d.getHours();
   const minutes = String(d.getMinutes()).padStart(2, '0');
-  const seconds = String(d.getSeconds()).padStart(2, '0');
   const ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12 || 12;
-  return `${String(hours).padStart(2, '0')}:${minutes}:${seconds} ${ampm}`;
+  return `${String(hours).padStart(2, '0')}:${minutes} ${ampm}`;
 };
 
 // Format Last Updated string (e.g., "Updated Today at 10:45 AM")
@@ -108,9 +107,14 @@ const formatLastUpdated = (dateInput?: string | Date): string => {
   return `${formatDateDMY(d)} at ${timeStr}`;
 };
 
-// Format activity log & audit date-time: Date(DD-MM-YYYY) - Time(HH:MM:SS AM/PM)
+// Format activity log & audit date-time: Date(DD-MM-YYYY) - Time(HH:MM AM/PM) (Hour:Min only, no seconds)
 const formatLogDateTime = (isoOrDate: string | Date | undefined): string => {
   if (!isoOrDate) return 'Not yet submitted';
+  const str = String(isoOrDate);
+  // If string is already formatted, ensure seconds are stripped
+  if (str.startsWith('Date(')) {
+    return str.replace(/:(\d{2}):\d{2}\s*(AM|PM)/i, ':$1 $2');
+  }
   const d = new Date(isoOrDate);
   if (isNaN(d.getTime())) return 'Just now';
   const day = String(d.getDate()).padStart(2, '0');
@@ -118,10 +122,9 @@ const formatLogDateTime = (isoOrDate: string | Date | undefined): string => {
   const year = d.getFullYear();
   let hours = d.getHours();
   const minutes = String(d.getMinutes()).padStart(2, '0');
-  const seconds = String(d.getSeconds()).padStart(2, '0');
   const ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12 || 12;
-  return `Date(${day}-${month}-${year}) - Time(${String(hours).padStart(2, '0')}:${minutes}:${seconds} ${ampm})`;
+  return `Date(${day}-${month}-${year}) - Time(${String(hours).padStart(2, '0')}:${minutes} ${ampm})`;
 };
 
 export type ScreenType = 
@@ -237,7 +240,7 @@ export default function App() {
         updatedAt: new Date().toISOString(),
         _count: { sheds: 8 },
         audit: {
-          lastSubmittedAt: 'Date(12-10-2026) - Time(11:30:00 AM)',
+          lastSubmittedAt: 'Date(12-10-2026) - Time(11:30 AM)',
           submittedBy: 'Ramesh (Supervisor)',
           submittedRole: 'Supervisor',
           totalBirdsSubmitted: 180,
@@ -2514,7 +2517,7 @@ export default function App() {
                     <div>
                       <span className="text-xs font-bold text-emerald-400">Completed & Submitted</span>
                       <span className="text-[10px] text-slate-400 block">
-                        Submitted by {farmAudit?.submittedBy || farmAudit?.lastSubmittedBy || 'Supervisor'} at {farmAudit?.lastSubmittedAt || 'Recent'}
+                        Submitted by {farmAudit?.submittedBy || farmAudit?.lastSubmittedBy || 'Supervisor'} at {farmAudit?.lastSubmittedAt ? formatLogDateTime(farmAudit.lastSubmittedAt) : 'Recent'}
                       </span>
                     </div>
                   </>
@@ -3907,7 +3910,7 @@ export default function App() {
                     <span className="text-slate-500 font-medium">Last Submitted Date & Time:</span>
                     <span className="font-bold font-mono text-[11px] text-slate-800 text-right">
                       {farmAudit?.lastSubmittedAt 
-                        ? farmAudit.lastSubmittedAt
+                        ? formatLogDateTime(farmAudit.lastSubmittedAt)
                         : 'No submission recorded yet'}
                     </span>
                   </div>
@@ -3915,7 +3918,7 @@ export default function App() {
                     <div className="flex items-center justify-between text-xs pt-1.5 border-t border-slate-100">
                       <span className="text-slate-500 font-medium">Last Draft Saved:</span>
                       <span className="font-semibold text-slate-700 text-right text-[11px]">
-                        {farmAudit.lastSavedAsDraftAt}
+                        {formatLogDateTime(farmAudit.lastSavedAsDraftAt)}
                         {farmAudit.lastEditedBy ? ` by ${farmAudit.lastEditedBy} (${farmAudit.lastEditedRole || 'Supervisor'})` : ''}
                       </span>
                     </div>

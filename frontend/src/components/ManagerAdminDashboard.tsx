@@ -297,7 +297,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                     Last Submission: <strong className="text-slate-800">{farm.audit.lastSubmittedBy || 'Supervisor'}</strong>
                   </span>
                   <span className="font-mono text-slate-700">
-                    {farm.audit.lastSubmittedAt ? farm.audit.lastSubmittedAt.replace(/Date\(|\)/g, '') : 'Draft'}
+                    {farm.audit.lastSubmittedAt ? farm.audit.lastSubmittedAt.replace(/Date\(|\)/g, '').replace(/:(\d{2}):\d{2}\s*(AM|PM)/i, ':$1 $2') : 'Draft'}
                   </span>
                 </div>
               )}
