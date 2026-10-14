@@ -412,9 +412,17 @@ export default function App() {
   }, [farmsList]);
 
   // Farm Access Assignment filtering: Admins and Managers see all farms;
-  // Supervisors and In-Charges see ONLY explicitly assigned farms
+  // Farm Access Assignment filtering: Admins see all; Managers see authorized scope;
+  // Supervisors and In-Charges see ONLY explicitly assigned farms (Req 8)
   const accessibleFarms = useMemo(() => {
-    if (currentUserRole === 'Admin' || currentUserRole === 'Manager') {
+    if (currentUserRole === 'Admin') {
+      return farmsList;
+    }
+    if (currentUserRole === 'Manager') {
+      const assignedIds = currentUser?.assignedFarms || [];
+      if (assignedIds.length > 0 && !assignedIds.includes('*')) {
+        return farmsList.filter(f => assignedIds.includes(f.id) || assignedIds.includes(f.name));
+      }
       return farmsList;
     }
     const currentName = (currentUser?.userName || currentUser?.name || '').trim().toLowerCase();
@@ -450,16 +458,25 @@ export default function App() {
     }
   }, [accessibleFarms, activeFarmId, currentUserRole]);
 
-  // Current active farm summary object
+  // Current active farm summary object (Strict isolation - returns null if supervisor has 0 assigned farms)
   const currentActiveFarmSummary = useMemo(() => {
-    return farmsList.find(f => f.id === activeFarmId) || farmsList[0] || null;
-  }, [farmsList, activeFarmId]);
+    if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
+      if (accessibleFarms.length === 0) return null;
+      return accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
+    }
+    return accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
+  }, [accessibleFarms, activeFarmId, currentUserRole]);
 
   // Farm Assignment Hub handler for Managers & Admins
   const handleAssignUserToFarm = (farmId: string, assignedUsers: string[]) => {
     setFarmsList(prev => prev.map(f => f.id === farmId ? { ...f, assignedUserNames: assignedUsers } : f));
     const target = farmsList.find(f => f.id === farmId);
     showToast(`Updated operator assignments for ${target?.name || 'farm'}`);
+    cloudApi.getFarms().then(remoteFarms => {
+      if (remoteFarms && remoteFarms.length > 0) {
+        setFarmsList(remoteFarms);
+      }
+    }).catch(() => {});
   };
 
   // Login Success Handler (Stores JWT Token & User Profile, Auto-Routes by Role)
@@ -2131,8 +2148,8 @@ export default function App() {
                         <span className="font-black text-base text-slate-900 group-hover:text-emerald-600 transition">
                           {s.name}
                         </span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
-                          s.type === 'Male' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-pink-50 text-pink-700 border-pink-200'
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-black border ${
+                          s.type === 'Male' ? 'bg-blue-100 text-blue-950 border-blue-400' : 'bg-pink-100 text-pink-950 border-pink-400'
                         }`}>
                           {s.type === 'Male' ? '♂ Male' : '♀ Female'}
                         </span>
@@ -2176,12 +2193,12 @@ export default function App() {
                 <ArrowLeft className="w-4 h-4" /> Sheds
               </button>
 
-              <span className={`text-xs font-bold px-3 py-1 rounded-full border ${
+              <span className={`text-xs font-black px-3 py-1 rounded-full border ${
                 activeShed.type === 'Male' 
-                  ? 'bg-blue-50 text-blue-700 border-blue-200' 
-                  : 'bg-pink-50 text-pink-700 border-pink-200'
+                  ? 'bg-blue-100 text-blue-950 border-blue-400' 
+                  : 'bg-pink-100 text-pink-950 border-pink-400'
               }`}>
-                {activeShed.name} ({activeShed.type === 'Male' ? '♂' : '♀'})
+                {activeShed.name} ({activeShed.type === 'Male' ? '♂ Male' : '♀ Female'})
               </span>
             </div>
 
@@ -2200,17 +2217,17 @@ export default function App() {
 
             {/* Shed Mini Stats Summary */}
             <div className="grid grid-cols-3 gap-1.5 bg-white p-3 rounded-2xl border border-slate-200 text-center text-xs mb-3 font-mono shadow-xs">
-              <div>
-                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Shed Birds</span>
-                <span className="font-black text-slate-900 text-sm">{shedStats.count}</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Shed Birds</span>
+                <span className="font-black text-slate-900 text-sm truncate block">{shedStats.count}</span>
               </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Shed Avg</span>
-                <span className="font-black text-emerald-600 text-sm">{shedStats.avg}g</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Shed Avg</span>
+                <span className="font-black text-emerald-600 text-sm truncate block font-mono">{shedStats.avg}g</span>
               </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Uniformity (S%)</span>
-                <span className="font-black text-amber-600 text-sm">{shedStats.sPct}%</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Uniformity</span>
+                <span className="font-black text-amber-600 text-sm truncate block font-mono">{shedStats.sPct}%</span>
               </div>
             </div>
 
@@ -2259,17 +2276,17 @@ export default function App() {
                     </div>
 
                     <div className="grid grid-cols-3 gap-1 bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-center text-xs font-mono">
-                      <div>
-                        <span className="text-[10px] text-slate-400 block font-sans font-semibold">AVG WT</span>
-                        <span className="font-bold text-emerald-600">{partStat.avg}g</span>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">AVG WT</span>
+                        <span className="font-extrabold text-emerald-600 truncate block font-mono">{partStat.avg}g</span>
                       </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 block font-sans font-semibold">Uniformity (S%)</span>
-                        <span className="font-bold text-amber-600">{partStat.sPct}%</span>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">Uniformity</span>
+                        <span className="font-extrabold text-amber-600 truncate block font-mono">{partStat.sPct}%</span>
                       </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 block font-sans font-semibold">CV %</span>
-                        <span className="font-bold text-sky-600">{partStat.cv}%</span>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">CV %</span>
+                        <span className="font-extrabold text-sky-600 truncate block font-mono">{partStat.cv}%</span>
                       </div>
                     </div>
 
@@ -2323,21 +2340,21 @@ export default function App() {
 
             {/* Part Mini Stats Summary */}
             <div className="grid grid-cols-3 gap-1.5 bg-white p-3 rounded-2xl border border-slate-200 text-center text-xs mb-3 font-mono shadow-xs">
-              <div>
-                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Part Birds</span>
-                <span className="font-black text-slate-900 text-sm">{partStats.count}</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Part Birds</span>
+                <span className="font-black text-slate-900 text-sm truncate block">{partStats.count}</span>
               </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Part Avg</span>
-                <span className="font-black text-emerald-600 text-sm">{partStats.avg}g</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Part Avg</span>
+                <span className="font-black text-emerald-600 text-sm truncate block font-mono">{partStats.avg}g</span>
               </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block font-sans font-bold uppercase">Uniformity (S%)</span>
-                <span className="font-black text-amber-600 text-sm">{partStats.sPct}%</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Uniformity</span>
+                <span className="font-black text-amber-600 text-sm truncate block font-mono">{partStats.sPct}%</span>
               </div>
             </div>
 
-            {/* Vertical Scrollable Line Cards (Exact Look & Feel as Part Cards) */}
+            {/* Vertical Scrollable Line Cards */}
             <div className="space-y-3 overflow-y-auto flex-1 pb-4">
               {activePart.lines.map(line => {
                 const lStats = calculateFlockStats(line.weights, activeStd, weekNum);
@@ -2371,21 +2388,21 @@ export default function App() {
                     </div>
 
                     <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs font-mono">
-                      <div>
-                        <span className="text-[10px] text-slate-400 font-sans font-semibold">BIRDS</span>
-                        <div className="font-bold text-slate-900">{lStats.count}</div>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">BIRDS</span>
+                        <div className="font-extrabold text-slate-900 truncate">{lStats.count}</div>
                       </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 font-sans font-semibold">AVG WT</span>
-                        <div className="font-bold text-emerald-600">{lStats.avg}g</div>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">AVG WT</span>
+                        <div className="font-extrabold text-emerald-600 truncate font-mono">{lStats.avg}g</div>
                       </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 font-sans font-semibold">Uniformity (S%)</span>
-                        <div className="font-bold text-amber-600">{lStats.sPct}%</div>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">Uniformity</span>
+                        <div className="font-extrabold text-amber-600 truncate font-mono">{lStats.sPct}%</div>
                       </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 font-sans font-semibold">CV%</span>
-                        <div className="font-bold text-sky-600">{lStats.cv}%</div>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">CV %</span>
+                        <div className="font-extrabold text-sky-600 truncate font-mono">{lStats.cv}%</div>
                       </div>
                     </div>
 
@@ -2428,36 +2445,36 @@ export default function App() {
                 <span className="text-sky-700 font-extrabold">{activeLine.name}</span>
               </div>
 
-              <span className={`text-[10px] px-2 py-1 rounded-full font-bold border shrink-0 ${
+              <span className={`text-[10px] px-2.5 py-1 rounded-full font-black border shrink-0 ${
                 activeShed.type === 'Male' 
-                  ? 'bg-blue-50 text-blue-700 border-blue-200' 
-                  : 'bg-pink-50 text-pink-700 border-pink-200'
+                  ? 'bg-blue-100 text-blue-950 border-blue-400' 
+                  : 'bg-pink-100 text-pink-950 border-pink-400'
               }`}>
                 {activeShed.type === 'Male' ? '♂ M' : '♀ F'}
               </span>
             </div>
 
-            {/* Real-Time Metric Strip for Current Line & Part (matching user's screenshot!) */}
+            {/* Real-Time Metric Strip for Current Line & Part */}
             <div className="bg-white p-3 rounded-2xl border border-slate-200 grid grid-cols-4 gap-1 text-center mb-3 shadow-xs">
-              <div>
-                <span className="text-[10px] text-slate-500 font-bold uppercase">Weighed</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Weighed</span>
                 <div className="text-base font-black text-slate-900">{lineStats.count}</div>
-                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.count}</span>
+                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count}</span>
               </div>
-              <div>
-                <span className="text-[10px] text-slate-500 font-bold uppercase">Avg Wt</span>
-                <div className="text-base font-black text-emerald-600">{lineStats.avg}g</div>
-                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.avg}g</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Avg Wt</span>
+                <div className="text-base font-black text-emerald-600 font-mono">{lineStats.avg}g</div>
+                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.avg}g</span>
               </div>
-              <div>
-                <span className="text-[10px] text-slate-500 font-bold uppercase">Uniformity (S%)</span>
-                <div className="text-base font-black text-amber-600">{lineStats.sPct}%</div>
-                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.sPct}%</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Uniformity</span>
+                <div className="text-base font-black text-amber-600 font-mono">{lineStats.sPct}%</div>
+                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.sPct}%</span>
               </div>
-              <div>
-                <span className="text-[10px] text-slate-500 font-bold uppercase">CV %</span>
-                <div className="text-base font-black text-sky-600">{lineStats.cv}%</div>
-                <span className="text-[9px] text-slate-400 block font-semibold">Part: {partStats.cv}%</span>
+              <div className="min-w-0">
+                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">CV %</span>
+                <div className="text-base font-black text-sky-600 font-mono">{lineStats.cv}%</div>
+                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.cv}%</span>
               </div>
             </div>
 
@@ -2547,39 +2564,8 @@ export default function App() {
               )}
             </div>
 
-            {/* Progress & Draft Indicator Banner on Weigh Pad (Req 3.A) */}
-            <div className="flex items-center justify-between p-2.5 rounded-xl border mt-3 bg-slate-800/90 border-slate-700 shadow-sm">
-              <div className="flex items-center gap-2">
-                {farmStatus === 'DRAFT' ? (
-                  <>
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
-                    <div>
-                      <span className="text-xs font-bold text-amber-300">Draft In Progress</span>
-                      <span className="text-[10px] text-slate-400 block">
-                        {completionStats.completedLinesCount} / {completionStats.totalLinesCount} lines weighed ({completionStats.progressPercent}%)
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0" />
-                    <div>
-                      <span className="text-xs font-bold text-emerald-400">Completed & Submitted</span>
-                      <span className="text-[10px] text-slate-400 block">
-                        Submitted by {farmAudit?.submittedBy || farmAudit?.lastSubmittedBy || 'Supervisor'} at {farmAudit?.lastSubmittedAt ? formatLogDateTime(farmAudit.lastSubmittedAt) : 'Recent'}
-                      </span>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <span className="text-xs font-mono font-bold text-slate-300 shrink-0">
-                {completionStats.progressPercent}% Done
-              </span>
-            </div>
-
-            {/* Navigation to Dedicated Submit Screen (Req 3) */}
-            <div className="mt-2">
+            {/* Navigation to Dedicated Submit Screen */}
+            <div className="mt-3">
               <button
                 type="button"
                 onClick={() => navigateTo('submit_page')}
@@ -2873,75 +2859,10 @@ export default function App() {
                   });
                 navigateTo('home');
               }}
-              className="w-full bg-purple-600 hover:bg-purple-700 py-3.5 rounded-xl font-black text-xs text-white shadow-md shadow-purple-600/20 active:scale-95 cursor-pointer"
+              className="w-full bg-emerald-600 hover:bg-emerald-700 py-3.5 rounded-xl font-black text-xs text-white shadow-md shadow-emerald-600/20 active:scale-95 cursor-pointer mt-4"
             >
-              Save Details & Sync Cloud
+              Save Farm Details
             </button>
-
-            {/* Cloud Endpoint Settings Section (Req 3: Role-Protected) */}
-            <div className="bg-slate-800/90 p-3.5 rounded-xl border border-slate-700 space-y-2.5 mt-4">
-              <div className="flex items-center justify-between">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Backend Cloud Link / API Endpoint
-                </label>
-                <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
-                  currentUserRole === 'Admin'
-                    ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
-                    : 'bg-slate-700/60 text-slate-400 border-slate-600'
-                }`}>
-                  {currentUserRole === 'Admin' ? 'Editable (Admin Only)' : 'Read-Only'}
-                </span>
-              </div>
-
-              <div className="relative">
-                <input
-                  type="url"
-                  value={customApiUrlInput}
-                  onChange={(e) => setCustomApiUrlInput(e.target.value)}
-                  disabled={currentUserRole !== 'Admin'}
-                  placeholder="https://your-backend-service.onrender.com"
-                  className={`w-full bg-slate-950 border rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none ${
-                    currentUserRole === 'Admin'
-                      ? 'border-purple-500 text-white focus:border-purple-400'
-                      : 'border-slate-800 text-slate-500 cursor-not-allowed bg-slate-950/50'
-                  }`}
-                />
-              </div>
-
-              {currentUserRole !== 'Admin' ? (
-                <p className="text-[10px] text-amber-400/80 italic">
-                  Only Admins are permitted to modify the cloud connection link.
-                </p>
-              ) : (
-                <div className="flex gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={handleSaveCloudSettings}
-                    className="flex-1 bg-purple-600 hover:bg-purple-500 text-white font-bold py-2 rounded-xl text-xs transition active:scale-95 cursor-pointer"
-                  >
-                    Save & Apply Cloud Link
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowCloudSettingsModal(true)}
-                    className="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-2 rounded-xl text-xs transition active:scale-95 cursor-pointer"
-                  >
-                    Diagnostics
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="mt-3">
-              <button
-                type="button"
-                onClick={() => setShowCloudSettingsModal(true)}
-                className="w-full bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-2 cursor-pointer transition active:scale-95"
-              >
-                <Cloud className="w-4 h-4 text-emerald-600" />
-                Open Cloud Connection Diagnostics
-              </button>
-            </div>
           </div>
         )}
 
@@ -3017,7 +2938,7 @@ export default function App() {
             </div>
 
             {/* Submissions Update Logs Stream */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 overflow-y-auto flex-1 pb-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 overflow-y-auto flex-1 pb-6">
               {(() => {
                 const filtered = activityLogs.filter(log => {
                   if (historyFilter === 'currentFarm') {
@@ -3050,67 +2971,71 @@ export default function App() {
                   return (
                     <div 
                       key={log.id} 
-                      className="p-3.5 rounded-2xl border bg-white border-slate-200 shadow-2xs hover:border-slate-300 transition-all"
+                      className="p-3.5 rounded-2xl border bg-white border-slate-200 shadow-2xs hover:border-slate-300 transition-all flex flex-col justify-between"
                     >
-                      {/* Top Header: Farm Unit Name & COMPLETED Status */}
-                      <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-100">
+                      <div>
+                        {/* Top Header: Farm Unit Name & COMPLETED Status */}
+                        <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-100">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                            <span className="font-black text-xs text-slate-900 truncate">{log.farmName}</span>
+                          </div>
+
+                          <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 rounded-full text-[9px] font-black shrink-0 flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            COMPLETED
+                          </span>
+                        </div>
+
+                        {/* Summary Metrics: Spacious 2x2 Grid with min-w-0 preventing text collisions */}
+                        <div className="mt-2.5 grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-xs">
+                          <div className="min-w-0">
+                            <span className="text-[9px] text-slate-500 font-bold uppercase block truncate">Total Sampled</span>
+                            <span className="font-extrabold text-slate-900 text-sm font-mono truncate block">
+                              {log.sampleCount || 0} Birds
+                            </span>
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[9px] text-emerald-600 font-bold uppercase block truncate">Overall Avg Wt</span>
+                            <span className="font-extrabold text-emerald-700 text-sm font-mono truncate block">
+                              {log.avgWeight ? `${log.avgWeight}g` : (log.femaleAvgWeight || log.maleAvgWeight ? `${log.femaleAvgWeight || log.maleAvgWeight}g` : 'N/A')}
+                            </span>
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[9px] text-pink-600 font-bold uppercase block truncate">Female Act Wt</span>
+                            <span className="font-extrabold text-pink-700 text-sm font-mono truncate block">
+                              {log.femaleAvgWeight ? `${log.femaleAvgWeight}g` : 'N/A'}
+                            </span>
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[9px] text-blue-600 font-bold uppercase block truncate">Male Act Wt</span>
+                            <span className="font-extrabold text-blue-700 text-sm font-mono truncate block">
+                              {log.maleAvgWeight ? `${log.maleAvgWeight}g` : 'N/A'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Action summary text */}
+                        {log.action && (
+                          <p className="mt-2 text-[11px] font-semibold text-slate-700 bg-slate-50/60 px-2 py-1 rounded-lg border border-slate-100 break-words">
+                            {log.action}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Footer: Clean Non-Colliding Layout with Submitter and Formatted Timestamp */}
+                      <div className="flex flex-col gap-1 text-[11px] text-slate-500 pt-2 mt-2 border-t border-slate-100">
                         <div className="flex items-center gap-1.5 min-w-0">
-                          <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                          <span className="font-black text-xs text-slate-900 truncate">{log.farmName}</span>
-                        </div>
-
-                        <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 rounded-full text-[9px] font-black shrink-0 flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                          COMPLETED
-                        </span>
-                      </div>
-
-                      {/* Summary Metrics: Total Birds Sampled & Overall Average Weight */}
-                      <div className="mt-2.5 grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-xs">
-                        <div>
-                          <span className="text-[9px] text-slate-500 font-bold uppercase block">Total Birds Sampled</span>
-                          <span className="font-extrabold text-slate-900 text-sm font-mono">
-                            {log.sampleCount || 0} Birds
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[9px] text-emerald-600 font-bold uppercase block">Overall Avg Weight</span>
-                          <span className="font-extrabold text-emerald-700 text-sm font-mono">
-                            {log.avgWeight ? `${log.avgWeight}g` : (log.femaleAvgWeight || log.maleAvgWeight ? `${log.femaleAvgWeight || log.maleAvgWeight}g` : 'N/A')}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[9px] text-pink-600 font-bold uppercase block">Female Act B.Wt</span>
-                          <span className="font-extrabold text-pink-700 text-sm font-mono">
-                            {log.femaleAvgWeight ? `${log.femaleAvgWeight}g` : 'N/A'}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[9px] text-blue-600 font-bold uppercase block">Male Act B.Wt</span>
-                          <span className="font-extrabold text-blue-700 text-sm font-mono">
-                            {log.maleAvgWeight ? `${log.maleAvgWeight}g` : 'N/A'}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Action summary text */}
-                      {log.action && (
-                        <p className="mt-2 text-[11px] font-semibold text-slate-700 bg-slate-50/60 px-2 py-1 rounded-lg border border-slate-100">
-                          {log.action}
-                        </p>
-                      )}
-
-                      {/* Footer: Submitted By (User Name & Role) and Submission Time: Date(DD-MM-YYYY) - Time(HH:MM:SS AM/PM) */}
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between text-[11px] text-slate-500 pt-2 mt-2 border-t border-slate-100 gap-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[9px] font-bold">
+                          <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[9px] font-bold shrink-0">
                             {(log.userName || 'S').charAt(0).toUpperCase()}
                           </div>
-                          <span>Submitted By: <strong className="text-slate-800">{log.userName || 'Supervisor'}</strong></span>
+                          <span className="truncate">
+                            Submitted By: <strong className="text-slate-800">{log.userName || 'Supervisor'}</strong>
+                          </span>
                         </div>
-                        <span className="text-[10px] font-mono text-slate-700 font-bold">
+                        <div className="text-[10px] font-mono text-slate-500 font-medium">
                           {formatLogDateTime(log.timestamp)}
-                        </span>
+                        </div>
                       </div>
                     </div>
                   );
@@ -3625,188 +3550,6 @@ export default function App() {
                   </button>
                 </div>
               </form>
-            </div>
-          </div>
-        )}
-
-        {/* ========================================================= */}
-        {/* MODAL: CLOUD BACKEND SETTINGS & CONNECTION TEST            */}
-        {/* ========================================================= */}
-        {showCloudSettingsModal && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
-            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
-              <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 bg-sky-50 text-sky-600 rounded-xl border border-sky-200">
-                    <Cloud className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-black text-base text-slate-900">Cloud Sync Settings</h3>
-                    <p className="text-[11px] text-slate-500">Render PostgreSQL Backend</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowCloudSettingsModal(false)}
-                  className="text-slate-400 hover:text-slate-700 p-1 rounded-lg"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="space-y-3">
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-[11px] font-bold text-slate-600 uppercase">
-                      Backend API Endpoint URL
-                    </label>
-                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
-                      currentUserRole === 'Admin'
-                        ? 'bg-purple-500/10 text-purple-700 border-purple-300'
-                        : 'bg-slate-100 text-slate-500 border-slate-300'
-                    }`}>
-                      {currentUserRole === 'Admin' ? 'Editable (Admin Only)' : 'Read-Only'}
-                    </span>
-                  </div>
-                  <input
-                    type="text"
-                    value={customApiUrlInput}
-                    onChange={(e) => {
-                      if (currentUserRole !== 'Admin') return;
-                      setCustomApiUrlInput(e.target.value);
-                      setCloudTestStatus('idle');
-                      setCloudTestResult(null);
-                    }}
-                    disabled={currentUserRole !== 'Admin'}
-                    placeholder="https://your-backend.onrender.com/api"
-                    className={`w-full border rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none transition ${
-                      currentUserRole === 'Admin'
-                        ? 'bg-slate-50 border-slate-300 text-slate-900 focus:border-sky-600 focus:bg-white'
-                        : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                    }`}
-                  />
-                  {currentUserRole !== 'Admin' && (
-                    <p className="text-[10px] text-amber-600/90 italic mt-1">
-                      Only Admins are permitted to modify the cloud connection link.
-                    </p>
-                  )}
-                  <p className="text-[10px] text-slate-400 mt-1">
-                    Default: {import.meta.env.VITE_API_URL || 'https://poultry-weight-backend.onrender.com/api'}
-                  </p>
-                </div>
-
-                {/* Connection Status Box */}
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2.5 h-2.5 rounded-full ${
-                        cloudTestStatus === 'success' ? 'bg-emerald-500' :
-                        cloudTestStatus === 'failed' ? 'bg-rose-500' :
-                        cloudTestStatus === 'testing' ? 'bg-amber-500 animate-spin' : 'bg-slate-400'
-                      }`} />
-                      <span className="text-[11px] font-bold text-slate-800">
-                        {cloudTestStatus === 'idle' && 'Status: Ready to test'}
-                        {cloudTestStatus === 'testing' && 'Testing connection & PostgreSQL...'}
-                        {cloudTestStatus === 'success' && 'Backend Service Online'}
-                        {cloudTestStatus === 'failed' && 'Connection Failed'}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleTestCloudConnection}
-                      disabled={cloudTestStatus === 'testing'}
-                      className="bg-sky-600 hover:bg-sky-700 text-white border border-sky-600 px-3 py-1 rounded-lg text-[10px] font-bold active:scale-95 transition cursor-pointer shadow-xs disabled:opacity-50"
-                    >
-                      {cloudTestStatus === 'testing' ? 'Testing...' : 'Test Ping'}
-                    </button>
-                  </div>
-
-                  {/* Detailed Diagnostics */}
-                  {cloudTestResult && (
-                    <div className={`text-[10px] p-2 rounded-lg border ${
-                      cloudTestResult.online
-                        ? cloudTestResult.databaseConnected
-                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                          : 'bg-amber-50 border-amber-200 text-amber-800'
-                        : 'bg-rose-50 border-rose-200 text-rose-800'
-                    }`}>
-                      {cloudTestResult.online ? (
-                        <div className="space-y-0.5">
-                          <p className="font-bold flex items-center gap-1">
-                            ✓ Server reachable ({cloudTestResult.latencyMs || 0}ms latency)
-                          </p>
-                          <p>
-                            Database: {cloudTestResult.databaseConnected ? (
-                              <span className="font-bold text-emerald-700">✓ PostgreSQL Connected & Operational</span>
-                            ) : (
-                              <span className="font-bold text-amber-700">⚠️ {cloudTestResult.databaseMessage || 'PostgreSQL not connected'}</span>
-                            )}
-                          </p>
-                        </div>
-                      ) : (
-                        <p className="font-semibold leading-relaxed">
-                          ⚠️ {cloudTestResult.error || 'Server unreachable'}
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Offline Queue Notice */}
-                  {pendingSyncCount > 0 && (
-                    <div className="flex items-center justify-between bg-amber-50 border border-amber-200 p-2 rounded-lg text-[10px] text-amber-900">
-                      <span>Offline queue: <strong>{pendingSyncCount}</strong> pending records</span>
-                      <button
-                        type="button"
-                        onClick={flushPendingQueue}
-                        className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-2 py-0.5 rounded text-[10px] cursor-pointer"
-                      >
-                        Sync Queue
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                <div className="text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded-xl border border-slate-100 space-y-1">
-                  <p className="font-bold text-slate-700">Multi-Device Real-Time Sync Tips:</p>
-                  <p>• Point both phones to the exact same Backend URL.</p>
-                  <p>• When you record weights on Phone A, Phone B updates in real-time.</p>
-                  <p className="text-[10px] text-slate-400 pt-0.5">Note: Accepts either base URL (e.g. <code>...onrender.com</code>) or <code>/api</code> suffix.</p>
-                </div>
-
-                {currentUserRole === 'Admin' ? (
-                  <div className="flex gap-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        localStorage.removeItem('poultry_custom_api_url');
-                        setCustomApiUrlInput(getApiBaseUrl());
-                        setCloudTestStatus('idle');
-                        setCloudTestResult(null);
-                        showToast('Reset to default URL');
-                      }}
-                      className="bg-slate-100 hover:bg-slate-200 py-2.5 px-3 rounded-xl text-xs font-bold text-slate-600 active:scale-95 transition cursor-pointer"
-                    >
-                      Reset
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSaveCloudSettings}
-                      className="flex-1 bg-sky-600 hover:bg-sky-500 py-2.5 rounded-xl text-xs font-black text-white shadow-md shadow-sky-600/20 active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                      Save & Sync Now
-                    </button>
-                  </div>
-                ) : (
-                  <div className="pt-2">
-                    <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-center">
-                      <p className="text-[11px] font-bold text-slate-700">Read-Only Cloud Access Mode</p>
-                      <p className="text-[10px] text-slate-500 mt-0.5">
-                        Only Admins can reconfigure backend endpoints. You can use "Test Ping" above to check live server & DB status.
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </div>
             </div>
           </div>
         )}

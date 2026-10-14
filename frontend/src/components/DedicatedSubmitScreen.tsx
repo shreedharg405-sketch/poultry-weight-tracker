@@ -140,9 +140,9 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
           <ArrowLeft className="w-4 h-4" /> Back to Dashboard
         </button>
 
-        <h2 className="text-xs font-black text-emerald-800 uppercase tracking-wide bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
-          Batch Submission & Upload
-        </h2>
+        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+          Submit Farm Batch
+        </span>
       </div>
 
       {/* Farm Profile Header */}
@@ -212,11 +212,11 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
                 Batch Submitted & Uploaded Successfully!
               </h4>
               <p className="text-[11px] text-emerald-800 mt-0.5">
-                Every individual bird weight and flock measurement has been committed to the cloud database.
-                {farmAudit?.lastSubmittedAt && ` Committed at: ${farmAudit.lastSubmittedAt}`}
+                Every individual bird weight and flock measurement has been saved and verified.
+                {farmAudit?.lastSubmittedAt && ` Submitted at: ${farmAudit.lastSubmittedAt}`}
               </p>
               <div className="mt-2 text-[10px] font-bold text-emerald-700 bg-emerald-100/60 px-2 py-1 rounded-md inline-block">
-                ✓ Cloud Database Commit Confirmed • Official Worksheet Ready
+                ✓ Submission Confirmed • Official Worksheet Ready
               </div>
             </div>
           </div>
@@ -323,10 +323,10 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
         )}
       </div>
 
-      {/* 2. CLOUD SYNCHRONIZATION STATUS BADGE */}
+      {/* 2. SYNCHRONIZATION STATUS BADGE */}
       <div className="bg-white p-3.5 rounded-2xl border border-slate-200 mb-4 shadow-xs">
         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
-          Cloud Synchronization Status
+          Synchronization Status
         </span>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -339,18 +339,18 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
               <span className={`text-xs font-bold block ${
                 isCloudConnected ? 'text-emerald-700' : 'text-amber-700'
               }`}>
-                {isCloudConnected ? '🟢 Cloud Database Connected' : '⏳ Waiting for Cloud Connection'}
+                {isCloudConnected ? '🟢 Live Server Connected' : '⏳ Offline • Saved Locally'}
               </span>
               <span className="text-[10px] text-slate-400">
                 {pendingSyncCount > 0 
                   ? `${pendingSyncCount} record(s) queued for sync` 
-                  : 'PostgreSQL cloud database synchronization active'}
+                  : 'All measurements synchronized'}
               </span>
             </div>
           </div>
 
           <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-1 rounded-lg border border-slate-200">
-            {farmStatus}
+            {farmStatus === 'COMPLETED' ? '🟢 SUBMITTED' : farmStatus === 'DRAFT' ? '🟡 DRAFT' : farmStatus}
           </span>
         </div>
       </div>

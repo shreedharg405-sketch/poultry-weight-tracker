@@ -133,11 +133,19 @@ export function getApiBaseUrl(): string {
   return 'https://shreedharg405-sketch-poultry-weight.onrender.com/api';
 }
 
+export function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem('poultry_auth_token');
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+  };
+}
+
 export const cloudApi = {
   // 1. Fetch all farm summaries
   async getFarms(): Promise<FarmSummary[]> {
     const res = await fetch(`${getApiBaseUrl()}/farms`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
     });
     if (!res.ok) throw new Error(`Failed to fetch farms (${res.status})`);
     return res.json();
@@ -154,7 +162,7 @@ export const cloudApi = {
   }): Promise<FullFarmData> {
     const res = await fetch(`${getApiBaseUrl()}/farms`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
     if (!res.ok) throw new Error(`Failed to create farm (${res.status})`);
@@ -164,7 +172,7 @@ export const cloudApi = {
   // 3. Get full farm details by ID
   async getFarmDetails(farmId: string): Promise<FullFarmData> {
     const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
     });
     if (!res.ok) throw new Error(`Failed to fetch farm details (${res.status})`);
     return res.json();
@@ -578,12 +586,27 @@ export const cloudApi = {
   async deleteUser(id: string): Promise<boolean> {
     const res = await fetch(`${getApiBaseUrl()}/auth/users/${id}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to delete user' }));
       throw new Error(err.error || `Failed to delete user (${res.status})`);
     }
     return res.ok;
+  },
+
+  // 26. Assign Operators to Farm (Req 5)
+  async assignOperatorsToFarm(farmId: string, operatorUserIds: string[]): Promise<{ success: boolean; farmId: string; assignedUserNames: string[]; count: number }> {
+    const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/assign-operators`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ operatorUserIds }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to assign operators to farm' }));
+      throw new Error(err.error || `Failed to assign operators (${res.status})`);
+    }
+    return res.json();
   },
 
   // 21. Get Activity Logs

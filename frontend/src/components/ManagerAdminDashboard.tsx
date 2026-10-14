@@ -59,12 +59,16 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   const isAdmin = userRole === 'Admin';
   const userDisplayName = currentUser?.userName || currentUser?.name || 'Executive User';
 
-  // Assignment Modal State
+  // Assignment Modal State (Req 5: Real Database Field Operators)
   const [assigningFarmId, setAssigningFarmId] = useState<string | null>(null);
-  const [tempAssignedUsers, setTempAssignedUsers] = useState<string[]>([]);
-  const [newUserInput, setNewUserInput] = useState('');
+  const [eligibleOperators, setEligibleOperators] = useState<AppUser[]>([]);
+  const [selectedOperatorIds, setSelectedOperatorIds] = useState<string[]>([]);
+  const [isLoadingOperators, setIsLoadingOperators] = useState(false);
+  const [isSavingAssignments, setIsSavingAssignments] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [assignSuccess, setAssignSuccess] = useState<string | null>(null);
 
-  // User Account Management State (Admin Only - Req 5)
+  // User Account Management State (Admin Only)
   const [showUserMgmtModal, setShowUserMgmtModal] = useState(false);
   const [systemUsers, setSystemUsers] = useState<AppUser[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
@@ -174,40 +178,67 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
   const targetFarmForAssign = farms.find(f => f.id === assigningFarmId);
 
-  const handleOpenAssignModal = (farm: FarmSummary) => {
+  // Open Real Operator Assignment Modal (Req 5)
+  const handleOpenAssignModal = async (farm: FarmSummary) => {
     setAssigningFarmId(farm.id);
-    setTempAssignedUsers(farm.assignedUserNames || []);
-    setNewUserInput('');
-  };
+    setIsLoadingOperators(true);
+    setAssignError(null);
+    setAssignSuccess(null);
 
-  const handleAddUserToAssign = () => {
-    const trimmed = newUserInput.trim();
-    if (!trimmed) return;
-    if (!tempAssignedUsers.includes(trimmed)) {
-      setTempAssignedUsers([...tempAssignedUsers, trimmed]);
+    try {
+      const users = await cloudApi.getUsers();
+      // Eligible field operators: Supervisor and In-Charge
+      const eligible = users.filter(u => u.role === 'Supervisor' || u.role === 'In-Charge');
+      setEligibleOperators(eligible);
+
+      // Determine operators already assigned to this farm
+      const currentlyAssignedIds = eligible.filter(u => {
+        const userAssigned = u.assignedFarms || [];
+        return (
+          userAssigned.includes(farm.id) ||
+          userAssigned.includes(farm.name) ||
+          userAssigned.includes('*') ||
+          (farm.assignedUserNames && farm.assignedUserNames.some(name => 
+            name.toLowerCase().includes(u.name.toLowerCase()) || 
+            name.toLowerCase().includes(u.username.toLowerCase())
+          ))
+        );
+      }).map(u => u.id);
+
+      setSelectedOperatorIds(currentlyAssignedIds);
+    } catch (err: any) {
+      setAssignError(err.message || 'Failed to load field operators');
+    } finally {
+      setIsLoadingOperators(false);
     }
-    setNewUserInput('');
   };
 
-  const handleRemoveUserFromAssign = (userName: string) => {
-    setTempAssignedUsers(tempAssignedUsers.filter(u => u !== userName));
+  const handleToggleOperator = (userId: string) => {
+    setSelectedOperatorIds(prev => 
+      prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
+    );
   };
 
-  const handleSaveAssignments = () => {
-    if (assigningFarmId) {
-      onAssignUser(assigningFarmId, tempAssignedUsers);
-      setAssigningFarmId(null);
+  // Persist Operator Assignments to PostgreSQL Database (Req 5)
+  const handleSaveAssignments = async () => {
+    if (!assigningFarmId) return;
+    setIsSavingAssignments(true);
+    setAssignError(null);
+    setAssignSuccess(null);
+
+    try {
+      const result = await cloudApi.assignOperatorsToFarm(assigningFarmId, selectedOperatorIds);
+      setAssignSuccess(`Assigned ${result.count} field operators successfully!`);
+      onAssignUser(assigningFarmId, result.assignedUserNames);
+      setTimeout(() => {
+        setAssigningFarmId(null);
+      }, 700);
+    } catch (err: any) {
+      setAssignError(err.message || 'Failed to save operator assignments to database');
+    } finally {
+      setIsSavingAssignments(false);
     }
   };
-
-  // Quick Suggested Operator Presets
-  const suggestedOperators = [
-    'Ramesh (Supervisor)',
-    'John (Incharge)',
-    'Suresh Kumar (Supervisor)',
-    'Anil (Incharge)',
-    'Vijay (Supervisor)'
-  ];
 
   return (
     <div className="flex-1 flex flex-col p-3 sm:p-4 md:p-6 lg:p-8 animate-in fade-in duration-150">
@@ -242,42 +273,23 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2">
           <button
             onClick={onViewSubmissionsUpdate}
-            className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl active:scale-95 transition cursor-pointer shadow-2xs"
+            className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-xl active:scale-95 transition cursor-pointer shadow-2xs"
           >
             <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
-            <span>Submissions Update</span>
+            <span className="truncate">Submissions Update</span>
           </button>
-
-          {isAdmin ? (
-            <button
-              onClick={onOpenSetup}
-              className="flex items-center gap-1.5 p-2 md:px-3 text-slate-600 hover:text-purple-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition cursor-pointer shadow-2xs"
-              title="Cloud Integration Settings (Admin)"
-            >
-              <Settings className="w-4 h-4 text-purple-600" />
-              <span className="hidden md:inline text-xs font-bold">Cloud Settings</span>
-            </button>
-          ) : (
-            <button
-              onClick={onOpenSetup}
-              className="flex items-center gap-1.5 p-2 md:px-3 text-slate-500 hover:text-sky-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition cursor-pointer shadow-2xs"
-              title="Cloud Connection (Read-Only Manager)"
-            >
-              <Cloud className="w-4 h-4 text-sky-600" />
-              <span className="hidden md:inline text-xs font-bold">Cloud Link</span>
-            </button>
-          )}
 
           <button
             onClick={onLogout}
-            className="flex items-center gap-1.5 p-2 md:px-3 text-rose-600 hover:text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-xl transition cursor-pointer shadow-2xs"
+            className="flex items-center gap-1.5 px-3 py-1.5 sm:py-2 text-rose-600 hover:text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-xl font-bold text-xs shadow-2xs transition active:scale-95 cursor-pointer"
             title="Log Out Session"
+            aria-label="Log Out"
           >
-            <LogOut className="w-4 h-4" />
-            <span className="hidden md:inline text-xs font-bold">Log Out</span>
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Logout</span>
           </button>
         </div>
       </div>
@@ -291,12 +303,14 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] md:text-xs font-black uppercase tracking-wider text-purple-300 block">
+              <span className={`text-[10px] md:text-xs font-black uppercase tracking-wider block ${
+                isAdmin ? 'text-purple-300' : 'text-sky-300'
+              }`}>
                 {isAdmin ? 'System Administrator Suite' : 'Supervisory Management Suite'}
               </span>
               <span className="hidden md:inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
               <span className="hidden md:inline-block text-[10px] text-slate-300 font-medium">
-                Live PostgreSQL Multi-Device Sync
+                Live Field Synchronization
               </span>
             </div>
             <h2 className="text-base sm:text-lg md:text-2xl font-black text-white mt-1">
@@ -503,6 +517,9 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       {/* ========================================================= */}
       {/* MODAL: FARM ACCESS ASSIGNMENT HUB                         */}
       {/* ========================================================= */}
+      {/* ========================================================= */}
+      {/* MODAL: FARM ACCESS ASSIGNMENT HUB (Req 5: Real Database)  */}
+      {/* ========================================================= */}
       {assigningFarmId && targetFarmForAssign && (
         <div 
           className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150"
@@ -517,10 +534,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 </div>
                 <div>
                   <h3 className="font-black text-sm text-white">
-                    Farm Assignment Hub
+                    Assign Field Operators
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Bind field operators to {targetFarmForAssign.name}
+                    Grant field weighing access to {targetFarmForAssign.name}
                   </p>
                 </div>
               </div>
@@ -532,87 +549,86 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               </button>
             </div>
 
-            {/* Currently Assigned List */}
+            {/* Feedback Alerts */}
+            {assignSuccess && (
+              <div className="bg-emerald-500/10 border border-emerald-500/40 p-2.5 rounded-xl text-emerald-400 text-xs font-bold flex items-center gap-2">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{assignSuccess}</span>
+              </div>
+            )}
+            {assignError && (
+              <div className="bg-rose-500/10 border border-rose-500/40 p-2.5 rounded-xl text-rose-400 text-xs font-semibold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{assignError}</span>
+              </div>
+            )}
+
+            {/* Eligible Operators Checklist */}
             <div>
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
-                Bound Supervisors & Incharges ({tempAssignedUsers.length})
-              </label>
-              {tempAssignedUsers.length === 0 ? (
-                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-center text-xs text-slate-500">
-                  No operators currently assigned. Add one below.
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                  Eligible Field Operators ({eligibleOperators.length})
+                </label>
+                <span className="text-[10px] font-mono text-sky-400 font-bold">
+                  {selectedOperatorIds.length} Assigned
+                </span>
+              </div>
+
+              {isLoadingOperators ? (
+                <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
+                  <span>Loading registered field operators...</span>
+                </div>
+              ) : eligibleOperators.length === 0 ? (
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-center text-xs text-slate-400">
+                  <p className="font-semibold text-slate-300">No field operators registered yet.</p>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Create Supervisor or In-Charge accounts under User Management to assign them to this farm.
+                  </p>
                 </div>
               ) : (
-                <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                  {tempAssignedUsers.map((userName) => (
-                    <div 
-                      key={userName}
-                      className="flex items-center justify-between bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-xs"
-                    >
-                      <span className="font-bold text-slate-200">{userName}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveUserFromAssign(userName)}
-                        className="text-slate-400 hover:text-rose-400 p-1"
-                        title="Remove assignment"
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                  {eligibleOperators.map((operator) => {
+                    const isSelected = selectedOperatorIds.includes(operator.id);
+                    return (
+                      <div 
+                        key={operator.id}
+                        onClick={() => handleToggleOperator(operator.id)}
+                        className={`flex items-center justify-between px-3 py-2.5 rounded-xl border text-xs cursor-pointer transition select-none ${
+                          isSelected
+                            ? 'bg-sky-950/60 border-sky-500/60 text-white'
+                            : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                        }`}
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
+                        <div className="flex items-center gap-2.5">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleOperator(operator.id)}
+                            className="w-4 h-4 rounded text-sky-600 border-slate-700 bg-slate-900 focus:ring-sky-500 cursor-pointer"
+                          />
+                          <div>
+                            <span className="font-black text-xs block text-slate-100">
+                              {operator.name}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              @{operator.username}
+                            </span>
+                          </div>
+                        </div>
+
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md border ${
+                          operator.role === 'In-Charge' || operator.role === 'Incharge'
+                            ? 'bg-sky-500/20 text-sky-300 border-sky-500/30'
+                            : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                        }`}>
+                          {operator.role}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
-            </div>
-
-            {/* Add Custom User Input */}
-            <div>
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                Add Field Operator by Name
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newUserInput}
-                  onChange={(e) => setNewUserInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddUserToAssign(); } }}
-                  placeholder="e.g. Ramesh (Supervisor)"
-                  className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-sky-500"
-                />
-                <button
-                  type="button"
-                  onClick={handleAddUserToAssign}
-                  className="bg-sky-600 hover:bg-sky-500 text-white font-black px-3 py-2 rounded-xl text-xs active:scale-95 transition cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Suggested Presets */}
-            <div>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
-                Quick Presets:
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                {suggestedOperators.map((preset) => (
-                  <button
-                    key={preset}
-                    type="button"
-                    onClick={() => {
-                      if (!tempAssignedUsers.includes(preset)) {
-                        setTempAssignedUsers([...tempAssignedUsers, preset]);
-                      }
-                    }}
-                    disabled={tempAssignedUsers.includes(preset)}
-                    className={`text-[10px] px-2 py-1 rounded-lg border transition ${
-                      tempAssignedUsers.includes(preset)
-                        ? 'bg-slate-800 text-slate-500 border-slate-700 cursor-default'
-                        : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-sky-500/60 cursor-pointer'
-                    }`}
-                  >
-                    + {preset}
-                  </button>
-                ))}
-              </div>
             </div>
 
             {/* Save / Cancel Buttons */}
@@ -620,16 +636,25 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               <button
                 type="button"
                 onClick={() => setAssigningFarmId(null)}
-                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition cursor-pointer"
+                disabled={isSavingAssignments}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleSaveAssignments}
-                className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black py-2.5 rounded-xl text-xs shadow-md transition cursor-pointer"
+                disabled={isSavingAssignments || isLoadingOperators}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black py-2.5 rounded-xl text-xs shadow-md transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
               >
-                Save Assignments
+                {isSavingAssignments ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  <span>Save Assignments</span>
+                )}
               </button>
             </div>
           </div>

@@ -275,19 +275,136 @@ async function touchFarm(farmId: string) {
   }
 }
 
-// --------------------------------------------------------------------------
-// 1. GET /api/farms - Fetch all farms summaries
-// --------------------------------------------------------------------------
-farmRouter.get('/farms', async (_req: Request, res: Response) => {
+export async function getAuthUserFromRequest(req: Request): Promise<{ id: string; username: string; role: string; name: string; assignedFarms: string[] } | null> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.split(' ')[1];
+  const payload = verifyToken(token);
+  if (!payload) return null;
+
   if (isPostgresConfigured()) {
     try {
-      const farms = await prisma.farm.findMany({
-        orderBy: { updatedAt: 'desc' },
-        include: {
-          _count: { select: { sheds: true } },
-        },
+      const dbUser = await prisma.user.findUnique({
+        where: { id: payload.userId },
+        select: { id: true, username: true, role: true, name: true, assignedFarms: true },
       });
-      return res.json(farms);
+      if (dbUser) return dbUser;
+    } catch {}
+  }
+
+  const memUser = memoryUsers.find(u => u.id === payload.userId || u.username === payload.username);
+  if (memUser) {
+    return {
+      id: memUser.id,
+      username: memUser.username,
+      role: memUser.role,
+      name: memUser.name,
+      assignedFarms: memUser.assignedFarms || [],
+    };
+  }
+
+  return {
+    id: payload.userId,
+    username: payload.username,
+    role: payload.role,
+    name: payload.username,
+    assignedFarms: [],
+  };
+}
+
+// --------------------------------------------------------------------------
+// 1. GET /api/farms - Fetch all farms summaries with synchronized statuses & operator assignments
+// --------------------------------------------------------------------------
+farmRouter.get('/farms', async (req: Request, res: Response) => {
+  const authUser = await getAuthUserFromRequest(req);
+
+  if (isPostgresConfigured()) {
+    try {
+      const [farms, users, submissions] = await Promise.all([
+        prisma.farm.findMany({
+          orderBy: { updatedAt: 'desc' },
+          include: {
+            _count: { select: { sheds: true, submissions: true } },
+          },
+        }),
+        prisma.user.findMany({
+          select: {
+            id: true,
+            username: true,
+            name: true,
+            role: true,
+            assignedFarms: true,
+          }
+        }),
+        prisma.submission.findMany({
+          orderBy: { submittedAt: 'desc' },
+          select: {
+            id: true,
+            farmId: true,
+            status: true,
+            submittedAt: true,
+            submitterName: true,
+            submitterRole: true,
+            totalBirds: true,
+            femaleAvgWeight: true,
+            maleAvgWeight: true,
+            overallAvgWeight: true,
+          }
+        })
+      ]);
+
+      let filteredFarms = farms;
+
+      // Role-based visibility enforcement (Req 8)
+      if (authUser) {
+        if (authUser.role === 'Supervisor' || authUser.role === 'In-Charge') {
+          const userAssigned = authUser.assignedFarms || [];
+          if (userAssigned.length === 0) {
+            return res.json([]);
+          }
+          filteredFarms = farms.filter(f => userAssigned.includes(f.id) || userAssigned.includes(f.name));
+        } else if (authUser.role === 'Manager') {
+          const userAssigned = authUser.assignedFarms || [];
+          if (userAssigned.length > 0 && !userAssigned.includes('*')) {
+            filteredFarms = farms.filter(f => userAssigned.includes(f.id) || userAssigned.includes(f.name));
+          }
+        }
+      }
+
+      const summaries = filteredFarms.map(f => {
+        // Find assigned field operators for this farm
+        const assigned = users
+          .filter(u => (u.assignedFarms || []).some(af => af === f.id || af === f.name || af === '*'))
+          .map(u => `${u.name} (${u.role})`);
+
+        // Find latest submission for this farm
+        const latestSub = submissions.find(s => s.farmId === f.id);
+        const isCompleted = Boolean(latestSub && latestSub.status === 'COMPLETED');
+
+        return {
+          id: f.id,
+          name: f.name,
+          flockDate: f.flockDate,
+          ageWeek: f.ageWeek,
+          season: f.season,
+          status: isCompleted ? 'COMPLETED' : 'DRAFT',
+          submissionCount: f._count.submissions,
+          assignedUserNames: assigned,
+          audit: latestSub ? {
+            lastSubmittedAt: latestSub.submittedAt ? new Date(latestSub.submittedAt).toISOString() : null,
+            lastSubmittedBy: latestSub.submitterName,
+            submittedRole: latestSub.submitterRole,
+            totalBirdsSubmitted: latestSub.totalBirds,
+            femaleAvgWeight: latestSub.femaleAvgWeight,
+            maleAvgWeight: latestSub.maleAvgWeight,
+          } : undefined,
+          updatedAt: f.updatedAt,
+          createdAt: f.createdAt,
+          _count: { sheds: f._count.sheds },
+        };
+      });
+
+      return res.json(summaries);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL query failed on GET /farms:', err?.message || err);
       return res.status(503).json({
@@ -299,20 +416,131 @@ farmRouter.get('/farms', async (_req: Request, res: Response) => {
   }
 
   // Offline / local development in-memory simulation only
-  const summaries = memoryFarms
+  let memFarmsFiltered = memoryFarms;
+  if (authUser) {
+    if (authUser.role === 'Supervisor' || authUser.role === 'In-Charge') {
+      const userAssigned = authUser.assignedFarms || [];
+      if (userAssigned.length === 0) return res.json([]);
+      memFarmsFiltered = memoryFarms.filter(f => userAssigned.includes(f.id) || userAssigned.includes(f.name));
+    } else if (authUser.role === 'Manager') {
+      const userAssigned = authUser.assignedFarms || [];
+      if (userAssigned.length > 0 && !userAssigned.includes('*')) {
+        memFarmsFiltered = memoryFarms.filter(f => userAssigned.includes(f.id) || userAssigned.includes(f.name));
+      }
+    }
+  }
+
+  const summaries = memFarmsFiltered
     .slice()
     .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-    .map(f => ({
-      id: f.id,
-      name: f.name,
-      flockDate: f.flockDate,
-      ageWeek: f.ageWeek,
-      season: f.season,
-      updatedAt: f.updatedAt,
-      createdAt: f.createdAt,
-      _count: { sheds: f.sheds.length },
-    }));
+    .map(f => {
+      const assigned = memoryUsers
+        .filter(u => (u.assignedFarms || []).some(af => af === f.id || af === f.name || af === '*'))
+        .map(u => `${u.name} (${u.role})`);
+      return {
+        id: f.id,
+        name: f.name,
+        flockDate: f.flockDate,
+        ageWeek: f.ageWeek,
+        season: f.season,
+        status: f.status || 'DRAFT',
+        assignedUserNames: assigned,
+        audit: f.audit,
+        updatedAt: f.updatedAt,
+        createdAt: f.createdAt,
+        _count: { sheds: f.sheds.length },
+      };
+    });
   return res.json(summaries);
+});
+
+// --------------------------------------------------------------------------
+// 1.B POST /api/farms/:farmId/assign-operators - Assign Field Operators to Farm (Req 5)
+// --------------------------------------------------------------------------
+farmRouter.post('/farms/:farmId/assign-operators', async (req: Request, res: Response) => {
+  const { farmId } = req.params;
+  const { operatorUserIds } = req.body;
+  if (!Array.isArray(operatorUserIds)) {
+    return res.status(400).json({ error: 'operatorUserIds must be an array of user IDs' });
+  }
+
+  if (isPostgresConfigured()) {
+    try {
+      const farm = await prisma.farm.findUnique({ where: { id: farmId } });
+      if (!farm) {
+        return res.status(404).json({ error: 'Farm not found in database' });
+      }
+
+      // Query all eligible field operators (Supervisor, In-Charge)
+      const fieldUsers = await prisma.user.findMany({
+        where: {
+          role: { in: ['Supervisor', 'In-Charge'] }
+        }
+      });
+
+      const updatedAssignedUserNames: string[] = [];
+
+      for (const user of fieldUsers) {
+        const shouldBeAssigned = operatorUserIds.includes(user.id);
+        const currentAssigned = new Set(user.assignedFarms || []);
+
+        if (shouldBeAssigned) {
+          currentAssigned.add(farm.id);
+          currentAssigned.add(farm.name);
+          updatedAssignedUserNames.push(`${user.name} (${user.role})`);
+        } else {
+          currentAssigned.delete(farm.id);
+          currentAssigned.delete(farm.name);
+        }
+
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            assignedFarms: Array.from(currentAssigned)
+          }
+        });
+      }
+
+      return res.json({
+        success: true,
+        farmId,
+        assignedUserNames: updatedAssignedUserNames,
+        count: updatedAssignedUserNames.length
+      });
+    } catch (err: any) {
+      console.error('❌ [DB] Error in /assign-operators:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to update operator assignments in PostgreSQL.',
+        details: err?.message
+      });
+    }
+  }
+
+  // Offline / memory fallback
+  const memFarm = memoryFarms.find(f => f.id === farmId);
+  const updatedAssignedUserNames: string[] = [];
+  memoryUsers.forEach(user => {
+    if (user.role === 'Supervisor' || user.role === 'In-Charge') {
+      const shouldBeAssigned = operatorUserIds.includes(user.id);
+      const set = new Set(user.assignedFarms || []);
+      if (shouldBeAssigned) {
+        set.add(farmId);
+        if (memFarm) set.add(memFarm.name);
+        updatedAssignedUserNames.push(`${user.name} (${user.role})`);
+      } else {
+        set.delete(farmId);
+        if (memFarm) set.delete(memFarm.name);
+      }
+      user.assignedFarms = Array.from(set);
+    }
+  });
+
+  return res.json({
+    success: true,
+    farmId,
+    assignedUserNames: updatedAssignedUserNames,
+    count: updatedAssignedUserNames.length
+  });
 });
 
 // --------------------------------------------------------------------------
@@ -433,6 +661,8 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
   const farmId = req.params.id;
+  const authUser = await getAuthUserFromRequest(req);
+
   if (isPostgresConfigured()) {
     try {
       const farm = await prisma.farm.findUnique({
@@ -449,8 +679,28 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
           },
         },
       });
-      if (farm) return res.json(farm);
-      return res.status(404).json({ error: 'Farm not found in PostgreSQL database' });
+      if (!farm) {
+        return res.status(404).json({ error: 'Farm not found in PostgreSQL database' });
+      }
+
+      // Enforce assigned-farm visibility on direct API requests (Req 8)
+      if (authUser) {
+        if (authUser.role === 'Supervisor' || authUser.role === 'In-Charge') {
+          const userAssigned = authUser.assignedFarms || [];
+          if (!userAssigned.includes(farm.id) && !userAssigned.includes(farm.name)) {
+            return res.status(403).json({ error: 'Access denied: You are not assigned to this farm unit.' });
+          }
+        } else if (authUser.role === 'Manager') {
+          const userAssigned = authUser.assignedFarms || [];
+          if (userAssigned.length > 0 && !userAssigned.includes('*')) {
+            if (!userAssigned.includes(farm.id) && !userAssigned.includes(farm.name)) {
+              return res.status(403).json({ error: 'Access denied: You are not authorized for this farm unit.' });
+            }
+          }
+        }
+      }
+
+      return res.json(farm);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL get /farms/:id error:', err?.message || err);
       return res.status(503).json({
@@ -465,6 +715,23 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
   if (!memFarm) {
     return res.status(404).json({ error: 'Farm not found' });
   }
+
+  if (authUser) {
+    if (authUser.role === 'Supervisor' || authUser.role === 'In-Charge') {
+      const userAssigned = authUser.assignedFarms || [];
+      if (!userAssigned.includes(memFarm.id) && !userAssigned.includes(memFarm.name)) {
+        return res.status(403).json({ error: 'Access denied: You are not assigned to this farm unit.' });
+      }
+    } else if (authUser.role === 'Manager') {
+      const userAssigned = authUser.assignedFarms || [];
+      if (userAssigned.length > 0 && !userAssigned.includes('*')) {
+        if (!userAssigned.includes(memFarm.id) && !userAssigned.includes(memFarm.name)) {
+          return res.status(403).json({ error: 'Access denied: You are not authorized for this farm unit.' });
+        }
+      }
+    }
+  }
+
   return res.json(memFarm);
 });
 

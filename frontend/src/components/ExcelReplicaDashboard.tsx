@@ -673,10 +673,10 @@ export const ExcelReplicaDashboard: React.FC = () => {
               >
                 <span>{shed.name}</span>
                 <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded font-black ${
+                  className={`text-[10px] px-2 py-0.5 rounded-md font-black border ${
                     shed.type === 'Male'
-                      ? 'bg-blue-950 text-blue-300 border border-blue-800/60'
-                      : 'bg-pink-950 text-pink-300 border border-pink-800/60'
+                      ? 'bg-blue-900 text-blue-100 border-blue-400'
+                      : 'bg-pink-900 text-pink-100 border-pink-400'
                   }`}
                 >
                   {shed.type === 'Male' ? '♂ M' : '♀ F'}
@@ -878,10 +878,10 @@ export const ExcelReplicaDashboard: React.FC = () => {
                       <td className="py-3 px-4 font-mono font-bold text-white">{s.id}</td>
                       <td className="py-3 px-4 text-slate-200 font-semibold">{s.name}</td>
                       <td className="py-3 px-4">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-black border ${
                           s.type === 'Male' 
-                            ? 'bg-blue-950 text-blue-300 border border-blue-800/40' 
-                            : 'bg-pink-950 text-pink-300 border border-pink-800/40'
+                            ? 'bg-blue-900 text-blue-100 border-blue-400' 
+                            : 'bg-pink-900 text-pink-100 border-pink-400'
                         }`}>
                           {s.type === 'Male' ? '♂ Male' : '♀ Female'}
                         </span>
@@ -948,8 +948,8 @@ export const ExcelReplicaDashboard: React.FC = () => {
                   }}
                   className={`text-xs px-2.5 py-1 rounded-xl font-black border transition ${
                     currentShed.type === 'Male'
-                      ? 'bg-blue-950 text-blue-300 border-blue-800/60 hover:bg-blue-900'
-                      : 'bg-pink-950 text-pink-300 border-pink-800/60 hover:bg-pink-900'
+                      ? 'bg-blue-900 text-blue-100 border-blue-400 hover:bg-blue-800'
+                      : 'bg-pink-900 text-pink-100 border-pink-400 hover:bg-pink-800'
                   }`}
                   title="Click to toggle Gender for this Shed"
                 >
