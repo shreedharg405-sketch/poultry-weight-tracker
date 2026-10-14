@@ -16,7 +16,7 @@ export interface AppUser {
   isAuthenticated?: boolean;
 }
 
-export type FarmStatus = 'DRAFT' | 'COMPLETED';
+export type FarmStatus = 'DRAFT' | 'UPLOADING' | 'COMPLETED' | 'UPLOAD_FAILED';
 
 export interface FarmAudit {
   status?: FarmStatus;
@@ -310,6 +310,104 @@ export const cloudApi = {
       body: JSON.stringify(data),
     });
     if (!res.ok) throw new Error(`Full sync failed (${res.status})`);
+    return res.json();
+  },
+
+  // 17b. Submit & Upload Batch Weighing (Atomic Cloud Database Transaction)
+  async submitWeighingBatch(data: {
+    idempotencyKey?: string;
+    farmId: string;
+    flockAge?: string;
+    season?: string;
+    sheds: ShedData[];
+    metadata?: any;
+  }): Promise<{
+    success: boolean;
+    status: 'COMPLETED';
+    message: string;
+    submission: any;
+    stats?: any;
+    isIdempotentReplay?: boolean;
+  }> {
+    const token = localStorage.getItem('poultry_auth_token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(`${getApiBaseUrl()}/submissions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      const msg = errData.error || `Submission failed with status ${res.status}`;
+      const err: any = new Error(msg);
+      err.pendingLines = errData.pendingLines;
+      err.status = res.status;
+      throw err;
+    }
+
+    return res.json();
+  },
+
+  // 17c. Fetch Submissions (Filtered by authorized user role & assigned farms)
+  async getSubmissions(farmId?: string): Promise<any[]> {
+    const token = localStorage.getItem('poultry_auth_token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const url = farmId 
+      ? `${getApiBaseUrl()}/submissions?farmId=${encodeURIComponent(farmId)}` 
+      : `${getApiBaseUrl()}/submissions`;
+
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error(`Failed to fetch submissions (${res.status})`);
+    return res.json();
+  },
+
+  // 17d. Fetch Full Submission Details by ID
+  async getSubmissionDetails(submissionId: string): Promise<any> {
+    const token = localStorage.getItem('poultry_auth_token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(`${getApiBaseUrl()}/submissions/${submissionId}`, { headers });
+    if (!res.ok) throw new Error(`Failed to fetch submission details (${res.status})`);
+    return res.json();
+  },
+
+  // 17e. Fetch Individual Bird Weights for a Submission
+  async getSubmissionBirds(submissionId: string, filters?: { shedName?: string; partName?: string; lineName?: string; sex?: string }): Promise<any[]> {
+    const token = localStorage.getItem('poultry_auth_token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const params = new URLSearchParams();
+    if (filters?.shedName) params.set('shedName', filters.shedName);
+    if (filters?.partName) params.set('partName', filters.partName);
+    if (filters?.lineName) params.set('lineName', filters.lineName);
+    if (filters?.sex) params.set('sex', filters.sex);
+
+    const qs = params.toString();
+    const res = await fetch(`${getApiBaseUrl()}/submissions/${submissionId}/birds${qs ? '?' + qs : ''}`, { headers });
+    if (!res.ok) throw new Error(`Failed to fetch bird weights (${res.status})`);
     return res.json();
   },
 

@@ -284,10 +284,11 @@ export default function App() {
   const [farmStatus, setFarmStatus] = useState<FarmStatus>(() => {
     try {
       const saved = localStorage.getItem('poultry_status_farm-sai-1');
-      if (saved === 'DRAFT' || saved === 'COMPLETED') return saved;
+      if (saved === 'DRAFT' || saved === 'UPLOADING' || saved === 'COMPLETED' || saved === 'UPLOAD_FAILED') return saved as FarmStatus;
     } catch {}
     return 'DRAFT';
   });
+  const [uploadErrorMessage, setUploadErrorMessage] = useState<string | null>(null);
   const [showIncompleteAlertModal, setShowIncompleteAlertModal] = useState<boolean>(false);
   const [showFarmDetailsModal, setShowFarmDetailsModal] = useState<boolean>(false);
   const [isSubmittingBatch, setIsSubmittingBatch] = useState<boolean>(false);
@@ -911,7 +912,7 @@ export default function App() {
 
     // Restore local audit, draft status & pending status for target farm
     const localStatus = localStorage.getItem(`poultry_status_${targetFarmId}`) as FarmStatus | null;
-    if (localStatus === 'DRAFT' || localStatus === 'COMPLETED') {
+    if (localStatus === 'DRAFT' || localStatus === 'UPLOADING' || localStatus === 'COMPLETED' || localStatus === 'UPLOAD_FAILED') {
       setFarmStatus(localStatus);
     } else {
       setFarmStatus('DRAFT');
@@ -1592,17 +1593,19 @@ export default function App() {
     }
 
     setIsSubmittingBatch(true);
+    setFarmStatus('UPLOADING');
     setSyncStatus('saving');
+    setUploadErrorMessage(null);
 
     const now = new Date();
     const formattedSubmittedAt = `Date(${formatDateDMY(now)}) - Time(${formatTime12H(now)})`;
     const timestampISO = now.toISOString();
 
     // 2. Calculate total birds across all sheds
-    const totalBirdsWeighed = sheds.reduce(
+    const totalBirdsCount = sheds.reduce(
       (acc, shed) => acc + shed.parts.reduce(
         (pAcc, part) => pAcc + part.lines.reduce(
-          (lAcc, line) => lAcc + line.weights.length, 0
+          (lAcc, line) => lAcc + (line.weights?.length || 0), 0
         ), 0
       ), 0
     );
@@ -1610,10 +1613,10 @@ export default function App() {
     // 3. Calculate Female & Male Act Body Weights across active farm
     const femaleWeights = sheds
       .filter(s => s.type === 'Female')
-      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights)));
+      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights || [])));
     const maleWeights = sheds
       .filter(s => s.type === 'Male')
-      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights)));
+      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights || [])));
     const femaleAvg = femaleWeights.length > 0 
       ? Math.round(femaleWeights.reduce((a, b) => a + b, 0) / femaleWeights.length) 
       : 0;
@@ -1624,105 +1627,99 @@ export default function App() {
     const userDisplayName = currentUser?.userName || currentUser?.name || 'Suresh Kumar';
     const userRole = currentUserRole;
 
-    // 4. Update FarmAudit object with COMPLETED status
-    const updatedAudit: FarmAudit = {
-      status: 'COMPLETED',
-      lastSubmittedAt: formattedSubmittedAt,
-      lastSubmittedBy: userDisplayName,
-      lastSubmittedRole: userRole,
-      submittedBy: userDisplayName,
-      submittedRole: userRole,
-      lastEditedBy: userDisplayName,
-      lastEditedRole: userRole,
-      totalBirdsSubmitted: totalBirdsWeighed,
-      totalBirdsAtLastSubmit: totalBirdsWeighed,
-      femaleAvgWeight: femaleAvg,
-      maleAvgWeight: maleAvg,
-      isPendingSubmission: false,
-    };
+    // 4. Stable Idempotency Key per batch attempt
+    let idempotencyKey = localStorage.getItem(`poultry_idempotency_${activeFarmId}`);
+    if (!idempotencyKey) {
+      idempotencyKey = `sub-${activeFarmId}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      localStorage.setItem(`poultry_idempotency_${activeFarmId}`, idempotencyKey);
+    }
 
-    setFarmStatus('COMPLETED');
-    localStorage.setItem(`poultry_status_${activeFarmId}`, 'COMPLETED');
-    setFarmAudit(updatedAudit);
-    setIsPendingSubmission(false);
-    localStorage.setItem(`poultry_audit_${activeFarmId}`, JSON.stringify(updatedAudit));
-    localStorage.setItem(`poultry_pending_submission_${activeFarmId}`, 'false');
-
-    setFarmsList(prev => prev.map(f => f.id === activeFarmId ? {
-      ...f,
-      status: 'COMPLETED',
-      progressPercentage: 100,
-      audit: updatedAudit,
-      updatedAt: timestampISO
-    } : f));
-
-    // 5. Create single consolidated submission audit log
-    const newSubmissionLog: ActivityLogItem = {
-      id: `submit-${Date.now()}`,
-      farmId: activeFarmId,
-      farmName: farmName,
-      userId: currentUser?.id,
-      userName: `${userDisplayName} - ${userRole}`,
-      action: `Batch Weighing Submitted • ${totalBirdsWeighed} Birds (♀ Act: ${femaleAvg > 0 ? femaleAvg + 'g' : 'N/A'}, ♂ Act: ${maleAvg > 0 ? maleAvg + 'g' : 'N/A'})`,
-      sampleCount: totalBirdsWeighed,
-      avgWeight: femaleAvg || maleAvg,
-      femaleAvgWeight: femaleAvg,
-      maleAvgWeight: maleAvg,
-      status: 'COMPLETED',
-      timestamp: timestampISO,
-      isLive: false,
-    };
-
-    setActivityLogs(prev => [newSubmissionLog, ...prev.slice(0, 49)]);
-
-    // 6. Commit and sync full farm dataset to remote store with COMPLETED status
     try {
-      await cloudApi.syncFullFarm(activeFarmId, {
-        name: farmName,
-        flockDate: date,
-        ageWeek,
+      // 5. Submit to backend API (Atomic Transaction in Cloud DB)
+      const response = await cloudApi.submitWeighingBatch({
+        idempotencyKey,
+        farmId: activeFarmId,
+        flockAge: ageWeek,
         season,
-        status: 'COMPLETED',
-        progressPercentage: 100,
         sheds,
-        audit: updatedAudit
+        metadata: {
+          totalBirds: totalBirdsCount,
+          femaleAvgWeight: femaleAvg,
+          maleAvgWeight: maleAvg,
+          submittedAtDMY: formattedSubmittedAt,
+          flockDate: date,
+        }
       });
 
-      // Also post consolidated batch log to backend
-      await cloudApi.createLog({
+      // 6. Confirmed success from backend: NOW mark COMPLETED
+      const submitterName = response.submission?.submitterName || userDisplayName;
+      const submitterRole = response.submission?.submitterRole || userRole;
+
+      const updatedAudit: FarmAudit = {
+        status: 'COMPLETED',
+        lastSubmittedAt: formattedSubmittedAt,
+        lastSubmittedBy: submitterName,
+        lastSubmittedRole: submitterRole,
+        submittedBy: submitterName,
+        submittedRole: submitterRole,
+        lastEditedBy: submitterName,
+        lastEditedRole: submitterRole,
+        totalBirdsSubmitted: totalBirdsCount,
+        totalBirdsAtLastSubmit: totalBirdsCount,
+        femaleAvgWeight: femaleAvg,
+        maleAvgWeight: maleAvg,
+        isPendingSubmission: false,
+      };
+
+      setFarmStatus('COMPLETED');
+      localStorage.setItem(`poultry_status_${activeFarmId}`, 'COMPLETED');
+      // Clear batch idempotency key so future batches get a fresh key
+      localStorage.removeItem(`poultry_idempotency_${activeFarmId}`);
+      setFarmAudit(updatedAudit);
+      setIsPendingSubmission(false);
+      localStorage.setItem(`poultry_audit_${activeFarmId}`, JSON.stringify(updatedAudit));
+      localStorage.setItem(`poultry_pending_submission_${activeFarmId}`, 'false');
+
+      setFarmsList(prev => prev.map(f => f.id === activeFarmId ? {
+        ...f,
+        status: 'COMPLETED',
+        progressPercentage: 100,
+        audit: updatedAudit,
+        updatedAt: timestampISO
+      } : f));
+
+      // 7. Create activity log item
+      const newSubmissionLog: ActivityLogItem = {
+        id: `submit-${Date.now()}`,
         farmId: activeFarmId,
-        userName: `${userDisplayName} - ${userRole}`,
-        action: newSubmissionLog.action,
-        sampleCount: totalBirdsWeighed,
+        farmName: farmName,
+        userId: currentUser?.id,
+        userName: `${submitterName} - ${submitterRole}`,
+        action: `Batch Weighing Submitted • ${totalBirdsCount} Birds (♀ Act: ${femaleAvg > 0 ? femaleAvg + 'g' : 'N/A'}, ♂ Act: ${maleAvg > 0 ? maleAvg + 'g' : 'N/A'})`,
+        sampleCount: totalBirdsCount,
         avgWeight: femaleAvg || maleAvg,
-        status: 'COMPLETED'
-      }).catch(() => {});
+        femaleAvgWeight: femaleAvg,
+        maleAvgWeight: maleAvg,
+        status: 'COMPLETED',
+        timestamp: timestampISO,
+        isLive: false,
+      };
+
+      setActivityLogs(prev => [newSubmissionLog, ...prev.slice(0, 49)]);
 
       setSyncStatus('synced');
       setLastUpdatedString('Updated Just now');
       setLastServerUpdatedAt(timestampISO);
-      showToast('Farm submitted successfully! You may now download the official worksheet.');
-    } catch (err) {
-      console.warn('Batch submit offline error, queuing full sync:', err);
-      offlineQueue.enqueue({
-        type: 'SYNC_FARM',
-        payload: {
-          farmId: activeFarmId,
-          data: {
-            name: farmName,
-            flockDate: date,
-            ageWeek,
-            season,
-            status: 'COMPLETED',
-            progressPercentage: 100,
-            sheds,
-            audit: updatedAudit
-          }
-        }
-      });
-      setPendingSyncCount(offlineQueue.count());
+      showToast('Batch submitted and committed to cloud database successfully! You may now download the official worksheet.');
+    } catch (err: any) {
+      console.warn('Batch upload failed:', err);
+      // FAILED UPLOAD: Preserve draft locally! DO NOT mark completed!
+      setFarmStatus('UPLOAD_FAILED');
+      localStorage.setItem(`poultry_status_${activeFarmId}`, 'UPLOAD_FAILED');
       setSyncStatus('offline');
-      showToast('Farm weighing saved locally as COMPLETED (Queued for Cloud Sync)');
+      const errorMsg = err?.message || 'Upload failed. Your draft is preserved locally. Please retry when the connection returns.';
+      setUploadErrorMessage(errorMsg);
+      showToast('Upload failed. Your draft is preserved locally. Please retry when the connection returns.');
     } finally {
       setIsSubmittingBatch(false);
     }
@@ -2086,8 +2083,13 @@ export default function App() {
             syncStatus={syncStatus}
             pendingSyncCount={pendingSyncCount}
             isSubmittingBatch={isSubmittingBatch}
+            totalBirdsWeighed={sheds.reduce((acc, s) => acc + s.parts.reduce((pAcc, p) => pAcc + p.lines.reduce((lAcc, l) => lAcc + (l.weights?.length || 0), 0), 0), 0)}
+            totalShedsCount={sheds.length}
+            totalPartsCount={sheds.reduce((acc, s) => acc + s.parts.length, 0)}
+            uploadErrorMessage={uploadErrorMessage}
             onBack={handleGoBack}
-            onSubmitSuccess={handleCompleteFarmSubmission}
+            onSubmitUpload={handleCompleteFarmSubmission}
+            onRetryUpload={handleCompleteFarmSubmission}
             onDownloadExcel={handleDownloadExcel}
             onJumpToLine={jumpToIncompleteLine}
           />

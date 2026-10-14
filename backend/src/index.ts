@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { healthRouter } from './routes/healthz.js';
 import { farmRouter } from './routes/farms.js';
+import { submissionRouter } from './routes/submissions.js';
 import { benchmarkRouter } from './routes/benchmarks.js';
 import { exportRouter } from './routes/export.js';
 
@@ -35,9 +36,11 @@ app.use((req, res, next) => {
 // 1. Health check & Diagnostics Routers (Handles /healthz, /health, /api/healthz, /api/health, /api/health/db)
 app.use(healthRouter);
 
-// 2. Multi-Farm Cloud Routes (Mounted on /api and aliased on root so URL with or without /api always works)
+// 2. Multi-Farm Cloud Routes & Submissions (Mounted on /api and aliased on root)
 app.use('/api', farmRouter);
 app.use('/', farmRouter);
+app.use('/api', submissionRouter);
+app.use('/', submissionRouter);
 
 // 3. Benchmarks & Export Routers
 app.use('/api/benchmarks', benchmarkRouter);

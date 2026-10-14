@@ -20,6 +20,7 @@ model User {
   updatedAt     DateTime @default(now()) @updatedAt
 
   logs          ActivityLog[]
+  submissions   Submission[]
 }
 
 model Farm {
@@ -33,6 +34,7 @@ model Farm {
 
   sheds       Shed[]
   logs        ActivityLog[]
+  submissions Submission[]
 }
 
 model Shed {
@@ -79,4 +81,95 @@ model ActivityLog {
   avgWeight   Float?
   status      String   @default("COMPLETED") // "LIVE" | "COMPLETED"
   createdAt   DateTime @default(now())
+}
+
+model Submission {
+  id               String           @id @default(uuid())
+  idempotencyKey   String?          @unique
+  farmId           String
+  farm             Farm             @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  userId           String?
+  user             User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  submitterName    String
+  submitterRole    String
+  flockAge         String           @default("W18")
+  season           String           @default("Summer")
+  status           String           @default("COMPLETED") // "DRAFT" | "UPLOADING" | "COMPLETED" | "UPLOAD_FAILED"
+  totalBirds       Int              @default(0)
+  femaleAvgWeight  Float?
+  maleAvgWeight    Float?
+  overallAvgWeight Float?
+  uniformity       Float?
+  metadata         Json?
+  submittedAt      DateTime         @default(now())
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  sheds            SubmissionShed[]
+  birdWeights      BirdWeight[]
+
+  @@index([farmId])
+  @@index([submittedAt])
+}
+
+model SubmissionShed {
+  id           String           @id @default(uuid())
+  submissionId String
+  submission   Submission       @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  shedId       String?
+  name         String
+  type         String           // "Female" | "Male"
+  order        Int              @default(0)
+
+  parts        SubmissionPart[]
+
+  @@index([submissionId])
+}
+
+model SubmissionPart {
+  id               String           @id @default(uuid())
+  submissionShedId String
+  submissionShed   SubmissionShed   @relation(fields: [submissionShedId], references: [id], onDelete: Cascade)
+  partId           String?
+  name             String
+  order            Int              @default(0)
+
+  lines            SubmissionLine[]
+
+  @@index([submissionShedId])
+}
+
+model SubmissionLine {
+  id               String         @id @default(uuid())
+  submissionPartId String
+  submissionPart   SubmissionPart @relation(fields: [submissionPartId], references: [id], onDelete: Cascade)
+  lineId           String?
+  name             String
+  weights          Float[]
+  birdCount        Int            @default(0)
+  avgWeight        Float?
+
+  birdWeights      BirdWeight[]
+
+  @@index([submissionPartId])
+}
+
+model BirdWeight {
+  id               String         @id @default(uuid())
+  submissionId     String
+  submission       Submission     @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  submissionLineId String
+  submissionLine   SubmissionLine @relation(fields: [submissionLineId], references: [id], onDelete: Cascade)
+  farmId           String
+  shedName         String
+  partName         String
+  lineName         String
+  sex              String         // "Female" | "Male"
+  sampleSequence   Int            // 1, 2, 3...
+  weightGrams      Float
+  createdAt        DateTime       @default(now())
+
+  @@index([submissionId])
+  @@index([farmId])
+  @@index([submissionLineId])
 }

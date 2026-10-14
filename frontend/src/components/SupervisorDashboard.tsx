@@ -14,7 +14,7 @@ import {
   Lock,
   ArrowRight
 } from 'lucide-react';
-import { FarmSummary, AppUser } from '../services/cloudSyncService';
+import { FarmSummary, AppUser, FarmStatus } from '../services/cloudSyncService';
 
 interface CompletionStats {
   totalLinesCount: number;
@@ -37,7 +37,7 @@ export interface SupervisorDashboardProps {
   activeFarm: FarmSummary | null;
   assignedFarms: FarmSummary[];
   completionStats: CompletionStats;
-  farmStatus: 'DRAFT' | 'COMPLETED';
+  farmStatus: FarmStatus;
   formattedDateTime: string;
   onSelectFarm: (farmId: string) => void;
   onStartWeighing: () => void;
@@ -137,19 +137,33 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               Assigned Farm Unit {assignedFarms.length > 1 && `(${assignedFarms.length} Available)`}
             </label>
             <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${
-              farmStatus === 'DRAFT' 
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' 
-                : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+              farmStatus === 'COMPLETED'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' 
+                : farmStatus === 'UPLOADING'
+                  ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
+                  : farmStatus === 'UPLOAD_FAILED'
+                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
             }`}>
-              {farmStatus === 'DRAFT' ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                  <span>🟡 DRAFT IN PROGRESS</span>
-                </>
-              ) : (
+              {farmStatus === 'COMPLETED' ? (
                 <>
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
                   <span>🟢 COMPLETED</span>
+                </>
+              ) : farmStatus === 'UPLOADING' ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></span>
+                  <span>🔵 UPLOADING</span>
+                </>
+              ) : farmStatus === 'UPLOAD_FAILED' ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                  <span>🔴 UPLOAD FAILED</span>
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                  <span>🟡 DRAFT IN PROGRESS</span>
                 </>
               )}
             </span>

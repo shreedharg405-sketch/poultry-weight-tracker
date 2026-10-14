@@ -6,18 +6,21 @@ import {
   AlertCircle, 
   Lock, 
   Loader2, 
-  Download, 
   FileSpreadsheet, 
   Scale, 
   Cloud, 
   CloudOff, 
   RefreshCw,
-  Clock,
-  Sparkles
+  UploadCloud,
+  Check,
+  AlertTriangle,
+  Layers,
+  Calendar,
+  Clock
 } from 'lucide-react';
-import { FarmSummary, FarmAudit } from '../services/cloudSyncService';
+import { FarmSummary, FarmAudit, FarmStatus } from '../services/cloudSyncService';
 
-interface IncompleteLineItem {
+export interface IncompleteLineItem {
   shedId: string;
   shedName: string;
   partId: string;
@@ -27,7 +30,7 @@ interface IncompleteLineItem {
   path: string;
 }
 
-interface CompletionStats {
+export interface CompletionStats {
   totalLinesCount: number;
   completedLinesCount: number;
   incompleteLines: IncompleteLineItem[];
@@ -38,13 +41,18 @@ interface CompletionStats {
 export interface DedicatedSubmitScreenProps {
   farm: FarmSummary | null;
   completionStats: CompletionStats;
-  farmStatus: 'DRAFT' | 'COMPLETED';
+  farmStatus: FarmStatus;
   farmAudit: FarmAudit | null;
   syncStatus: 'synced' | 'saving' | 'offline' | 'refreshing';
   pendingSyncCount: number;
   isSubmittingBatch: boolean;
+  totalBirdsWeighed: number;
+  totalShedsCount: number;
+  totalPartsCount: number;
+  uploadErrorMessage?: string | null;
   onBack: () => void;
-  onSubmitSuccess: () => Promise<void>;
+  onSubmitUpload: () => Promise<void>;
+  onRetryUpload: () => Promise<void>;
   onDownloadExcel: () => void;
   onJumpToLine: (shedId: string, partId: string, lineId: number | string) => void;
 }
@@ -57,26 +65,69 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
   syncStatus,
   pendingSyncCount,
   isSubmittingBatch,
+  totalBirdsWeighed,
+  totalShedsCount,
+  totalPartsCount,
+  uploadErrorMessage,
   onBack,
-  onSubmitSuccess,
+  onSubmitUpload,
+  onRetryUpload,
   onDownloadExcel,
   onJumpToLine,
 }) => {
-  const [successBanner, setSuccessBanner] = useState(farmStatus === 'COMPLETED');
+  const isCloudConnected = syncStatus === 'synced' || syncStatus === 'saving';
 
   const handleSubmit = async () => {
+    if (isSubmittingBatch) return;
+
     if (!completionStats.isFarm100PercentWeighed) {
       alert(
         `Cannot submit yet! All lines must be completely weighed.\nPending lines: [${completionStats.incompleteLines.map(l => l.path).join(', ')}]. Complete all lines to submit.`
       );
       return;
     }
-    await onSubmitSuccess();
-    setSuccessBanner(true);
-    alert("Farm submitted successfully! You may now download the official worksheet.");
+    await onSubmitUpload();
   };
 
-  const isCloudConnected = syncStatus === 'synced' || syncStatus === 'saving';
+  const handleRetry = async () => {
+    if (isSubmittingBatch) return;
+    await onRetryUpload();
+  };
+
+  // Helper for status badge styling
+  const getStatusBadge = () => {
+    switch (farmStatus) {
+      case 'UPLOADING':
+        return (
+          <span className="text-[10px] px-2.5 py-1 rounded-full font-bold flex items-center gap-1.5 bg-blue-50 text-blue-700 border border-blue-200">
+            <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
+            <span>🔵 Uploading to Cloud...</span>
+          </span>
+        );
+      case 'COMPLETED':
+        return (
+          <span className="text-[10px] px-2.5 py-1 rounded-full font-bold flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200">
+            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+            <span>🟢 Cloud Synced • Completed</span>
+          </span>
+        );
+      case 'UPLOAD_FAILED':
+        return (
+          <span className="text-[10px] px-2.5 py-1 rounded-full font-bold flex items-center gap-1.5 bg-rose-50 text-rose-700 border border-rose-200">
+            <AlertTriangle className="w-3 h-3 text-rose-600" />
+            <span>🔴 Upload Failed • Draft Preserved</span>
+          </span>
+        );
+      case 'DRAFT':
+      default:
+        return (
+          <span className="text-[10px] px-2.5 py-1 rounded-full font-bold flex items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            <span>🟡 Draft • Unsubmitted</span>
+          </span>
+        );
+    }
+  };
 
   return (
     <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
@@ -90,7 +141,7 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
         </button>
 
         <h2 className="text-xs font-black text-emerald-800 uppercase tracking-wide bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
-          Batch Submission
+          Batch Submission & Upload
         </h2>
       </div>
 
@@ -99,45 +150,96 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
         <div className="flex items-start justify-between">
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-              Active Unit
+              Active Farm Unit
             </span>
             <h1 className="text-base font-black text-slate-900 flex items-center gap-1.5 mt-0.5">
               <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>{farm?.name || 'Farm Unit'}</span>
             </h1>
-            <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-500">
+            <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-slate-600">
               <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-bold text-[10px] border border-slate-200">
                 {farm?.ageWeek || 'W18'}
               </span>
               <span>{farm?.season || 'Summer'} Brood</span>
               <span>•</span>
-              <span className="font-mono">{farm?._count?.sheds || 10} Sheds</span>
+              <span className="font-semibold text-slate-700">
+                {totalShedsCount || farm?._count?.sheds || 10} Sheds
+              </span>
+              <span>•</span>
+              <span className="font-semibold text-slate-700">
+                {totalPartsCount} Parts
+              </span>
+              <span>•</span>
+              <span className="font-semibold text-slate-700">
+                {completionStats.totalLinesCount} Lines
+              </span>
             </div>
           </div>
 
-          <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold flex items-center gap-1 ${
-            farmStatus === 'DRAFT' 
-              ? 'bg-amber-50 text-amber-700 border border-amber-200' 
-              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-          }`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${farmStatus === 'DRAFT' ? 'bg-amber-400 animate-pulse' : 'bg-emerald-500'}`} />
-            {farmStatus === 'DRAFT' ? '🟡 Pending as Draft' : '🟢 100% Ready for Submission'}
-          </span>
+          <div>
+            {getStatusBadge()}
+          </div>
+        </div>
+
+        {/* Birds Weighed Total Summary */}
+        <div className="grid grid-cols-2 gap-2 mt-3 pt-3 border-t border-slate-100">
+          <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/60">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+              Total Birds Weighed
+            </span>
+            <span className="text-sm font-black font-mono text-slate-900 mt-0.5 block">
+              {totalBirdsWeighed} Birds
+            </span>
+          </div>
+          <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/60">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+              Lines Completed
+            </span>
+            <span className="text-sm font-black font-mono text-emerald-600 mt-0.5 block">
+              {completionStats.completedLinesCount} / {completionStats.totalLinesCount} ({completionStats.progressPercent}%)
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* Success Notification Alert */}
-      {successBanner && (
-        <div className="mb-3.5 bg-emerald-500/10 border border-emerald-500/40 text-emerald-900 p-3.5 rounded-2xl animate-in zoom-in-95">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+      {/* Success Notification Alert (Only displayed when confirmed COMPLETED) */}
+      {farmStatus === 'COMPLETED' && (
+        <div className="mb-3.5 bg-emerald-50 border border-emerald-200 text-emerald-900 p-3.5 rounded-2xl animate-in zoom-in-95">
+          <div className="flex items-start gap-2.5">
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
             <div>
               <h4 className="text-xs font-black text-emerald-950">
-                Farm submitted successfully!
+                Batch Submitted & Uploaded Successfully!
               </h4>
               <p className="text-[11px] text-emerald-800 mt-0.5">
-                You may now download the official worksheet or return to the dashboard.
+                Every individual bird weight and flock measurement has been committed to the cloud database.
+                {farmAudit?.lastSubmittedAt && ` Committed at: ${farmAudit.lastSubmittedAt}`}
               </p>
+              <div className="mt-2 text-[10px] font-bold text-emerald-700 bg-emerald-100/60 px-2 py-1 rounded-md inline-block">
+                ✓ Cloud Database Commit Confirmed • Official Worksheet Ready
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Failed Notification Alert (Clear English, draft preserved) */}
+      {farmStatus === 'UPLOAD_FAILED' && (
+        <div className="mb-3.5 bg-rose-50 border border-rose-200 text-rose-900 p-3.5 rounded-2xl animate-in zoom-in-95">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div>
+              <h4 className="text-xs font-black text-rose-950">
+                Upload failed. Your draft is preserved locally.
+              </h4>
+              <p className="text-[11px] text-rose-800 mt-0.5">
+                Please retry when the connection returns. All {totalBirdsWeighed} recorded bird weights remain safely saved on this device.
+              </p>
+              {uploadErrorMessage && (
+                <p className="text-[10px] text-rose-700 font-mono mt-1 bg-rose-100/50 p-1.5 rounded">
+                  {uploadErrorMessage}
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -181,12 +283,12 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
               : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
           }`}>
             {completionStats.isFarm100PercentWeighed 
-              ? '🟢 100% Ready for Submission' 
-              : '🟡 Pending as Draft'}
+              ? '🟢 100% Ready for Cloud Upload' 
+              : `🟡 Incomplete (${completionStats.incompleteLines.length} Pending)`}
           </span>
         </div>
 
-        {/* Pending Lines Warning List */}
+        {/* Pending Lines Warning List (Blocks submission until resolved) */}
         {!completionStats.isFarm100PercentWeighed && (
           <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2 mt-2">
             <div className="flex items-center justify-between text-[11px] font-bold text-amber-400 pb-1 border-b border-slate-800/80">
@@ -194,7 +296,7 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
                 <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                 <span>Pending Lines ({completionStats.incompleteLines.length})</span>
               </span>
-              <span className="text-slate-400 font-normal">Must weigh to submit</span>
+              <span className="text-slate-400 font-normal">Must weigh at least 1 bird to submit</span>
             </div>
 
             <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
@@ -221,7 +323,7 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
         )}
       </div>
 
-      {/* 2. CLOUD SYNCHRONIZATION STATUS BADGE (Strictly no endpoints/API links) */}
+      {/* 2. CLOUD SYNCHRONIZATION STATUS BADGE */}
       <div className="bg-white p-3.5 rounded-2xl border border-slate-200 mb-4 shadow-xs">
         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
           Cloud Synchronization Status
@@ -237,25 +339,47 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
               <span className={`text-xs font-bold block ${
                 isCloudConnected ? 'text-emerald-700' : 'text-amber-700'
               }`}>
-                {isCloudConnected ? '🟢 Cloud Connected' : '⏳ Waiting for Sync'}
+                {isCloudConnected ? '🟢 Cloud Database Connected' : '⏳ Waiting for Cloud Connection'}
               </span>
               <span className="text-[10px] text-slate-400">
                 {pendingSyncCount > 0 
                   ? `${pendingSyncCount} record(s) queued for sync` 
-                  : 'Real-time multi-device cloud replica active'}
+                  : 'PostgreSQL cloud database synchronization active'}
               </span>
             </div>
           </div>
 
-          <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-lg border border-slate-200">
-            {syncStatus.toUpperCase()}
+          <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-1 rounded-lg border border-slate-200">
+            {farmStatus}
           </span>
         </div>
       </div>
 
       {/* Action Buttons */}
       <div className="space-y-2.5 mt-auto">
-        {/* Submit Farm Weighing Button */}
+        {/* RETRY UPLOAD BUTTON (Shown prominently when upload failed) */}
+        {farmStatus === 'UPLOAD_FAILED' && (
+          <button
+            type="button"
+            onClick={handleRetry}
+            disabled={isSubmittingBatch}
+            className="w-full bg-rose-600 hover:bg-rose-500 active:scale-95 text-white font-black py-3.5 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-600/25 transition cursor-pointer disabled:opacity-50"
+          >
+            {isSubmittingBatch ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Retrying Cloud Upload...</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw className="w-4 h-4" />
+                <span>Retry Upload</span>
+              </>
+            )}
+          </button>
+        )}
+
+        {/* SUBMIT & UPLOAD BUTTON */}
         <button
           type="button"
           onClick={handleSubmit}
@@ -263,30 +387,37 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
           className={`w-full font-black py-3.5 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
             !completionStats.isFarm100PercentWeighed
               ? 'bg-amber-600/90 text-white shadow-amber-600/20'
-              : 'bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white shadow-emerald-600/25'
+              : farmStatus === 'COMPLETED'
+                ? 'bg-emerald-700 hover:bg-emerald-600 text-white shadow-emerald-700/20'
+                : 'bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white shadow-emerald-600/25'
           }`}
         >
           {isSubmittingBatch ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Submitting Farm Batch to Cloud...</span>
+              <span>Uploading Batch to Cloud Database...</span>
             </>
           ) : !completionStats.isFarm100PercentWeighed ? (
             <>
               <Lock className="w-4 h-4 text-amber-200" />
               <span>
-                Submit Farm Weighing (Locked - {completionStats.incompleteLines.length} Pending Lines)
+                Submit & Upload (Locked - {completionStats.incompleteLines.length} Pending Lines)
               </span>
+            </>
+          ) : farmStatus === 'COMPLETED' ? (
+            <>
+              <Check className="w-4 h-4" />
+              <span>Submit & Upload Again (Update Batch)</span>
             </>
           ) : (
             <>
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Submit Farm Weighing Batch</span>
+              <UploadCloud className="w-4 h-4" />
+              <span>Submit & Upload</span>
             </>
           )}
         </button>
 
-        {/* Download Official Worksheet Button */}
+        {/* DOWNLOAD OFFICIAL WORKSHEET BUTTON (Available for submitted batches) */}
         <button
           type="button"
           onClick={onDownloadExcel}

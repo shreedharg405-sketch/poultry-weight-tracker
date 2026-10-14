@@ -16,7 +16,7 @@ export const farmRouter = Router();
 // Track whether Prisma database connection is available
 let dbAvailable = true;
 
-async function checkDb(): Promise<boolean> {
+export async function checkDb(): Promise<boolean> {
   if (!dbAvailable) return false;
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -154,7 +154,7 @@ function generateDefaultSheds(farmId: string): MemShed[] {
   return sheds;
 }
 
-const memoryFarms: MemFarm[] = [
+export const memoryFarms: MemFarm[] = [
   {
     id: 'farm-sai-1',
     name: 'SAI FARM - UNIT 1',
