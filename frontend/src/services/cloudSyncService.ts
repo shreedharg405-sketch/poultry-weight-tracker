@@ -100,7 +100,7 @@ export interface FarmData {
 export function normalizeApiUrl(rawUrl: string): string {
   let trimmed = (rawUrl || '').trim().replace(/\/+$/, '');
   if (!trimmed) {
-    return 'https://poultry-weight-backend.onrender.com/api';
+    return 'https://shreedharg405-sketch-poultry-weight.onrender.com/api';
   }
   // Default to https if no protocol specified
   if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
@@ -130,7 +130,7 @@ export function getApiBaseUrl(): string {
     return 'http://localhost:5000/api';
   }
   // Production fallback on Render
-  return 'https://poultry-weight-backend.onrender.com/api';
+  return 'https://shreedharg405-sketch-poultry-weight.onrender.com/api';
 }
 
 export const cloudApi = {

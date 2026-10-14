@@ -801,10 +801,10 @@ export async function exportPoultryWorkbook(params: ExportWorkbookParams): Promi
   };
 
   // 12. Summer Brooding (#FFFFCC fill highlights)
-  addBenchmarkReferenceSheet('summer brooding', SUMMER_BROOD_STANDARDS, 'FFFFFFCC');
+  addBenchmarkReferenceSheet('Summer Brooding', SUMMER_BROOD_STANDARDS, 'FFFFFFCC');
 
   // 13. Winter Brooding (#CCFFFF fill highlights)
-  addBenchmarkReferenceSheet('winter Brooding', WINTER_BROOD_STANDARDS, 'FFCCFFFF');
+  addBenchmarkReferenceSheet('Winter Brooding', WINTER_BROOD_STANDARDS, 'FFCCFFFF');
 
   // Export buffer & download
   const buffer = await workbook.xlsx.writeBuffer();

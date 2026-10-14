@@ -3,13 +3,15 @@
   "version": "1.0.0",
   "description": "Full-Stack Poultry Flock Bodyweight, Uniformity & Shed-Wise Management System",
   "private": true,
-  "main": "worker.ts",
+  "main": "backend/dist/index.js",
   "scripts": {
-    "build": "cd frontend && npm install && npm run build",
-    "deploy": "npm run build && npx wrangler pages deploy frontend/dist --project-name=poultry-weight-tracker",
-    "deploy:worker": "npm run build && npx wrangler deploy",
-    "backend:build": "cd backend && npm install && npm run build",
-    "backend:start": "cd backend && npm start"
+    "build": "cd backend && npm install && npm run prisma:generate && npm run build && npm run db:init",
+    "start": "cd backend && npm start",
+    "backend:build": "cd backend && npm install && npm run prisma:generate && npm run build && npm run db:init",
+    "backend:start": "cd backend && npm start",
+    "frontend:build": "cd frontend && npm install && npm run build",
+    "deploy": "npm run frontend:build && npx wrangler pages deploy frontend/dist --project-name=poultry-weight-tracker",
+    "deploy:worker": "npm run frontend:build && npx wrangler deploy"
   },
   "devDependencies": {
     "wrangler": "^4.148.0"

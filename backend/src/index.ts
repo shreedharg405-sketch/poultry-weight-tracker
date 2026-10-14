@@ -14,11 +14,39 @@ const PORT = Number(process.env.PORT) || 10000;
 const HOST = '0.0.0.0';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
+const allowedOrigins = [
+  'https://poultry-weight-tracker.shreedharg405.workers.dev',
+  'https://poultry-weight-tracker.pages.dev',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5000',
+];
+if (process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*') {
+  process.env.CORS_ORIGIN.split(',').forEach(o => {
+    const trimmed = o.trim();
+    if (trimmed && !allowedOrigins.includes(trimmed)) {
+      allowedOrigins.push(trimmed);
+    }
+  });
+}
+
 // Middlewares
 app.use(cors({
-  origin: CORS_ORIGIN === '*' ? '*' : CORS_ORIGIN.split(',').map(s => s.trim()),
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (
+      CORS_ORIGIN === '*' || 
+      allowedOrigins.includes(origin) || 
+      origin.endsWith('.workers.dev') || 
+      origin.endsWith('.pages.dev')
+    ) {
+      return callback(null, true);
+    }
+    return callback(null, true);
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-user-username'],
+  credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
 
