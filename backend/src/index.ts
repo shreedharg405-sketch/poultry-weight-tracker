@@ -10,7 +10,8 @@ import { exportRouter } from './routes/export.js';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = Number(process.env.PORT) || 10000;
+const HOST = '0.0.0.0';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
 // Middlewares
@@ -94,9 +95,9 @@ app.get('/api', rootHandler);
 // Start server if not running in test mode
 let server: any = null;
 if (process.env.NODE_ENV !== 'test') {
-  server = app.listen(PORT, () => {
-    console.log(`🚀 Poultry Sync Server running on port ${PORT}`);
-    console.log(`📡 Health check available at http://localhost:${PORT}/healthz`);
+  server = app.listen(PORT, HOST, () => {
+    console.log(`🚀 Poultry Sync Server running on http://${HOST}:${PORT}`);
+    console.log(`📡 Health check available at http://${HOST}:${PORT}/healthz`);
   });
 
   process.on('SIGTERM', () => {
