@@ -6,6 +6,7 @@ import { farmRouter } from './routes/farms.js';
 import { submissionRouter } from './routes/submissions.js';
 import { benchmarkRouter } from './routes/benchmarks.js';
 import { exportRouter } from './routes/export.js';
+import { syncDatabaseSchema } from './db/init.js';
 
 dotenv.config();
 
@@ -62,7 +63,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// 1. Health check & Diagnostics Routers (Handles /healthz, /health, /api/healthz, /api/health, /api/health/db)
+// 1. Health check & Diagnostics Routers (Handles /healthz, /health, /api/healthz, /api/health, /api/health/db, /api/health/db-sync)
 app.use(healthRouter);
 
 // 2. Multi-Farm Cloud Routes & Submissions (Mounted on /api and aliased on root)
@@ -90,6 +91,7 @@ const rootHandler = (_req: Request, res: Response) => {
     endpoints: [
       'GET    /healthz (or /api/health)',
       'GET    /api/health/db',
+      'POST   /api/health/db-sync',
       'GET    /api/farms',
       'POST   /api/farms',
       'GET    /api/farms/:id',
@@ -107,8 +109,13 @@ const rootHandler = (_req: Request, res: Response) => {
       'POST   /api/lines/:lineId/weight',
       'DELETE /api/lines/:lineId/weight/:index',
       'POST   /api/lines/:lineId/clear',
-      'POST   /api/auth/register',
+      'POST   /api/submissions',
+      'GET    /api/submissions',
+      'GET    /api/submissions/:id',
+      'GET    /api/submissions/:id/birds',
+      'GET    /api/farms/:farmId/submissions',
       'POST   /api/auth/login',
+      'GET    /api/auth/me',
       'GET    /api/auth/users',
       'GET    /api/logs',
       'POST   /api/logs',
@@ -120,22 +127,35 @@ const rootHandler = (_req: Request, res: Response) => {
 app.get('/', rootHandler);
 app.get('/api', rootHandler);
 
-// Start server if not running in test mode
+// Server startup with automatic schema verification
 let server: any = null;
-if (process.env.NODE_ENV !== 'test') {
-  server = app.listen(PORT, HOST, () => {
-    console.log(`🚀 Poultry Sync Server running on http://${HOST}:${PORT}`);
-    console.log(`📡 Health check available at http://${HOST}:${PORT}/healthz`);
-  });
 
-  process.on('SIGTERM', () => {
-    console.log('SIGTERM signal received: closing HTTP server');
-    if (server) {
-      server.close(() => {
-        console.log('HTTP server closed');
-      });
+async function startServer() {
+  if (process.env.NODE_ENV !== 'test') {
+    try {
+      console.log('🔄 [STARTUP] Synchronizing PostgreSQL database schema...');
+      await syncDatabaseSchema();
+    } catch (initErr) {
+      console.error('⚠️ [STARTUP] Schema synchronization warning (continuing boot):', initErr);
     }
-  });
+
+    server = app.listen(PORT, HOST, () => {
+      console.log(`🚀 Poultry Sync Server running on http://${HOST}:${PORT}`);
+      console.log(`📡 Health check available at http://${HOST}:${PORT}/healthz`);
+      console.log(`📊 DB Inspector available at http://${HOST}:${PORT}/api/health/db`);
+    });
+
+    process.on('SIGTERM', () => {
+      console.log('SIGTERM signal received: closing HTTP server');
+      if (server) {
+        server.close(() => {
+          console.log('HTTP server closed');
+        });
+      }
+    });
+  }
 }
+
+startServer();
 
 export default app;

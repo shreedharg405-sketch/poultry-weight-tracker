@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../db/prisma.js';
 import crypto from 'crypto';
+import { isPostgresConfigured } from '../db/init.js';
 import { 
   hashPassword, 
   verifyPassword, 
@@ -13,30 +14,26 @@ import {
 
 export const farmRouter = Router();
 
-// Track whether Prisma database connection is available
-let dbAvailable = true;
-
 export async function checkDb(): Promise<boolean> {
-  if (!dbAvailable) return false;
+  if (!isPostgresConfigured()) return false;
   try {
     await prisma.$queryRaw`SELECT 1`;
     return true;
-  } catch {
-    dbAvailable = false;
-    console.warn('⚠️ PostgreSQL unreachable, switching to in-memory cloud simulation store.');
+  } catch (e: any) {
+    console.warn('⚠️ [DB] PostgreSQL ping check failed:', e?.message || e);
     return false;
   }
 }
 
-// In-Memory Fallback Store (Used during local dev without PostgreSQL)
-interface MemLine {
+// In-Memory Fallback Store (Used ONLY during local dev without PostgreSQL)
+export interface MemLine {
   id: string;
   partId: string;
   name: string;
   weights: number[];
 }
 
-interface MemPart {
+export interface MemPart {
   id: string;
   shedId: string;
   name: string;
@@ -44,7 +41,7 @@ interface MemPart {
   lines: MemLine[];
 }
 
-interface MemShed {
+export interface MemShed {
   id: string;
   farmId: string;
   name: string;
@@ -53,7 +50,7 @@ interface MemShed {
   parts: MemPart[];
 }
 
-interface MemFarm {
+export interface MemFarm {
   id: string;
   name: string;
   flockDate: string;
@@ -92,7 +89,7 @@ export interface MemActivityLog {
   lineName?: string;
   sampleCount: number;
   avgWeight?: number;
-  status: string; // 'LIVE' | 'COMPLETED'
+  status: string;
   createdAt: Date;
 }
 
@@ -262,7 +259,7 @@ export const memoryLogs: MemActivityLog[] = [
 // Helper to touch farm updatedAt
 async function touchFarm(farmId: string) {
   const now = new Date();
-  if (await checkDb()) {
+  if (isPostgresConfigured()) {
     try {
       await prisma.farm.update({
         where: { id: farmId },
@@ -272,17 +269,18 @@ async function touchFarm(farmId: string) {
     } catch (e) {
       console.warn('touchFarm DB error:', e);
     }
+  } else {
+    const f = memoryFarms.find(farm => farm.id === farmId);
+    if (f) f.updatedAt = now;
   }
-  const f = memoryFarms.find(farm => farm.id === farmId);
-  if (f) f.updatedAt = now;
 }
 
 // --------------------------------------------------------------------------
 // 1. GET /api/farms - Fetch all farms summaries
 // --------------------------------------------------------------------------
 farmRouter.get('/farms', async (_req: Request, res: Response) => {
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const farms = await prisma.farm.findMany({
         orderBy: { updatedAt: 'desc' },
         include: {
@@ -290,11 +288,17 @@ farmRouter.get('/farms', async (_req: Request, res: Response) => {
         },
       });
       return res.json(farms);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL query failed on GET /farms:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to retrieve farms from PostgreSQL database.',
+        code: err?.code || 'DB_ERROR',
+        details: err?.message || 'Database query failed',
+      });
     }
-  } catch (err) {
-    console.warn('Prisma get /farms error, fallback to memory:', err);
   }
 
+  // Offline / local development in-memory simulation only
   const summaries = memoryFarms
     .slice()
     .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
@@ -322,11 +326,10 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
   const farmSeason = season || 'Summer';
   const farmId = crypto.randomUUID();
   const count = Math.max(1, Math.min(30, Number(shedCount) || 10));
-  const sexSplit = defaultSexSplit || 'last_male'; // 'last_male' | 'all_female' | 'all_male'
+  const sexSplit = defaultSexSplit || 'last_male';
 
-  try {
-    if (await checkDb()) {
-      // Build dynamic sheds based on requested count and sex split
+  if (isPostgresConfigured()) {
+    try {
       const shedsData = [];
       for (let i = 1; i <= count; i++) {
         const isMale = sexSplit === 'all_male' ? true : (sexSplit === 'all_female' ? false : (count > 1 ? i === count : false));
@@ -377,9 +380,14 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
         },
       });
       return res.status(201).json(newFarm);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL create farm failed:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to create farm in PostgreSQL database.',
+        code: err?.code || 'DB_ERROR',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma create /farms error, fallback to memory:', err);
   }
 
   // Memory fallback with dynamic count
@@ -425,8 +433,8 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
   const farmId = req.params.id;
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const farm = await prisma.farm.findUnique({
         where: { id: farmId },
         include: {
@@ -442,9 +450,15 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         },
       });
       if (farm) return res.json(farm);
+      return res.status(404).json({ error: 'Farm not found in PostgreSQL database' });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL get /farms/:id error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to retrieve farm from PostgreSQL database.',
+        code: err?.code || 'DB_ERROR',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma get /farms/:id error:', err);
   }
 
   const memFarm = memoryFarms.find(f => f.id === farmId);
@@ -462,8 +476,8 @@ farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
   const { name, flockDate, ageWeek, season } = req.body;
   const now = new Date();
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const updated = await prisma.farm.update({
         where: { id: farmId },
         data: {
@@ -475,9 +489,13 @@ farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
         },
       });
       return res.json(updated);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL update details error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to update farm details in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma update details error:', err);
   }
 
   const memFarm = memoryFarms.find(f => f.id === farmId);
@@ -497,13 +515,17 @@ farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
   const farmId = req.params.id;
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       await prisma.farm.delete({ where: { id: farmId } });
-      return res.json({ success: true, message: 'Farm deleted' });
+      return res.json({ success: true, message: 'Farm deleted from PostgreSQL database' });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL delete farm error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to delete farm from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma delete farm error:', err);
   }
 
   const idx = memoryFarms.findIndex(f => f.id === farmId);
@@ -525,8 +547,8 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
   const shedOrder = order || 99;
   const shedType = type === 'Male' ? 'Male' : 'Female';
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const newShed = await prisma.shed.create({
         data: {
           id: shedId,
@@ -550,9 +572,13 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
       });
       await touchFarm(farmId);
       return res.status(201).json(newShed);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL create shed error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to add shed in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma create shed error:', err);
   }
 
   const memFarm = memoryFarms.find(f => f.id === farmId);
@@ -585,17 +611,22 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
   const shedId = req.params.shedId;
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const shed = await prisma.shed.findUnique({ where: { id: shedId } });
       if (shed) {
         await prisma.shed.delete({ where: { id: shedId } });
         await touchFarm(shed.farmId);
         return res.json({ success: true });
       }
+      return res.status(404).json({ error: 'Shed not found in PostgreSQL database' });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL delete shed error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to delete shed from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma delete shed error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -615,8 +646,8 @@ farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
 farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
   const shedId = req.params.shedId;
   const { name, type } = req.body;
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const updated = await prisma.shed.update({
         where: { id: shedId },
         data: {
@@ -626,9 +657,13 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
       });
       await touchFarm(updated.farmId);
       return res.json(updated);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL update shed error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to update shed in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma update shed error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -651,8 +686,8 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
   if (!shedId || !name) return res.status(400).json({ error: 'shedId and name required' });
   const partId = crypto.randomUUID();
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const newPart = await prisma.part.create({
         data: {
           id: partId,
@@ -667,9 +702,13 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
       });
       await touchFarm(newPart.shed.farmId);
       return res.status(201).json(newPart);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL create part error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to create part in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma create part error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -695,8 +734,8 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
   const partId = req.params.partId;
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const part = await prisma.part.findUnique({
         where: { id: partId },
         include: { shed: true },
@@ -706,9 +745,14 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
         await touchFarm(part.shed.farmId);
         return res.json({ success: true });
       }
+      return res.status(404).json({ error: 'Part not found in PostgreSQL database' });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL delete part error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to delete part from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma delete part error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -730,8 +774,8 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
 farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
   const partId = req.params.partId;
   const { name } = req.body;
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const updated = await prisma.part.update({
         where: { id: partId },
         data: { name: name?.trim() },
@@ -739,9 +783,13 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
       });
       await touchFarm(updated.shed.farmId);
       return res.json(updated);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL rename part error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to rename part in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma rename part error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -765,8 +813,8 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
   if (!partId) return res.status(400).json({ error: 'partId required' });
   const lineId = crypto.randomUUID();
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const newLine = await prisma.line.create({
         data: {
           id: lineId,
@@ -778,9 +826,13 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
       });
       await touchFarm(newLine.part.shed.farmId);
       return res.status(201).json(newLine);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL create line error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to create line in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma create line error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -807,8 +859,8 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
   const lineId = req.params.lineId;
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const line = await prisma.line.findUnique({
         where: { id: lineId },
         include: { part: { include: { shed: true } } },
@@ -818,9 +870,14 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
         await touchFarm(line.part.shed.farmId);
         return res.json({ success: true });
       }
+      return res.status(404).json({ error: 'Line not found in PostgreSQL database' });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL delete line error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to delete line from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma delete line error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -838,6 +895,7 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
   return res.status(404).json({ error: 'Line not found' });
 });
 
+// --------------------------------------------------------------------------
 // 14. POST /api/lines/:lineId/weight - Push bird weight entry
 // --------------------------------------------------------------------------
 farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => {
@@ -850,47 +908,53 @@ farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => 
     return res.status(400).json({ error: 'Valid positive weight required' });
   }
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const line = await prisma.line.findUnique({
         where: { id: lineId },
         include: { part: { include: { shed: { include: { farm: true } } } } },
       });
-      if (line) {
-        const updated = await prisma.line.update({
-          where: { id: lineId },
-          data: { weights: { push: weight } },
-        });
-        await touchFarm(line.part.shed.farmId);
-
-        const newWeights = [...line.weights, weight];
-        const sampleCount = newWeights.length;
-        const avgWeight = Math.round(newWeights.reduce((a, b) => a + b, 0) / sampleCount);
-
-        try {
-          await prisma.activityLog.create({
-            data: {
-              farmId: line.part.shed.farmId,
-              userId: userId,
-              userName: userName,
-              action: `Weighed Bird #${sampleCount} (${weight}g) in ${line.part.shed.name} › ${line.part.name} › ${line.name}`,
-              shedName: line.part.shed.name,
-              partName: line.part.name,
-              lineName: line.name,
-              sampleCount,
-              avgWeight,
-              status: 'LIVE',
-            },
-          });
-        } catch (logErr) {
-          console.warn('Prisma activityLog creation error:', logErr);
-        }
-
-        return res.json(updated);
+      if (!line) {
+        return res.status(404).json({ error: 'Line not found in PostgreSQL database' });
       }
+
+      const updated = await prisma.line.update({
+        where: { id: lineId },
+        data: { weights: { push: weight } },
+      });
+      await touchFarm(line.part.shed.farmId);
+
+      const newWeights = [...line.weights, weight];
+      const sampleCount = newWeights.length;
+      const avgWeight = Math.round(newWeights.reduce((a, b) => a + b, 0) / sampleCount);
+
+      try {
+        await prisma.activityLog.create({
+          data: {
+            farmId: line.part.shed.farmId,
+            userId: userId,
+            userName: userName,
+            action: `Weighed Bird #${sampleCount} (${weight}g) in ${line.part.shed.name} › ${line.part.name} › ${line.name}`,
+            shedName: line.part.shed.name,
+            partName: line.part.name,
+            lineName: line.name,
+            sampleCount,
+            avgWeight,
+            status: 'LIVE',
+          },
+        });
+      } catch (logErr) {
+        console.warn('Prisma activityLog creation error:', logErr);
+      }
+
+      return res.json(updated);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL add weight error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to record bird weight in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma add weight error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -940,8 +1004,8 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
     return res.status(400).json({ error: 'Valid index required' });
   }
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const line = await prisma.line.findUnique({
         where: { id: lineId },
         include: { part: { include: { shed: true } } },
@@ -956,9 +1020,14 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
         await touchFarm(line.part.shed.farmId);
         return res.json(updated);
       }
+      return res.status(404).json({ error: 'Line or weight index not found in PostgreSQL database' });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL delete weight error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to delete weight from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma delete weight error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -981,8 +1050,8 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
 // --------------------------------------------------------------------------
 farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
   const lineId = req.params.lineId;
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const line = await prisma.line.findUnique({
         where: { id: lineId },
         include: { part: { include: { shed: true } } },
@@ -995,9 +1064,14 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
         await touchFarm(line.part.shed.farmId);
         return res.json(updated);
       }
+      return res.status(404).json({ error: 'Line not found in PostgreSQL database' });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL clear line error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to clear line in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma clear line error:', err);
   }
 
   for (const farm of memoryFarms) {
@@ -1023,9 +1097,8 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
   const { sheds, name, flockDate, ageWeek, season, status, progressPercentage, audit } = req.body;
   const now = new Date();
 
-  try {
-    if (await checkDb()) {
-      // Upsert farm
+  if (isPostgresConfigured()) {
+    try {
       const farm = await prisma.farm.upsert({
         where: { id: farmId },
         update: {
@@ -1046,7 +1119,6 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
       });
 
       if (Array.isArray(sheds)) {
-        // Delete old sheds and insert fresh hierarchy to ensure 1:1 cloud sync
         await prisma.shed.deleteMany({ where: { farmId } });
 
         for (let sIdx = 0; sIdx < sheds.length; sIdx++) {
@@ -1109,9 +1181,13 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
       if (progressPercentage !== undefined) resultObj.progressPercentage = progressPercentage;
       if (audit) resultObj.audit = audit;
       return res.json(resultObj);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL full sync error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to synchronize farm hierarchy to PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma full sync error, fallback to memory:', err);
   }
 
   let memFarm = memoryFarms.find(f => f.id === farmId);
@@ -1147,7 +1223,7 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 18. POST /api/auth/login - Secure User Sign In with Rate Limiting
+// 18. POST /api/auth/login - Secure User Sign In
 // --------------------------------------------------------------------------
 farmRouter.post('/auth/login', async (req: Request, res: Response) => {
   const username = String(req.body.username || req.body.email || '').trim();
@@ -1165,9 +1241,8 @@ farmRouter.post('/auth/login', async (req: Request, res: Response) => {
     });
   }
 
-  // 1. Try Prisma PostgreSQL Database First
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const user = await prisma.user.findFirst({
         where: {
           OR: [
@@ -1201,12 +1276,16 @@ farmRouter.post('/auth/login', async (req: Request, res: Response) => {
           createdAt: user.createdAt,
         }
       });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL login query failed:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to authenticate against PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma login error, fallback to memory:', err);
   }
 
-  // 2. Fallback to In-Memory Cloud Simulation Store
+  // Memory fallback only for local offline simulation
   const memUser = memoryUsers.find(u => 
     u.username.toLowerCase() === username.toLowerCase() || 
     (u.email && u.email.toLowerCase() === username.toLowerCase())
@@ -1253,8 +1332,8 @@ farmRouter.get('/auth/me', async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Session expired or invalid. Please log in again.' });
   }
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const user = await prisma.user.findUnique({ where: { id: payload.userId } });
       if (user && user.status === 'ACTIVE') {
         return res.json({
@@ -1269,8 +1348,12 @@ farmRouter.get('/auth/me', async (req: Request, res: Response) => {
           }
         });
       }
+      return res.status(401).json({ error: 'User account not active or does not exist' });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL /auth/me error:', err?.message || err);
+      return res.status(503).json({ error: 'Database error while verifying session token' });
     }
-  } catch {}
+  }
 
   const memUser = memoryUsers.find(u => u.id === payload.userId);
   if (memUser && memUser.status === 'ACTIVE') {
@@ -1301,8 +1384,8 @@ farmRouter.post('/auth/logout', (_req: Request, res: Response) => {
 // 21. GET /api/auth/users - List Accounts (Admin & Manager)
 // --------------------------------------------------------------------------
 farmRouter.get('/auth/users', async (_req: Request, res: Response) => {
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const users = await prisma.user.findMany({
         select: { 
           id: true, 
@@ -1317,9 +1400,13 @@ farmRouter.get('/auth/users', async (_req: Request, res: Response) => {
         orderBy: { createdAt: 'asc' },
       });
       return res.json(users);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL get users error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to retrieve user accounts from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma get users error, falling back to memory:', err);
   }
 
   return res.json(memoryUsers.map(u => ({
@@ -1349,10 +1436,9 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
   const userRole = validRoles.includes(role) ? role : 'Supervisor';
   const farmList = Array.isArray(assignedFarms) ? assignedFarms : [];
   const hashedPassword = hashPassword(String(password).trim());
-  const userId = `u-${Date.now()}`;
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const existing = await prisma.user.findFirst({
         where: { username: { equals: cleanUsername, mode: 'insensitive' } }
       });
@@ -1382,19 +1468,22 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
         assignedFarms: created.assignedFarms,
         createdAt: created.createdAt,
       });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL create user error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to create user account in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma create user error, fallback to memory:', err);
   }
 
-  // Memory store fallback
   const existingMem = memoryUsers.find(u => u.username.toLowerCase() === cleanUsername);
   if (existingMem) {
     return res.status(409).json({ error: `Username "${cleanUsername}" is already taken.` });
   }
 
   const newMemUser: MemUser = {
-    id: userId,
+    id: `u-${Date.now()}`,
     username: cleanUsername,
     name: cleanName,
     email: `${cleanUsername}@farm.local`,
@@ -1418,14 +1507,14 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 23. PUT /api/auth/users/:id - Update User / Assign Farms / Toggle Status (Admin Only)
+// 23. PUT /api/auth/users/:id - Update User / Assign Farms / Toggle Status
 // --------------------------------------------------------------------------
 farmRouter.put('/auth/users/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   const { name, role, status, assignedFarms, password } = req.body;
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const updateData: any = {};
       if (name) updateData.name = String(name).trim();
       if (role) updateData.role = role;
@@ -1448,9 +1537,13 @@ farmRouter.put('/auth/users/:id', async (req: Request, res: Response) => {
         status: updated.status,
         assignedFarms: updated.assignedFarms,
       });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL update user error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to update user account in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma update user error, fallback to memory:', err);
   }
 
   const memUser = memoryUsers.find(u => u.id === id);
@@ -1477,7 +1570,7 @@ farmRouter.put('/auth/users/:id', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 24. POST /api/auth/users/:id/reset-password - Reset Password (Admin Only)
+// 24. POST /api/auth/users/:id/reset-password - Reset Password
 // --------------------------------------------------------------------------
 farmRouter.post('/auth/users/:id/reset-password', async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -1489,16 +1582,20 @@ farmRouter.post('/auth/users/:id/reset-password', async (req: Request, res: Resp
 
   const hashed = hashPassword(String(newPassword).trim());
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       await prisma.user.update({
         where: { id },
         data: { password: hashed },
       });
-      return res.json({ success: true, message: 'Password reset successfully' });
+      return res.json({ success: true, message: 'Password reset successfully in PostgreSQL database' });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL reset password error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to reset password in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma reset password error, fallback to memory:', err);
   }
 
   const memUser = memoryUsers.find(u => u.id === id);
@@ -1511,13 +1608,13 @@ farmRouter.post('/auth/users/:id/reset-password', async (req: Request, res: Resp
 });
 
 // --------------------------------------------------------------------------
-// 25. DELETE /api/auth/users/:id - Delete User Account (Admin Only)
+// 25. DELETE /api/auth/users/:id - Delete User Account
 // --------------------------------------------------------------------------
 farmRouter.delete('/auth/users/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const user = await prisma.user.findUnique({ where: { id } });
       if (user?.role === 'Admin') {
         const adminCount = await prisma.user.count({ where: { role: 'Admin' } });
@@ -1527,9 +1624,13 @@ farmRouter.delete('/auth/users/:id', async (req: Request, res: Response) => {
       }
       await prisma.user.delete({ where: { id } });
       return res.json({ success: true });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL delete user error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to delete user account from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma delete user error, fallback to memory:', err);
   }
 
   const idx = memoryUsers.findIndex(u => u.id === id);
@@ -1548,7 +1649,7 @@ farmRouter.delete('/auth/users/:id', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 21. GET /api/logs - Activity update history logs
+// 26. GET /api/logs - Activity update history logs
 // --------------------------------------------------------------------------
 farmRouter.get('/logs', async (req: Request, res: Response) => {
   const farmId = req.query.farmId as string | undefined;
@@ -1557,8 +1658,8 @@ farmRouter.get('/logs', async (req: Request, res: Response) => {
 
   const now = Date.now();
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const whereClause: any = {};
       if (farmId) whereClause.farmId = farmId;
       if (liveOnly) {
@@ -1594,9 +1695,14 @@ farmRouter.get('/logs', async (req: Request, res: Response) => {
       });
 
       return res.json(formatted);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL get /logs query failed:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to retrieve activity logs from PostgreSQL database.',
+        code: err?.code || 'DB_ERROR',
+        details: err?.message || 'Database query failed',
+      });
     }
-  } catch (err) {
-    console.warn('Prisma get logs error, fallback to memory:', err);
   }
 
   let list = memoryLogs.slice();
@@ -1631,7 +1737,7 @@ farmRouter.get('/logs', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 22. POST /api/logs - Create custom activity log entry
+// 27. POST /api/logs - Create custom activity log entry
 // --------------------------------------------------------------------------
 farmRouter.post('/logs', async (req: Request, res: Response) => {
   const { farmId, userId, userName, action, shedName, partName, lineName, sampleCount, avgWeight, status } = req.body;
@@ -1642,8 +1748,8 @@ farmRouter.post('/logs', async (req: Request, res: Response) => {
   const logAction = action?.trim() || 'Updated bodyweight';
   const logStatus = status || 'COMPLETED';
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const log = await prisma.activityLog.create({
         data: {
           id: logId,
@@ -1667,9 +1773,13 @@ farmRouter.post('/logs', async (req: Request, res: Response) => {
         timestamp: log.createdAt.toISOString(),
         isLive: true,
       });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL create /logs error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to record activity log in PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma create log error:', err);
   }
 
   const farm = memoryFarms.find(f => f.id === farmId);

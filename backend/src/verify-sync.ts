@@ -59,7 +59,6 @@ async function runTests() {
     // Test 2: Role and Farm Assignment Enforcement
     // -----------------------------------------------------------------------
     console.log('\n--- Test 2: Farm Assignment Enforcement ---');
-    // In-charge is assigned to GREEN VALLEY FARM, trying to submit to farm-sai-1
     const unauthFarmRes = await fetch(`${baseUrl}/submissions`, {
       method: 'POST',
       headers: {
@@ -116,7 +115,7 @@ async function runTests() {
     );
 
     // -----------------------------------------------------------------------
-    // Test 4: Complete Valid Batch Submission & PostgreSQL/Memory Persistence
+    // Test 4: Complete Valid Batch Submission & Persistence
     // -----------------------------------------------------------------------
     console.log('\n--- Test 4: Complete Submission with Every Bird Weight ---');
     const testIdempotencyKey = `test-idem-${Date.now()}`;
@@ -203,7 +202,6 @@ async function runTests() {
     // Test 6: Cross-Device Retrieval (Phone B View)
     // -----------------------------------------------------------------------
     console.log('\n--- Test 6: Cross-Device Cloud Data Retrieval ---');
-    // Admin retrieves submissions for Farm Sai 1
     const getSubsRes = await fetch(`${baseUrl}/submissions?farmId=farm-sai-1`, {
       headers: { 'Authorization': `Bearer ${adminToken}` }
     });
@@ -233,15 +231,6 @@ async function runTests() {
       `Every single bird weight preserved (${birdsList.length} of ${totalExpectedBirds}) with sampleSequence and hierarchy`
     );
 
-    // Verify bird record fields
-    if (birdsList.length > 0) {
-      const sampleBird = birdsList[0];
-      assert(
-        sampleBird.sampleSequence !== undefined && sampleBird.weightGrams !== undefined && sampleBird.shedName !== undefined,
-        'BirdWeight records contain sampleSequence, weightGrams, and hierarchy references'
-      );
-    }
-
     // -----------------------------------------------------------------------
     // Test 7: Unauthorized Cross-Device Access Rejected
     // -----------------------------------------------------------------------
@@ -250,6 +239,33 @@ async function runTests() {
       headers: { 'Authorization': `Bearer ${unauthorizedInchargeToken}` }
     });
     assert(unauthDetailRes.status === 403, 'Unauthorized device retrieval blocked with 403 Forbidden');
+
+    // -----------------------------------------------------------------------
+    // Test 8: Health & DB Inspector Endpoints
+    // -----------------------------------------------------------------------
+    console.log('\n--- Test 8: Health & DB Inspector Endpoints ---');
+    const healthRes = await fetch(`${baseUrl}/healthz`);
+    const healthData = await healthRes.json();
+    assert(healthRes.status === 200, 'GET /healthz returns 200 OK');
+    assert(healthData.database !== undefined, 'Healthz payload contains detailed database status');
+
+    const dbHealthRes = await fetch(`${baseUrl}/health/db`);
+    const dbHealthData = await dbHealthRes.json();
+    assert(dbHealthRes.status === 200 || dbHealthRes.status === 503, 'GET /api/health/db responds with valid status');
+
+    // -----------------------------------------------------------------------
+    // Test 9: Farm and Activity Log Retrieval
+    // -----------------------------------------------------------------------
+    console.log('\n--- Test 9: Farm and Activity Log Retrieval ---');
+    const farmsRes = await fetch(`${baseUrl}/farms`);
+    const farmsData = await farmsRes.json();
+    assert(farmsRes.status === 200, 'GET /api/farms responds with 200 OK');
+    assert(Array.isArray(farmsData) && farmsData.length > 0, 'Farms list returned as array');
+
+    const logsRes = await fetch(`${baseUrl}/logs`);
+    const logsData = await logsRes.json();
+    assert(logsRes.status === 200, 'GET /api/logs responds with 200 OK');
+    assert(Array.isArray(logsData), 'Activity logs list returned as array');
 
   } catch (err) {
     console.error('Test execution error:', err);

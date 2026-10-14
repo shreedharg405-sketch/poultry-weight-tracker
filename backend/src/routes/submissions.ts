@@ -2,11 +2,12 @@ import { Router, Response } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../db/prisma.js';
 import { requireAuth, canUserAccessFarm, AuthenticatedRequest } from '../middleware/auth.js';
-import { checkDb, memoryFarms, memoryLogs } from './farms.js';
+import { memoryFarms, memoryLogs } from './farms.js';
+import { isPostgresConfigured } from '../db/init.js';
 
 export const submissionRouter = Router();
 
-// In-Memory store for submissions and bird weights when PostgreSQL is not connected
+// In-Memory store for submissions and bird weights ONLY when PostgreSQL is not configured (offline dev)
 export interface MemSubmission {
   id: string;
   idempotencyKey?: string | null;
@@ -79,10 +80,12 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
 
   // 1. Idempotency Check: Prevent duplicate submissions on retries
   if (idempotencyKey && idempotencyKey.trim()) {
-    try {
-      if (await checkDb()) {
+    const cleanKey = idempotencyKey.trim();
+
+    if (isPostgresConfigured()) {
+      try {
         const existing = await prisma.submission.findUnique({
-          where: { idempotencyKey: idempotencyKey.trim() },
+          where: { idempotencyKey: cleanKey },
           include: {
             sheds: {
               include: {
@@ -99,26 +102,29 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
           return res.status(200).json({
             success: true,
             status: existing.status,
-            message: 'Batch weighing already committed to cloud database.',
+            message: 'Batch weighing already committed to PostgreSQL cloud database.',
             submission: existing,
             isIdempotentReplay: true,
           });
         }
+      } catch (e: any) {
+        console.error('❌ [DB] Idempotency check error:', e?.message || e);
+        return res.status(503).json({
+          error: 'Database error: Unable to verify idempotency in PostgreSQL database.',
+          details: e?.message,
+        });
       }
-    } catch (e) {
-      console.warn('Idempotency DB check error:', e);
-    }
-
-    // In-memory idempotency check
-    const existingMem = memorySubmissions.find(s => s.idempotencyKey === idempotencyKey.trim());
-    if (existingMem) {
-      return res.status(200).json({
-        success: true,
-        status: existingMem.status,
-        message: 'Batch weighing already committed to cloud store.',
-        submission: existingMem,
-        isIdempotentReplay: true,
-      });
+    } else {
+      const existingMem = memorySubmissions.find(s => s.idempotencyKey === cleanKey);
+      if (existingMem) {
+        return res.status(200).json({
+          success: true,
+          status: existingMem.status,
+          message: 'Batch weighing already committed to local memory store.',
+          submission: existingMem,
+          isIdempotentReplay: true,
+        });
+      }
     }
   }
 
@@ -126,17 +132,21 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
   let farmName = 'Farm Unit';
   let farmExists = false;
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const dbFarm = await prisma.farm.findUnique({ where: { id: farmId } });
       if (dbFarm) {
         farmExists = true;
         farmName = dbFarm.name;
       }
+    } catch (e: any) {
+      console.error('❌ [DB] Farm existence check error in PostgreSQL:', e?.message || e);
+      return res.status(503).json({
+        error: 'Database error: Unable to verify farm in PostgreSQL database.',
+        details: e?.message,
+      });
     }
-  } catch {}
-
-  if (!farmExists) {
+  } else {
     const memFarm = memoryFarms.find(f => f.id === farmId);
     if (memFarm) {
       farmExists = true;
@@ -145,7 +155,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
   }
 
   if (!farmExists) {
-    return res.status(404).json({ error: `Farm with ID "${farmId}" not found.` });
+    return res.status(404).json({ error: `Farm with ID "${farmId}" not found in database.` });
   }
 
   // Enforce role and farm permissions
@@ -253,8 +263,8 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
   const effectiveSeason = season || 'Summer';
 
   // 5. Database Transaction (Atomic Commit)
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const createdSubmission = await prisma.$transaction(async (tx) => {
         // 1. Create Submission record
         const sub = await tx.submission.create({
@@ -262,8 +272,8 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
             idempotencyKey: idempotencyKey ? idempotencyKey.trim() : crypto.randomUUID(),
             farmId,
             userId: user.id,
-            submitterName: user.name, // Derived from authenticated session!
-            submitterRole: user.role, // Derived from authenticated session!
+            submitterName: user.name,
+            submitterRole: user.role,
             flockAge: effectiveFlockAge,
             season: effectiveSeason,
             status: 'COMPLETED',
@@ -385,16 +395,36 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
           submitterRole: user.role,
         }
       });
+    } catch (dbErr: any) {
+      console.error('❌ [DB] Database transaction error during submission:', dbErr);
+
+      // Check if duplicate submission conflict occurred
+      if (dbErr?.code === 'P2002' && idempotencyKey) {
+        try {
+          const existing = await prisma.submission.findUnique({
+            where: { idempotencyKey: idempotencyKey.trim() },
+          });
+          if (existing) {
+            return res.status(200).json({
+              success: true,
+              status: existing.status,
+              message: 'Batch weighing already committed to cloud database.',
+              submission: existing,
+              isIdempotentReplay: true,
+            });
+          }
+        } catch {}
+      }
+
+      return res.status(500).json({
+        error: 'Failed to commit submission to cloud database. Transaction rolled back; your local draft is preserved.',
+        code: dbErr?.code || 'TRANSACTION_ERROR',
+        details: dbErr?.message || 'Database transaction error',
+      });
     }
-  } catch (dbErr: any) {
-    console.error('Database transaction error during submission:', dbErr);
-    return res.status(500).json({
-      error: 'Failed to commit submission to cloud database. Transaction rolled back; your local draft is preserved.',
-      details: dbErr?.message || 'Database transaction error'
-    });
   }
 
-  // Fallback: In-Memory Store transaction simulation
+  // Fallback ONLY for local offline simulation without PostgreSQL
   const submissionId = `sub-${crypto.randomUUID()}`;
   const memSubmission: MemSubmission = {
     id: submissionId,
@@ -447,7 +477,6 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
 
   memorySubmissions.unshift(memSubmission);
 
-  // Update memory farm
   const memFarm = memoryFarms.find(f => f.id === farmId);
   if (memFarm) {
     memFarm.updatedAt = now;
@@ -455,7 +484,6 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
     memFarm.progressPercentage = 100;
   }
 
-  // Record memory log
   memoryLogs.unshift({
     id: `log-${Date.now()}`,
     farmId,
@@ -472,7 +500,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
   return res.status(201).json({
     success: true,
     status: 'COMPLETED',
-    message: 'Batch weighing submitted and committed successfully.',
+    message: 'Batch weighing submitted and committed to local store.',
     submission: memSubmission,
     stats: {
       totalBirds,
@@ -494,8 +522,8 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
   const user = req.user!;
   const farmId = req.query.farmId as string;
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const whereClause: any = {};
 
       if (farmId) {
@@ -504,7 +532,6 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
         }
         whereClause.farmId = farmId;
       } else if (user.role !== 'Admin' && user.role !== 'Manager' && !user.assignedFarms.includes('*')) {
-        // Find farms accessible to this user
         const accessibleFarms = await prisma.farm.findMany({
           where: {
             OR: [
@@ -534,12 +561,16 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
       });
 
       return res.json(submissions);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL get /submissions error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to retrieve submissions from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma get /submissions error, falling back to memory:', err);
   }
 
-  // Memory fallback
+  // Offline memory fallback
   let filtered = memorySubmissions.slice();
   if (farmId) {
     if (!canUserAccessFarm(user, farmId)) {
@@ -560,8 +591,8 @@ submissionRouter.get('/submissions/:id', requireAuth, async (req: AuthenticatedR
   const user = req.user!;
   const submissionId = req.params.id;
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const submission = await prisma.submission.findUnique({
         where: { id: submissionId },
         include: {
@@ -584,7 +615,7 @@ submissionRouter.get('/submissions/:id', requireAuth, async (req: AuthenticatedR
       });
 
       if (!submission) {
-        return res.status(404).json({ error: 'Submission not found' });
+        return res.status(404).json({ error: 'Submission not found in PostgreSQL database' });
       }
 
       if (!canUserAccessFarm(user, submission.farmId, submission.farm.name)) {
@@ -592,9 +623,13 @@ submissionRouter.get('/submissions/:id', requireAuth, async (req: AuthenticatedR
       }
 
       return res.json(submission);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL get /submissions/:id error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to retrieve submission details from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma get /submissions/:id error, fallback to memory:', err);
   }
 
   const memSub = memorySubmissions.find(s => s.id === submissionId);
@@ -617,14 +652,14 @@ submissionRouter.get('/submissions/:id/birds', requireAuth, async (req: Authenti
   const submissionId = req.params.id;
   const { shedName, partName, lineName, sex } = req.query;
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const submission = await prisma.submission.findUnique({
         where: { id: submissionId },
         select: { farmId: true }
       });
       if (!submission) {
-        return res.status(404).json({ error: 'Submission not found' });
+        return res.status(404).json({ error: 'Submission not found in PostgreSQL database' });
       }
       if (!canUserAccessFarm(user, submission.farmId)) {
         return res.status(403).json({ error: 'Access denied.' });
@@ -647,9 +682,13 @@ submissionRouter.get('/submissions/:id/birds', requireAuth, async (req: Authenti
       });
 
       return res.json(birds);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL get /birds error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to retrieve bird weights from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma get /birds error, fallback to memory:', err);
   }
 
   const birds = memoryBirdWeights.filter(b => {
@@ -675,8 +714,8 @@ submissionRouter.get('/farms/:farmId/submissions', requireAuth, async (req: Auth
     return res.status(403).json({ error: 'Access denied to this farm.' });
   }
 
-  try {
-    if (await checkDb()) {
+  if (isPostgresConfigured()) {
+    try {
       const submissions = await prisma.submission.findMany({
         where: { farmId },
         orderBy: { submittedAt: 'desc' },
@@ -687,9 +726,13 @@ submissionRouter.get('/farms/:farmId/submissions', requireAuth, async (req: Auth
         }
       });
       return res.json(submissions);
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL get farm submissions error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to retrieve farm submissions from PostgreSQL database.',
+        details: err?.message,
+      });
     }
-  } catch (err) {
-    console.warn('Prisma get /farms/:farmId/submissions error, fallback to memory:', err);
   }
 
   const memList = memorySubmissions.filter(s => s.farmId === farmId);

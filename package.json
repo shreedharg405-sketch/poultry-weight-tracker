@@ -5,9 +5,9 @@
   "private": true,
   "main": "backend/dist/index.js",
   "scripts": {
-    "build": "cd backend && npm install && npm run prisma:generate && npm run build && npm run db:init",
+    "build": "cd backend && npm install && npm run prisma:generate && npm run build",
     "start": "cd backend && npm start",
-    "backend:build": "cd backend && npm install && npm run prisma:generate && npm run build && npm run db:init",
+    "backend:build": "cd backend && npm install && npm run prisma:generate && npm run build",
     "backend:start": "cd backend && npm start",
     "frontend:build": "cd frontend && npm install && npm run build",
     "deploy": "npm run frontend:build && npx wrangler pages deploy frontend/dist --project-name=poultry-weight-tracker",
