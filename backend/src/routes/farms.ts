@@ -372,10 +372,15 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
       }
 
       const summaries = filteredFarms.map(f => {
-        // Find assigned field operators for this farm
-        const assigned = users
-          .filter(u => (u.assignedFarms || []).some(af => af === f.id || af === f.name || af === '*'))
-          .map(u => `${u.name} (${u.role})`);
+        // Find assigned field operators for this farm - ONLY eligible field operators (Supervisor, In-Charge, Incharge)
+        const assignedMap = new Map<string, string>();
+        users
+          .filter(u => (u.role === 'Supervisor' || u.role === 'In-Charge' || u.role === 'Incharge') &&
+                       (u.assignedFarms || []).some(af => af === f.id || af === f.name))
+          .forEach(u => {
+            assignedMap.set(u.id, `${u.name} (${u.role})`);
+          });
+        const assigned = Array.from(assignedMap.values());
 
         // Find latest submission for this farm
         const latestSub = submissions.find(s => s.farmId === f.id);
@@ -434,9 +439,14 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
     .slice()
     .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
     .map(f => {
-      const assigned = memoryUsers
-        .filter(u => (u.assignedFarms || []).some(af => af === f.id || af === f.name || af === '*'))
-        .map(u => `${u.name} (${u.role})`);
+      const assignedMap = new Map<string, string>();
+      memoryUsers
+        .filter(u => (u.role === 'Supervisor' || u.role === 'In-Charge' || u.role === 'Incharge') &&
+                     (u.assignedFarms || []).some(af => af === f.id || af === f.name))
+        .forEach(u => {
+          assignedMap.set(u.id, `${u.name} (${u.role})`);
+        });
+      const assigned = Array.from(assignedMap.values());
       return {
         id: f.id,
         name: f.name,
@@ -471,10 +481,10 @@ farmRouter.post('/farms/:farmId/assign-operators', async (req: Request, res: Res
         return res.status(404).json({ error: 'Farm not found in database' });
       }
 
-      // Query all eligible field operators (Supervisor, In-Charge)
+      // Query all eligible field operators (Supervisor, In-Charge, Incharge)
       const fieldUsers = await prisma.user.findMany({
         where: {
-          role: { in: ['Supervisor', 'In-Charge'] }
+          role: { in: ['Supervisor', 'In-Charge', 'Incharge'] }
         }
       });
 
@@ -482,7 +492,7 @@ farmRouter.post('/farms/:farmId/assign-operators', async (req: Request, res: Res
 
       for (const user of fieldUsers) {
         const shouldBeAssigned = operatorUserIds.includes(user.id);
-        const currentAssigned = new Set(user.assignedFarms || []);
+        const currentAssigned = new Set((user.assignedFarms || []).filter(af => af !== '*'));
 
         if (shouldBeAssigned) {
           currentAssigned.add(farm.id);
@@ -520,9 +530,9 @@ farmRouter.post('/farms/:farmId/assign-operators', async (req: Request, res: Res
   const memFarm = memoryFarms.find(f => f.id === farmId);
   const updatedAssignedUserNames: string[] = [];
   memoryUsers.forEach(user => {
-    if (user.role === 'Supervisor' || user.role === 'In-Charge') {
+    if (user.role === 'Supervisor' || user.role === 'In-Charge' || user.role === 'Incharge') {
       const shouldBeAssigned = operatorUserIds.includes(user.id);
-      const set = new Set(user.assignedFarms || []);
+      const set = new Set((user.assignedFarms || []).filter(af => af !== '*'));
       if (shouldBeAssigned) {
         set.add(farmId);
         if (memFarm) set.add(memFarm.name);

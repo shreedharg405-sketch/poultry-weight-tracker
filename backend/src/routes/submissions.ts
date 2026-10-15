@@ -738,3 +738,231 @@ submissionRouter.get('/farms/:farmId/submissions', requireAuth, async (req: Auth
   const memList = memorySubmissions.filter(s => s.farmId === farmId);
   return res.json(memList);
 });
+
+// --------------------------------------------------------------------------
+// 6. PUT /api/submissions/:id - Update an existing submission (Req 2)
+// --------------------------------------------------------------------------
+submissionRouter.put('/submissions/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const user = req.user!;
+  const submissionId = req.params.id;
+  const { flockAge, season, status, sheds, metadata } = req.body;
+
+  if (isPostgresConfigured()) {
+    try {
+      const existing = await prisma.submission.findUnique({
+        where: { id: submissionId },
+        include: { farm: true }
+      });
+
+      if (!existing) {
+        return res.status(404).json({ error: 'Submission not found in PostgreSQL database' });
+      }
+
+      if (!canUserAccessFarm(user, existing.farmId, existing.farm.name)) {
+        return res.status(403).json({ error: 'Access denied: You are not authorized to update this submission.' });
+      }
+
+      let totalBirds = existing.totalBirds;
+      let femaleAvgWeight = existing.femaleAvgWeight;
+      let maleAvgWeight = existing.maleAvgWeight;
+      let overallAvgWeight = existing.overallAvgWeight;
+      let uniformity = existing.uniformity;
+
+      if (Array.isArray(sheds) && sheds.length > 0) {
+        const allWeights: number[] = [];
+        const femaleWeights: number[] = [];
+        const maleWeights: number[] = [];
+
+        sheds.forEach((shed: any) => {
+          const isMale = shed.type === 'Male';
+          (shed.parts || []).forEach((part: any) => {
+            (part.lines || []).forEach((line: any) => {
+              const weights = Array.isArray(line.weights) ? line.weights.map(Number).filter((w: number) => !isNaN(w) && w > 0) : [];
+              allWeights.push(...weights);
+              if (isMale) maleWeights.push(...weights);
+              else femaleWeights.push(...weights);
+            });
+          });
+        });
+
+        totalBirds = allWeights.length;
+        overallAvgWeight = allWeights.length ? Math.round(allWeights.reduce((a, b) => a + b, 0) / allWeights.length) : null;
+        femaleAvgWeight = femaleWeights.length ? Math.round(femaleWeights.reduce((a, b) => a + b, 0) / femaleWeights.length) : null;
+        maleAvgWeight = maleWeights.length ? Math.round(maleWeights.reduce((a, b) => a + b, 0) / maleWeights.length) : null;
+        const uRes = calculateUniformity(allWeights);
+        uniformity = uRes.uniformity;
+
+        await prisma.$transaction(async (tx) => {
+          await tx.birdWeight.deleteMany({ where: { submissionId } });
+          await tx.submissionShed.deleteMany({ where: { submissionId } });
+
+          for (let sIdx = 0; sIdx < sheds.length; sIdx++) {
+            const s = sheds[sIdx];
+            const createdShed = await tx.submissionShed.create({
+              data: {
+                submissionId,
+                name: s.name || `Shed ${sIdx + 1}`,
+                type: s.type || 'Female',
+                order: s.order ?? sIdx + 1,
+              }
+            });
+
+            for (let pIdx = 0; pIdx < (s.parts || []).length; pIdx++) {
+              const p = s.parts[pIdx];
+              const createdPart = await tx.submissionPart.create({
+                data: {
+                  submissionShedId: createdShed.id,
+                  name: p.name || `Part ${String.fromCharCode(65 + pIdx)}`,
+                  order: p.order ?? pIdx + 1,
+                }
+              });
+
+              for (let lIdx = 0; lIdx < (p.lines || []).length; lIdx++) {
+                const l = p.lines[lIdx];
+                const cleanWeights = Array.isArray(l.weights) ? l.weights.map(Number).filter((w: number) => !isNaN(w) && w > 0) : [];
+                const lineAvg = cleanWeights.length ? Math.round(cleanWeights.reduce((a: number, b: number) => a + b, 0) / cleanWeights.length) : null;
+
+                const createdLine = await tx.submissionLine.create({
+                  data: {
+                    submissionPartId: createdPart.id,
+                    name: l.name || `Line ${lIdx + 1}`,
+                    weights: cleanWeights,
+                    birdCount: cleanWeights.length,
+                    avgWeight: lineAvg,
+                  }
+                });
+
+                if (cleanWeights.length > 0) {
+                  await tx.birdWeight.createMany({
+                    data: cleanWeights.map((w: number, wIdx: number) => ({
+                      submissionId,
+                      submissionLineId: createdLine.id,
+                      farmId: existing.farmId,
+                      shedName: s.name,
+                      partName: p.name,
+                      lineName: l.name,
+                      sex: s.type || 'Female',
+                      sampleSequence: wIdx + 1,
+                      weightGrams: w,
+                    }))
+                  });
+                }
+              }
+            }
+          }
+        });
+      }
+
+      const updated = await prisma.submission.update({
+        where: { id: submissionId },
+        data: {
+          flockAge: flockAge || existing.flockAge,
+          season: season || existing.season,
+          status: status || existing.status,
+          totalBirds,
+          femaleAvgWeight,
+          maleAvgWeight,
+          overallAvgWeight,
+          uniformity,
+          metadata: metadata !== undefined ? metadata : existing.metadata,
+        },
+        include: {
+          farm: true,
+          sheds: {
+            orderBy: { order: 'asc' },
+            include: {
+              parts: {
+                orderBy: { order: 'asc' },
+                include: { lines: true }
+              }
+            }
+          }
+        }
+      });
+
+      return res.json({
+        success: true,
+        message: 'Submission updated successfully',
+        submission: updated
+      });
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL update submission error:', err?.message || err);
+      return res.status(503).json({
+        error: 'Database error: Failed to update submission in PostgreSQL database.',
+        details: err?.message,
+      });
+    }
+  }
+
+  // In-Memory store fallback
+  const memSub = memorySubmissions.find(s => s.id === submissionId);
+  if (!memSub) {
+    return res.status(404).json({ error: 'Submission not found' });
+  }
+
+  if (!canUserAccessFarm(user, memSub.farmId, memSub.farmName)) {
+    return res.status(403).json({ error: 'Access denied: You are not authorized to update this submission.' });
+  }
+
+  if (flockAge) memSub.flockAge = flockAge;
+  if (season) memSub.season = season;
+  if (status) memSub.status = status;
+  if (metadata !== undefined) memSub.metadata = metadata;
+  memSub.updatedAt = new Date();
+
+  if (Array.isArray(sheds) && sheds.length > 0) {
+    memSub.sheds = sheds;
+
+    for (let i = memoryBirdWeights.length - 1; i >= 0; i--) {
+      if (memoryBirdWeights[i].submissionId === submissionId) {
+        memoryBirdWeights.splice(i, 1);
+      }
+    }
+
+    const allWeights: number[] = [];
+    const femaleWeights: number[] = [];
+    const maleWeights: number[] = [];
+
+    sheds.forEach(s => {
+      const isMale = s.type === 'Male';
+      (s.parts || []).forEach((p: any) => {
+        (p.lines || []).forEach((l: any) => {
+          const weights = Array.isArray(l.weights) ? l.weights.map(Number).filter((w: number) => !isNaN(w) && w > 0) : [];
+          allWeights.push(...weights);
+          if (isMale) maleWeights.push(...weights);
+          else femaleWeights.push(...weights);
+
+          weights.forEach((w: number, wIdx: number) => {
+            memoryBirdWeights.push({
+              id: crypto.randomUUID(),
+              submissionId,
+              submissionLineId: l.id || crypto.randomUUID(),
+              farmId: memSub.farmId,
+              shedName: s.name,
+              partName: p.name,
+              lineName: l.name,
+              sex: s.type || 'Female',
+              sampleSequence: wIdx + 1,
+              weightGrams: w,
+              createdAt: new Date(),
+            });
+          });
+        });
+      });
+    });
+
+    memSub.totalBirds = allWeights.length;
+    memSub.overallAvgWeight = allWeights.length ? Math.round(allWeights.reduce((a, b) => a + b, 0) / allWeights.length) : null;
+    memSub.femaleAvgWeight = femaleWeights.length ? Math.round(femaleWeights.reduce((a, b) => a + b, 0) / femaleWeights.length) : null;
+    memSub.maleAvgWeight = maleWeights.length ? Math.round(maleWeights.reduce((a, b) => a + b, 0) / maleWeights.length) : null;
+    const uRes = calculateUniformity(allWeights);
+    memSub.uniformity = uRes.uniformity;
+  }
+
+  return res.json({
+    success: true,
+    message: 'Submission updated successfully',
+    submission: memSub
+  });
+});
+

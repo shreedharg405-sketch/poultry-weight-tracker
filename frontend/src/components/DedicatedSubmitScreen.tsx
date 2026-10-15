@@ -16,9 +16,11 @@ import {
   AlertTriangle,
   Layers,
   Calendar,
-  Clock
+  Clock,
+  Save
 } from 'lucide-react';
 import { FarmSummary, FarmAudit, FarmStatus } from '../services/cloudSyncService';
+import { formatDateTimeIST } from '../utils/dateFormatter';
 
 export interface IncompleteLineItem {
   shedId: string;
@@ -50,6 +52,9 @@ export interface DedicatedSubmitScreenProps {
   totalShedsCount: number;
   totalPartsCount: number;
   uploadErrorMessage?: string | null;
+  canSaveDraft?: boolean;
+  isSavingDraft?: boolean;
+  onSaveDraft?: () => Promise<void>;
   onBack: () => void;
   onSubmitUpload: () => Promise<void>;
   onRetryUpload: () => Promise<void>;
@@ -69,6 +74,9 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
   totalShedsCount,
   totalPartsCount,
   uploadErrorMessage,
+  canSaveDraft,
+  isSavingDraft,
+  onSaveDraft,
   onBack,
   onSubmitUpload,
   onRetryUpload,
@@ -213,7 +221,7 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
               </h4>
               <p className="text-[11px] text-emerald-800 mt-0.5">
                 Every individual bird weight and flock measurement has been saved and verified.
-                {farmAudit?.lastSubmittedAt && ` Submitted at: ${farmAudit.lastSubmittedAt}`}
+                {farmAudit?.lastSubmittedAt && ` Submitted at: ${formatDateTimeIST(farmAudit.lastSubmittedAt)}`}
               </p>
               <div className="mt-2 text-[10px] font-bold text-emerald-700 bg-emerald-100/60 px-2 py-1 rounded-md inline-block">
                 ✓ Submission Confirmed • Official Worksheet Ready
@@ -374,6 +382,28 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
               <>
                 <RefreshCw className="w-4 h-4" />
                 <span>Retry Upload</span>
+              </>
+            )}
+          </button>
+        )}
+
+        {/* SAVE DRAFT BUTTON (Supervisor & Incharge) */}
+        {canSaveDraft && onSaveDraft && (
+          <button
+            type="button"
+            onClick={onSaveDraft}
+            disabled={isSavingDraft || isSubmittingBatch}
+            className="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer disabled:opacity-50"
+          >
+            {isSavingDraft ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                <span>Saving Draft to Local Storage...</span>
+              </>
+            ) : (
+              <>
+                <Save className="w-4 h-4 text-slate-950" />
+                <span>Save Draft (Preserve Session)</span>
               </>
             )}
           </button>

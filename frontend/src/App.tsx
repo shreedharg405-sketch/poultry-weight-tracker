@@ -32,7 +32,8 @@ import {
   Radio,
   ShieldCheck,
   FileText,
-  UploadCloud
+  UploadCloud,
+  Save
 } from 'lucide-react';
 import { 
   ShedData, 
@@ -50,6 +51,8 @@ import { LoginScreen } from './components/LoginScreen';
 import { SupervisorDashboard } from './components/SupervisorDashboard';
 import { ManagerAdminDashboard } from './components/ManagerAdminDashboard';
 import { DedicatedSubmitScreen } from './components/DedicatedSubmitScreen';
+import { SubmissionUpdateScreen } from './components/SubmissionUpdateScreen';
+import { formatDateTimeIST, formatDateIST, formatTimeIST } from './utils/dateFormatter';
 import { 
   cloudApi, 
   FarmSummary, 
@@ -107,24 +110,9 @@ const formatLastUpdated = (dateInput?: string | Date): string => {
   return `${formatDateDMY(d)} at ${timeStr}`;
 };
 
-// Format activity log & audit date-time: Date(DD-MM-YYYY) - Time(HH:MM AM/PM) (Hour:Min only, no seconds)
+// Format activity log & audit date-time in consistent Indian Standard Time (Asia/Kolkata)
 const formatLogDateTime = (isoOrDate: string | Date | undefined): string => {
-  if (!isoOrDate) return 'Not yet submitted';
-  const str = String(isoOrDate);
-  // If string is already formatted, ensure seconds are stripped
-  if (str.startsWith('Date(')) {
-    return str.replace(/:(\d{2}):\d{2}\s*(AM|PM)/i, ':$1 $2');
-  }
-  const d = new Date(isoOrDate);
-  if (isNaN(d.getTime())) return 'Just now';
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
-  let hours = d.getHours();
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12 || 12;
-  return `Date(${day}-${month}-${year}) - Time(${String(hours).padStart(2, '0')}:${minutes} ${ampm})`;
+  return formatDateTimeIST(isoOrDate);
 };
 
 export type ScreenType = 
@@ -138,7 +126,8 @@ export type ScreenType =
   | 'setup'
   | 'history'
   | 'submit_page'
-  | 'auth';
+  | 'auth'
+  | 'submission_update';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('home');
@@ -225,7 +214,7 @@ export default function App() {
         ageWeek: 'W18',
         season: 'Summer',
         status: 'DRAFT',
-        assignedUserNames: ['Suresh Kumar (Supervisor)', 'Ramesh (Supervisor)', 'John (Incharge)', 'Suresh Kumar'],
+        assignedUserNames: ['Suresh Kumar (Supervisor)', 'Ramesh (Supervisor)', 'John (Incharge)'],
         updatedAt: new Date().toISOString(),
         _count: { sheds: 10 }
       },
@@ -236,7 +225,7 @@ export default function App() {
         ageWeek: 'W16',
         season: 'Summer',
         status: 'COMPLETED',
-        assignedUserNames: ['Ramesh (Supervisor)', 'John (Incharge)', 'Suresh Kumar'],
+        assignedUserNames: ['Ramesh (Supervisor)', 'John (Incharge)', 'Suresh Kumar (Supervisor)'],
         updatedAt: new Date().toISOString(),
         _count: { sheds: 8 },
         audit: {
@@ -315,6 +304,10 @@ export default function App() {
   const [cloudTestStatus, setCloudTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
   const [cloudTestResult, setCloudTestResult] = useState<any>(null);
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(() => offlineQueue.count());
+
+  // Submission Update Page & Save Draft State (Req 2 & 6)
+  const [updatingSubmissionId, setUpdatingSubmissionId] = useState<string | null>(null);
+  const [isSavingDraft, setIsSavingDraft] = useState<boolean>(false);
 
   // User Authentication State (Individual Account Model + Role-Based Auto-Routing)
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
@@ -797,9 +790,17 @@ export default function App() {
       targetScreen = 'shed_select';
     } else if (hash === '#conclusion') {
       targetScreen = 'conclusion';
+    } else if (hash.startsWith('#submission-update')) {
+      targetScreen = 'submission_update';
+      const q = hash.split('?')[1];
+      if (q) {
+        const params = new URLSearchParams(q);
+        const sid = params.get('id');
+        if (sid) setUpdatingSubmissionId(sid);
+      }
     } else if (hash === '#manage') {
       targetScreen = 'sheds_manage';
-    } else if (hash === '#setup') {
+      } else if (hash === '#setup') {
       targetScreen = 'setup';
     } else if (hash === '#history' || hash === '#submissions') {
       targetScreen = 'history';
@@ -902,6 +903,7 @@ export default function App() {
       : screen === 'history' ? '#submissions'
       : screen === 'submit_page' ? '#submit'
       : screen === 'auth' ? '#auth'
+      : screen === 'submission_update' ? (updatingSubmissionId ? `#submission-update?id=${updatingSubmissionId}` : '#submission-update')
       : '#home';
     window.history.pushState({ screen }, '', hash);
   };
@@ -1488,6 +1490,59 @@ export default function App() {
     } : f));
   }, [activeFarmId, completionStats.progressPercent, currentUser, currentUserRole]);
 
+  // Explicit Save Draft action for Supervisor and Incharge (Req 6)
+  const handleManualSaveDraft = useCallback(async () => {
+    if (currentUserRole !== 'Supervisor' && currentUserRole !== 'In-Charge') {
+      showToast('Only field operators (Supervisor & Incharge) can save drafts.');
+      return;
+    }
+
+    setIsSavingDraft(true);
+    try {
+      const now = new Date();
+      const draftTimestamp = now.toISOString();
+      const editorName = currentUser?.userName || currentUser?.name || 'Field Operator';
+      const editorRole = currentUserRole;
+
+      // 1. Mark session as DRAFT in state and storage
+      setFarmStatus('DRAFT');
+      localStorage.setItem(`poultry_status_${activeFarmId}`, 'DRAFT');
+      setIsPendingSubmission(true);
+      localStorage.setItem(`poultry_pending_submission_${activeFarmId}`, 'true');
+
+      // 2. Persist current sheds weights
+      localStorage.setItem(`poultry_sheds_${activeFarmId}`, JSON.stringify(sheds));
+
+      // 3. Update and persist farm audit
+      setFarmAudit(prev => {
+        const updated: FarmAudit = {
+          ...(prev || {}),
+          status: 'DRAFT',
+          lastSavedAsDraftAt: draftTimestamp,
+          lastEditedBy: editorName,
+          lastEditedRole: editorRole,
+          isPendingSubmission: true,
+        };
+        localStorage.setItem(`poultry_audit_${activeFarmId}`, JSON.stringify(updated));
+        return updated;
+      });
+
+      // 4. Update farms list state
+      setFarmsList(prev => prev.map(f => f.id === activeFarmId ? {
+        ...f,
+        status: 'DRAFT',
+        progressPercentage: completionStats.progressPercent
+      } : f));
+
+      showToast('✓ Draft saved successfully! You can resume anytime.');
+    } catch (err: any) {
+      console.error('Failed to save draft:', err);
+      showToast(`Failed to save draft: ${err.message || 'Storage error'}`);
+    } finally {
+      setIsSavingDraft(false);
+    }
+  }, [activeFarmId, completionStats.progressPercent, currentUser, currentUserRole, sheds]);
+
   // --- WEIGHING PAD WEIGHT HANDLERS (Local Staging & Draft Workflow) ---
   const handleAddWeight = (valToAdd?: number) => {
     const val = valToAdd !== undefined ? valToAdd : parseFloat(inputWeight);
@@ -2034,9 +2089,11 @@ export default function App() {
 
       <div className="flex justify-center bg-slate-100 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
         <div className={`w-full min-h-screen bg-slate-50 border-x border-slate-200 flex flex-col shadow-2xl relative pb-6 transition-all duration-300 ${
-          (currentUserRole === 'Admin' || currentUserRole === 'Manager') && (currentScreen === 'home' || currentScreen === 'conclusion' || currentScreen === 'history' || currentScreen === 'setup')
-            ? 'max-w-7xl md:px-4 lg:px-6'
-            : 'max-w-md'
+          currentUserRole === 'Supervisor'
+            ? 'max-w-md mx-auto'
+            : (currentUserRole === 'Admin' || currentUserRole === 'Manager') && (currentScreen === 'home' || currentScreen === 'conclusion' || currentScreen === 'history' || currentScreen === 'setup')
+              ? 'max-w-7xl md:px-4 lg:px-6'
+              : 'max-w-md mx-auto'
         }`}>
         
         {!isAuthenticated ? (
@@ -2089,7 +2146,7 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* DEDICATED FULL-SCREEN SUBMISSION PAGE (Req 3)             */}
+        {/* DEDICATED FULL-SCREEN SUBMISSION PAGE (Req 3 & 6)         */}
         {/* ========================================================= */}
         {currentScreen === 'submit_page' && (
           <DedicatedSubmitScreen
@@ -2104,6 +2161,9 @@ export default function App() {
             totalShedsCount={sheds.length}
             totalPartsCount={sheds.reduce((acc, s) => acc + s.parts.length, 0)}
             uploadErrorMessage={uploadErrorMessage}
+            canSaveDraft={currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge'}
+            isSavingDraft={isSavingDraft}
+            onSaveDraft={handleManualSaveDraft}
             onBack={handleGoBack}
             onSubmitUpload={handleCompleteFarmSubmission}
             onRetryUpload={handleCompleteFarmSubmission}
@@ -2233,23 +2293,23 @@ export default function App() {
 
             {/* Vertical Scrollable Part Cards */}
             <div className="space-y-3 overflow-y-auto flex-1 pb-4">
-              {activeShed.parts.map(part => {
+              {activeShed.parts.map((part, partIndex) => {
                 const partStat = calculateFlockStats(part.lines.flatMap(l => l.weights), activeStd, weekNum);
                 const partBirds = part.lines.reduce((acc, l) => acc + l.weights.length, 0);
 
                 return (
                   <div
                     key={part.id}
-                    className="w-full bg-white p-4 rounded-2xl border border-slate-200 flex flex-col gap-3 shadow-xs"
+                    className="w-full bg-white p-4 rounded-2xl border border-slate-200 flex flex-col gap-3 shadow-xs min-w-0 max-w-full"
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <span className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 font-black flex items-center justify-center text-xs">
-                          {part.name.replace(/Part\s*/i, '') || 'P'}
+                    <div className="flex items-center justify-between gap-2 min-w-0">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 font-black flex items-center justify-center text-xs shrink-0 overflow-hidden">
+                          {part.name.replace(/Part\s*/i, '').trim() || String.fromCharCode(65 + partIndex)}
                         </span>
-                        <div>
-                          <h3 className="font-black text-base text-slate-900">{part.name}</h3>
-                          <span className="text-xs text-slate-500">
+                        <div className="min-w-0">
+                          <h3 className="font-black text-base text-slate-900 truncate">{part.name}</h3>
+                          <span className="text-xs text-slate-500 block truncate">
                             {part.lines.length} {part.lines.length === 1 ? 'Line' : 'Lines'} • {partBirds} birds
                           </span>
                         </div>
@@ -2356,22 +2416,22 @@ export default function App() {
 
             {/* Vertical Scrollable Line Cards */}
             <div className="space-y-3 overflow-y-auto flex-1 pb-4">
-              {activePart.lines.map(line => {
+              {activePart.lines.map((line, lineIndex) => {
                 const lStats = calculateFlockStats(line.weights, activeStd, weekNum);
 
                 return (
                   <div
                     key={line.id}
-                    className="w-full bg-white p-4 rounded-2xl border border-slate-200 flex flex-col gap-3 shadow-xs"
+                    className="w-full bg-white p-4 rounded-2xl border border-slate-200 flex flex-col gap-3 shadow-xs min-w-0 max-w-full"
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <span className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200 text-sky-700 font-black flex items-center justify-center text-xs">
-                          L{line.id}
+                    <div className="flex items-center justify-between gap-2 min-w-0">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200 text-sky-700 font-black flex items-center justify-center text-xs shrink-0 overflow-hidden">
+                          L{line.name.replace(/Line\s*/i, '').trim() || (lineIndex + 1)}
                         </span>
-                        <div>
-                          <h3 className="font-black text-base text-slate-900">{line.name}</h3>
-                          <span className="text-xs text-slate-500">
+                        <div className="min-w-0">
+                          <h3 className="font-black text-base text-slate-900 truncate">{line.name}</h3>
+                          <span className="text-xs text-slate-500 block truncate">
                             {line.weights.length} {line.weights.length === 1 ? 'Bird Weighed' : 'Birds Weighed'}
                           </span>
                         </div>
@@ -2380,14 +2440,14 @@ export default function App() {
                       <button
                         type="button"
                         onClick={(e) => handleDeleteLine(line.id, e)}
-                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer"
+                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer shrink-0"
                         title={`Delete ${line.name}`}
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs font-mono">
+                    <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs font-mono min-w-0 max-w-full">
                       <div className="min-w-0">
                         <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">BIRDS</span>
                         <div className="font-extrabold text-slate-900 truncate">{lStats.count}</div>
@@ -2410,10 +2470,10 @@ export default function App() {
                       onClick={() => {
                         navigateToWeighPad(activeShed.id, activePart.id, line.id);
                       }}
-                      className="w-full bg-sky-600 hover:bg-sky-500 active:scale-95 text-white py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
+                      className="w-full max-w-full bg-sky-600 hover:bg-sky-500 active:scale-95 text-white py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs min-w-0"
                     >
-                      <span>Enter Weights for {line.name}</span>
-                      <ChevronRight className="w-4 h-4" />
+                      <span className="truncate">Enter Weights for {line.name}</span>
+                      <ChevronRight className="w-4 h-4 shrink-0" />
                     </button>
                   </div>
                 );
@@ -2564,8 +2624,29 @@ export default function App() {
               )}
             </div>
 
-            {/* Navigation to Dedicated Submit Screen */}
-            <div className="mt-3">
+            {/* Action Buttons: Save Draft (Supervisor & Incharge) & Go to Submit Screen */}
+            <div className="mt-3 space-y-2">
+              {(currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') && (
+                <button
+                  type="button"
+                  onClick={handleManualSaveDraft}
+                  disabled={isSavingDraft}
+                  className="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingDraft ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                      <span>Saving Draft to Storage...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4 text-slate-950" />
+                      <span>Save Draft</span>
+                    </>
+                  )}
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={() => navigateTo('submit_page')}
@@ -2938,7 +3019,11 @@ export default function App() {
             </div>
 
             {/* Submissions Update Logs Stream */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 overflow-y-auto flex-1 pb-6">
+            <div className={`${
+              currentUserRole === 'Supervisor' 
+                ? 'flex flex-col gap-3 overflow-y-auto flex-1 pb-6' 
+                : 'grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 overflow-y-auto flex-1 pb-6'
+            }`}>
               {(() => {
                 const filtered = activityLogs.filter(log => {
                   if (historyFilter === 'currentFarm') {
@@ -3023,18 +3108,34 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Footer: Clean Non-Colliding Layout with Submitter and Formatted Timestamp */}
-                      <div className="flex flex-col gap-1 text-[11px] text-slate-500 pt-2 mt-2 border-t border-slate-100">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[9px] font-bold shrink-0">
-                            {(log.userName || 'S').charAt(0).toUpperCase()}
+                      {/* Footer: Clean Non-Colliding Layout with Submitter, Formatted Timestamp & Update Action */}
+                      <div className="flex flex-col gap-1.5 text-[11px] text-slate-500 pt-2 mt-2 border-t border-slate-100">
+                        <div className="flex items-center justify-between gap-1">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[9px] font-bold shrink-0">
+                              {(log.userName || 'S').charAt(0).toUpperCase()}
+                            </div>
+                            <span className="truncate">
+                              Submitted By: <strong className="text-slate-800">{log.userName || 'Supervisor'}</strong>
+                            </span>
                           </div>
-                          <span className="truncate">
-                            Submitted By: <strong className="text-slate-800">{log.userName || 'Supervisor'}</strong>
-                          </span>
+
+                          {(currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setUpdatingSubmissionId(log.id);
+                                navigateTo('submission_update');
+                              }}
+                              className="text-[10px] font-bold text-sky-700 hover:text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-200 px-2.5 py-1 rounded-lg flex items-center gap-1 transition active:scale-95 cursor-pointer shrink-0"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                              <span>Update</span>
+                            </button>
+                          )}
                         </div>
                         <div className="text-[10px] font-mono text-slate-500 font-medium">
-                          {formatLogDateTime(log.timestamp)}
+                          {formatDateTimeIST(log.timestamp)}
                         </div>
                       </div>
                     </div>
@@ -3043,6 +3144,22 @@ export default function App() {
               })()}
             </div>
           </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* SCREEN: SUBMISSION UPDATE SCREEN (Req 2)                  */}
+        {/* ========================================================= */}
+        {currentScreen === 'submission_update' && (
+          <SubmissionUpdateScreen
+            submissionId={updatingSubmissionId}
+            currentUser={currentUser}
+            currentUserRole={currentUserRole}
+            onBack={handleGoBack}
+            onUpdateSuccess={async () => {
+              showToast('✓ Submission updated successfully!');
+              await fetchLatestLogs();
+            }}
+          />
         )}
 
         {/* ========================================================= */}

@@ -419,6 +419,31 @@ export const cloudApi = {
     return res.json();
   },
 
+  // 17f. Update an Existing Submission (Req 2)
+  async updateSubmission(submissionId: string, data: any): Promise<any> {
+    const token = localStorage.getItem('poultry_auth_token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(`${getApiBaseUrl()}/submissions/${submissionId}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(data),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      const msg = errData.error || `Update failed with status ${res.status}`;
+      throw new Error(msg);
+    }
+
+    return res.json();
+  },
+
   // 18. Login (Username & Password for all roles)
   async login(data: { username: string; password: string }): Promise<{ token: string; user: AppUser }> {
     const cleanUsername = data.username.trim().toLowerCase();

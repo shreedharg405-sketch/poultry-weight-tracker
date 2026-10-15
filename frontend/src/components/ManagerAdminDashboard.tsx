@@ -27,6 +27,7 @@ import {
   UserX
 } from 'lucide-react';
 import { FarmSummary, AppUser, UserRole, cloudApi } from '../services/cloudSyncService';
+import { formatDateTimeIST } from '../utils/dateFormatter';
 
 export interface ManagerAdminDashboardProps {
   currentUser: AppUser | null;
@@ -187,17 +188,16 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
     try {
       const users = await cloudApi.getUsers();
-      // Eligible field operators: Supervisor and In-Charge
-      const eligible = users.filter(u => u.role === 'Supervisor' || u.role === 'In-Charge');
+      // Eligible field operators: Supervisor and In-Charge / Incharge
+      const eligible = users.filter(u => u.role === 'Supervisor' || u.role === 'In-Charge' || u.role === 'Incharge');
       setEligibleOperators(eligible);
 
-      // Determine operators already assigned to this farm
+      // Determine operators already assigned to this farm (strictly matching farm id or name, excluding wildcard '*')
       const currentlyAssignedIds = eligible.filter(u => {
-        const userAssigned = u.assignedFarms || [];
+        const userAssigned = (u.assignedFarms || []).filter(af => af !== '*');
         return (
           userAssigned.includes(farm.id) ||
           userAssigned.includes(farm.name) ||
-          userAssigned.includes('*') ||
           (farm.assignedUserNames && farm.assignedUserNames.some(name => 
             name.toLowerCase().includes(u.name.toLowerCase()) || 
             name.toLowerCase().includes(u.username.toLowerCase())
@@ -205,7 +205,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
         );
       }).map(u => u.id);
 
-      setSelectedOperatorIds(currentlyAssignedIds);
+      setSelectedOperatorIds(Array.from(new Set(currentlyAssignedIds)));
     } catch (err: any) {
       setAssignError(err.message || 'Failed to load field operators');
     } finally {
@@ -402,7 +402,32 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4 md:gap-5 overflow-y-auto flex-1 pb-6">
         {farms.map((farm) => {
           const isCompleted = farm.status === 'COMPLETED';
-          const assignedCount = farm.assignedUserNames?.length || 0;
+          // Filter to only eligible field operators (Supervisor, In-Charge, Incharge) and deduplicate
+          const validOperators = (() => {
+            if (!farm.assignedUserNames || !Array.isArray(farm.assignedUserNames)) return [];
+            const seen = new Set<string>();
+            const result: string[] = [];
+            farm.assignedUserNames.forEach(rawName => {
+              const name = rawName.trim();
+              if (!name) return;
+              const lower = name.toLowerCase();
+              // Exclude Admin and Manager accounts
+              if (
+                lower.includes('(admin)') ||
+                lower.includes('(manager)') ||
+                lower.includes('system administrator') ||
+                lower.includes('flock manager')
+              ) {
+                return;
+              }
+              if (!seen.has(lower)) {
+                seen.add(lower);
+                result.push(name);
+              }
+            });
+            return result;
+          })();
+          const assignedCount = validOperators.length;
 
           return (
             <div 
@@ -459,7 +484,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
                 {assignedCount > 0 ? (
                   <div className="flex flex-wrap gap-1">
-                    {farm.assignedUserNames!.map((userName, idx) => (
+                    {validOperators.map((userName, idx) => (
                       <span 
                         key={idx} 
                         className="bg-white text-slate-700 text-[10px] font-bold px-2 py-0.5 rounded-md border border-slate-200 shadow-2xs"
@@ -469,8 +494,8 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                     ))}
                   </div>
                 ) : (
-                  <p className="text-[11px] text-amber-700 italic">
-                    No operators bound. Tap "Assign Operators" to grant field access.
+                  <p className="text-[11px] text-slate-500 italic">
+                    No field operators assigned.
                   </p>
                 )}
               </div>
@@ -482,7 +507,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                     Last Submission: <strong className="text-slate-800">{farm.audit.lastSubmittedBy || 'Supervisor'}</strong>
                   </span>
                   <span className="font-mono text-slate-700">
-                    {farm.audit.lastSubmittedAt ? farm.audit.lastSubmittedAt.replace(/Date\(|\)/g, '').replace(/:(\d{2}):\d{2}\s*(AM|PM)/i, ':$1 $2') : 'Draft'}
+                    {farm.audit.lastSubmittedAt ? formatDateTimeIST(farm.audit.lastSubmittedAt) : 'Draft'}
                   </span>
                 </div>
               )}
