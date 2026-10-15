@@ -482,6 +482,17 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
     memFarm.updatedAt = now;
     memFarm.status = 'COMPLETED';
     memFarm.progressPercentage = 100;
+    memFarm.audit = {
+      status: 'COMPLETED',
+      lastSubmittedAt: now.toISOString(),
+      lastSubmittedBy: user.name,
+      lastSubmittedRole: user.role,
+      submittedBy: user.name,
+      submittedRole: user.role,
+      totalBirdsSubmitted: totalBirds,
+      femaleAvgWeight,
+      maleAvgWeight,
+    };
   }
 
   memoryLogs.unshift({

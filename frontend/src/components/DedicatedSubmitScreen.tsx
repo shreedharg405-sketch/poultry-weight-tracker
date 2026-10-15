@@ -171,7 +171,7 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
               <span>{farm?.season || 'Summer'} Brood</span>
               <span>•</span>
               <span className="font-semibold text-slate-700">
-                {totalShedsCount || farm?._count?.sheds || 10} Sheds
+                {totalShedsCount ?? farm?._count?.sheds ?? 0} Sheds
               </span>
               <span>•</span>
               <span className="font-semibold text-slate-700">

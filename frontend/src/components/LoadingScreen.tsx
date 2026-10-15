@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import roosterLogo from '../assets/rooster-logo.jpg';
+import henLogo from '../assets/hen-logo.png';
 
 interface LoadingScreenProps {
   message?: string;
@@ -27,57 +27,59 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({
   }, [duration]);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-50 px-6 select-none animate-in fade-in duration-200">
-      {/* Background Ambient Radial Glow */}
-      <div className="absolute w-96 h-96 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none" />
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-gradient-to-b from-slate-50 via-white to-amber-50/30 px-6 select-none font-sans text-slate-800 animate-in fade-in duration-200">
+      
+      {/* Soft Ambient Radial Warm Glow */}
+      <div className="absolute w-80 h-80 rounded-full bg-gradient-to-tr from-amber-200/40 via-rose-200/30 to-transparent blur-3xl pointer-events-none" />
 
-      {/* Emblem Container with Glowing Rings */}
-      <div className="relative flex items-center justify-center w-56 h-56 mb-2">
-        {/* Outer Orbiting Pulsing Ring */}
-        <div className="absolute inset-0 rounded-full border-2 border-emerald-400/40 animate-pulse" />
+      {/* Center Circular Badge */}
+      <div className="relative flex items-center justify-center w-36 h-36 mb-6">
         
-        {/* Subtle Orbiting Dashed Ring */}
-        <div className="absolute -inset-1 rounded-full border border-dashed border-emerald-500/50 animate-spin [animation-duration:14s]" />
-        
-        {/* Inner Glowing Badge with Rooster Emblem */}
-        <div className="relative z-10 w-44 h-44 rounded-full bg-white border-2 border-emerald-300 shadow-2xl shadow-emerald-600/20 flex items-center justify-center overflow-hidden p-3.5">
+        {/* Subtle Outer Pulsing Ring */}
+        <div className="absolute -inset-2 rounded-full border-2 border-dashed border-amber-400/40 animate-spin [animation-duration:12s]" />
+        <div className="absolute -inset-0.5 rounded-full border border-rose-300/50 animate-ping opacity-30" />
+
+        {/* Elevated Disc Card with Hen Illustration */}
+        <div className="relative z-10 w-32 h-32 rounded-3xl bg-white border border-slate-100 shadow-xl shadow-amber-900/10 flex items-center justify-center p-3">
           <img 
-            src={roosterLogo} 
-            alt="Poultry Flock Pro Rooster Emblem" 
-            className="w-36 h-36 object-contain select-none pointer-events-none drop-shadow-xs transition-transform duration-700 hover:scale-105"
+            src={henLogo} 
+            alt="Poultry Flock Pro Hen Emblem" 
+            className="w-24 h-24 object-contain select-none pointer-events-none drop-shadow-sm transition-transform duration-700 hover:scale-105"
           />
         </div>
       </div>
 
-      {/* Primary Brand Title */}
-      <h1 className="text-xl sm:text-2xl font-black tracking-widest text-slate-900 uppercase mt-4 text-center font-sans">
+      {/* Main Title Typography */}
+      <h1 className="text-xl sm:text-2xl font-black tracking-widest text-slate-900 uppercase font-sans text-center">
         POULTRY FLOCK PRO
       </h1>
 
-      {/* Vibrant Subtitle */}
-      <p className="text-[11px] sm:text-xs font-black tracking-widest text-emerald-600 uppercase mt-1 text-center font-sans">
+      {/* Subtitle Accent */}
+      <p className="text-[11px] sm:text-xs font-bold tracking-wider text-amber-600 uppercase mt-1 text-center font-sans">
         BODYWEIGHT & UNIFORMITY SUITE
       </p>
 
-      {/* Subtle Divider Line */}
-      <div className="w-20 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent my-3.5" />
+      {/* Divider with Center Pill */}
+      <div className="relative w-48 h-0.5 bg-slate-200 mt-4 mb-6 flex items-center justify-center">
+        <div className="w-12 h-1 bg-gradient-to-r from-amber-500 to-rose-500 rounded-full" />
+      </div>
 
-      {/* Progress Track with Smooth Progress Fill */}
-      <div className="w-64 sm:w-72 h-1.5 bg-slate-200 rounded-full overflow-hidden shadow-inner relative">
+      {/* Progress Track & Animated Runner */}
+      <div className="w-56 sm:w-64 h-1.5 bg-slate-200/80 rounded-full overflow-hidden shadow-inner relative">
         <div 
-          className="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-400 rounded-full transition-all duration-75 ease-out shadow-xs"
+          className="h-full bg-gradient-to-r from-amber-500 via-rose-500 to-amber-500 rounded-full transition-all duration-75 ease-out shadow-xs"
           style={{ width: `${progress}%` }}
         />
       </div>
 
-      {/* Italic Dynamic Micro-Status Indicator */}
-      <p className="text-xs font-medium text-slate-500 italic mt-3 text-center tracking-wide font-sans animate-pulse">
+      {/* Status Caption */}
+      <p className="text-xs font-medium text-slate-500 mt-3 animate-pulse text-center tracking-wide font-sans">
         {message}
       </p>
 
-      {/* Cloudflare Edge Version Footnote */}
-      <div className="absolute bottom-6 text-[10px] font-mono tracking-widest text-slate-400 uppercase">
-        CLOUDFLARE EDGE ACTIVE • v2.4
+      {/* Footer Branding */}
+      <div className="absolute bottom-6 text-[10px] font-semibold text-slate-400 tracking-wider uppercase">
+        Enterprise Farm Edition • 2026
       </div>
     </div>
   );

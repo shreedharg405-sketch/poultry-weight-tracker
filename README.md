@@ -4,11 +4,14 @@ An enterprise-grade cloud system digitizing manual breeder and broiler growth ch
 
 ---
 
-## 1. System Architecture & Target Cloud Deployment
+## 1. Web-Only System Architecture & Cloud Deployment
 
-### A. Cloudflare Pages / Workers (Frontend & Edge Layer)
+This system is engineered and optimized as a **pure web application** running smoothly across all modern web browsers (mobile smartphones, tablets, laptops, and desktop workstations). All legacy native wrappers (Electron desktop packages, Android APK wrappers, and local release artifacts) have been cleanly removed in favor of a modern, responsive cloud-native web deployment.
+
+### A. Cloudflare Pages (Frontend Web Application)
 - **Account ID:** `607a4c8239664450331ee2c9de563318`
 - **Framework:** Vite + React 19 + TypeScript + Tailwind CSS (bundled to static `dist/`)
+- **Responsive Layout:** Adaptive layouts designed for 360px mobile screens through 4K widescreen displays with no overlapping interface elements.
 - **Wrangler Configuration:** `wrangler.toml` pre-configured:
   ```toml
   name = "poultry-weight-tracker"
@@ -22,27 +25,32 @@ An enterprise-grade cloud system digitizing manual breeder and broiler growth ch
   [vars]
   ENVIRONMENT = "production"
   ```
-- **Deploy to Cloudflare CLI:**
+- **Build & Deploy to Cloudflare Pages:**
   ```bash
+  # From project root:
+  npm run deploy
+  # Or directly inside frontend/:
   cd frontend
   npm install
   npm run build
   npx wrangler pages deploy dist --project-name=poultry-weight-tracker
   ```
 
-### B. Render (Backend API & Managed Database)
+### B. Render (Backend Web API & Managed PostgreSQL Database)
 - **Runtime:** Node.js / Express (TypeScript) with Prisma ORM
+- **Database:** Managed Cloud PostgreSQL with relational schema and safe soft-delete/archival policies.
 - **Infrastructure Blueprint (`render.yaml`):**
   - Web Service pointing to `backend/` directory (`PORT=10000`)
   - Managed PostgreSQL database resource (`poultry-weight-db`)
   - Environment variables: `DATABASE_URL` (dynamic connection string), `PORT=10000`, `CORS_ORIGIN="https://poultry-weight-tracker.pages.dev,https://*.workers.dev"`
-- **Git Push to Render:**
+- **Build & Deploy to Render:**
   ```bash
-  git init
-  git add .
-  git commit -m "feat: poultry shed-wise bodyweight & uniformity system"
-  git remote add origin https://github.com/<your-username>/<repo>.git
-  git push -u origin main
+  # Local verification:
+  cd backend
+  npm install
+  npm run prisma:generate
+  npm run build
+  npm start
   ```
   Connect your repository in the [Render Blueprint Dashboard](https://dashboard.render.com/) with `render.yaml`.
 

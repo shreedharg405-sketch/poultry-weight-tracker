@@ -11,6 +11,7 @@ import {
   recordFailedLogin, 
   clearRateLimit 
 } from '../services/authService.js';
+import { memorySubmissions, memoryBirdWeights } from './submissions.js';
 
 export const farmRouter = Router();
 
@@ -56,6 +57,8 @@ export interface MemFarm {
   flockDate: string;
   ageWeek: string;
   season: string;
+  isArchived?: boolean;
+  archivedAt?: Date | null;
   status?: 'DRAFT' | 'COMPLETED';
   progressPercentage?: number;
   audit?: any;
@@ -93,96 +96,7 @@ export interface MemActivityLog {
   createdAt: Date;
 }
 
-const defaultShedWeights = [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1850, 1950, 1985, 1990];
-const defaultMaleWeights = [2800, 3000, 3800, 2650, 2950, 2456, 3566, 2800, 3000, 3800];
-
-function generateDefaultSheds(farmId: string): MemShed[] {
-  const sheds: MemShed[] = [];
-  for (let i = 1; i <= 10; i++) {
-    const isMale = i === 8;
-    const shedId = `shed-${farmId}-${i}`;
-    const partAId = `part-${shedId}-a`;
-    const line1Id = `line-${partAId}-1`;
-
-    const parts: MemPart[] = [
-      {
-        id: partAId,
-        shedId,
-        name: 'Part A',
-        order: 1,
-        lines: [
-          {
-            id: line1Id,
-            partId: partAId,
-            name: 'Line 1',
-            weights: isMale ? [...defaultMaleWeights] : (i === 1 ? [...defaultShedWeights] : [1270, 1290, 1300, 1330, 1370, 1400, 1450]),
-          },
-        ],
-      },
-    ];
-
-    if (i === 1) {
-      const partBId = `part-${shedId}-b`;
-      parts.push({
-        id: partBId,
-        shedId,
-        name: 'Part B',
-        order: 2,
-        lines: [
-          {
-            id: `line-${partBId}-1`,
-            partId: partBId,
-            name: 'Line 1',
-            weights: [1270, 1290, 1300, 1350, 1380, 1400, 1450],
-          },
-        ],
-      });
-    }
-
-    sheds.push({
-      id: shedId,
-      farmId,
-      name: isMale ? `Shed ${i} Male` : `Shed ${i}`,
-      type: isMale ? 'Male' : 'Female',
-      order: i,
-      parts,
-    });
-  }
-  return sheds;
-}
-
-export const memoryFarms: MemFarm[] = [
-  {
-    id: 'farm-sai-1',
-    name: 'SAI FARM - UNIT 1',
-    flockDate: new Date().toISOString().split('T')[0],
-    ageWeek: 'W18',
-    season: 'Summer',
-    updatedAt: new Date(),
-    createdAt: new Date(),
-    sheds: generateDefaultSheds('farm-sai-1'),
-  },
-  {
-    id: 'farm-green-valley',
-    name: 'GREEN VALLEY FARM',
-    flockDate: new Date().toISOString().split('T')[0],
-    ageWeek: 'W16',
-    season: 'Summer',
-    updatedAt: new Date(Date.now() - 3600000),
-    createdAt: new Date(Date.now() - 3600000),
-    sheds: generateDefaultSheds('farm-green-valley'),
-  },
-  {
-    id: 'farm-salem-breeder',
-    name: 'SALEM BREEDER UNIT',
-    flockDate: new Date().toISOString().split('T')[0],
-    ageWeek: 'W20',
-    season: 'Winter',
-    updatedAt: new Date(Date.now() - 7200000),
-    createdAt: new Date(Date.now() - 7200000),
-    sheds: generateDefaultSheds('farm-salem-breeder'),
-  },
-];
+export const memoryFarms: MemFarm[] = [];
 
 export const memoryUsers: MemUser[] = [
   {
@@ -317,11 +231,13 @@ export async function getAuthUserFromRequest(req: Request): Promise<{ id: string
 // --------------------------------------------------------------------------
 farmRouter.get('/farms', async (req: Request, res: Response) => {
   const authUser = await getAuthUserFromRequest(req);
+  const includeArchived = req.query.includeArchived === 'true';
 
   if (isPostgresConfigured()) {
     try {
       const [farms, users, submissions] = await Promise.all([
         prisma.farm.findMany({
+          where: includeArchived ? {} : { isArchived: false },
           orderBy: { updatedAt: 'desc' },
           include: {
             _count: { select: { sheds: true, submissions: true } },
@@ -394,10 +310,15 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
           season: f.season,
           status: isCompleted ? 'COMPLETED' : 'DRAFT',
           submissionCount: f._count.submissions,
+          isArchived: f.isArchived,
+          archivedAt: f.archivedAt ? f.archivedAt.toISOString() : null,
           assignedUserNames: assigned,
           audit: latestSub ? {
+            status: isCompleted ? 'COMPLETED' : 'DRAFT',
             lastSubmittedAt: latestSub.submittedAt ? new Date(latestSub.submittedAt).toISOString() : null,
             lastSubmittedBy: latestSub.submitterName,
+            lastSubmittedRole: latestSub.submitterRole,
+            submittedBy: latestSub.submitterName,
             submittedRole: latestSub.submitterRole,
             totalBirdsSubmitted: latestSub.totalBirds,
             femaleAvgWeight: latestSub.femaleAvgWeight,
@@ -405,7 +326,7 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
           } : undefined,
           updatedAt: f.updatedAt,
           createdAt: f.createdAt,
-          _count: { sheds: f._count.sheds },
+          _count: { sheds: f._count.sheds, submissions: f._count.submissions },
         };
       });
 
@@ -422,6 +343,10 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
 
   // Offline / local development in-memory simulation only
   let memFarmsFiltered = memoryFarms;
+  if (!includeArchived) {
+    memFarmsFiltered = memFarmsFiltered.filter(f => !f.isArchived);
+  }
+
   if (authUser) {
     if (authUser.role === 'Supervisor' || authUser.role === 'In-Charge') {
       const userAssigned = authUser.assignedFarms || [];
@@ -447,18 +372,36 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
           assignedMap.set(u.id, `${u.name} (${u.role})`);
         });
       const assigned = Array.from(assignedMap.values());
+
+      const farmSubs = memorySubmissions.filter(s => s.farmId === f.id);
+      const latestMemSub = farmSubs[0];
+      const isCompleted = Boolean(latestMemSub && latestMemSub.status === 'COMPLETED');
+
       return {
         id: f.id,
         name: f.name,
         flockDate: f.flockDate,
         ageWeek: f.ageWeek,
         season: f.season,
-        status: f.status || 'DRAFT',
+        status: isCompleted ? 'COMPLETED' : (f.status || 'DRAFT'),
+        submissionCount: farmSubs.length,
+        isArchived: Boolean(f.isArchived),
+        archivedAt: f.archivedAt ? f.archivedAt.toISOString() : null,
         assignedUserNames: assigned,
-        audit: f.audit,
+        audit: latestMemSub ? {
+          status: isCompleted ? 'COMPLETED' : 'DRAFT',
+          lastSubmittedAt: latestMemSub.submittedAt ? new Date(latestMemSub.submittedAt).toISOString() : null,
+          lastSubmittedBy: latestMemSub.submitterName,
+          lastSubmittedRole: latestMemSub.submitterRole,
+          submittedBy: latestMemSub.submitterName,
+          submittedRole: latestMemSub.submitterRole,
+          totalBirdsSubmitted: latestMemSub.totalBirds,
+          femaleAvgWeight: latestMemSub.femaleAvgWeight,
+          maleAvgWeight: latestMemSub.maleAvgWeight,
+        } : f.audit,
         updatedAt: f.updatedAt,
         createdAt: f.createdAt,
-        _count: { sheds: f.sheds.length },
+        _count: { sheds: f.sheds.length, submissions: farmSubs.length },
       };
     });
   return res.json(summaries);
@@ -557,53 +500,61 @@ farmRouter.post('/farms/:farmId/assign-operators', async (req: Request, res: Res
 // 2. POST /api/farms - Create new farm with dynamic sheds and sex split
 // --------------------------------------------------------------------------
 farmRouter.post('/farms', async (req: Request, res: Response) => {
+  const user = await getAuthUserFromRequest(req);
+  if (user && user.role !== 'Admin' && user.role !== 'Manager') {
+    return res.status(403).json({ error: 'Access Denied: Only Admin and Manager accounts can create new farms.' });
+  }
+
   const { name, flockDate, ageWeek, season, shedCount, defaultSexSplit } = req.body;
-  const farmName = name?.trim() || 'New Farm Unit';
+  const trimmedName = String(name || '').trim();
+  if (!trimmedName) {
+    return res.status(400).json({ error: 'Farm name is required and cannot be blank.' });
+  }
+  if (trimmedName.length > 100) {
+    return res.status(400).json({ error: 'Farm name cannot exceed 100 characters.' });
+  }
+
   const farmDate = flockDate || new Date().toISOString().split('T')[0];
   const farmAge = ageWeek || 'W18';
   const farmSeason = season || 'Summer';
   const farmId = crypto.randomUUID();
-  const count = Math.max(1, Math.min(30, Number(shedCount) || 10));
+
+  const rawCount = shedCount !== undefined && shedCount !== null && shedCount !== '' ? Number(shedCount) : 0;
+  const count = isNaN(rawCount) || rawCount < 0 ? 0 : Math.min(50, rawCount);
   const sexSplit = defaultSexSplit || 'last_male';
 
   if (isPostgresConfigured()) {
     try {
+      // Check duplicate name
+      const duplicate = await prisma.farm.findFirst({
+        where: { name: { equals: trimmedName, mode: 'insensitive' } }
+      });
+      if (duplicate) {
+        return res.status(400).json({ error: `A farm named "${trimmedName}" already exists.` });
+      }
+
       const shedsData = [];
       for (let i = 1; i <= count; i++) {
         const isMale = sexSplit === 'all_male' ? true : (sexSplit === 'all_female' ? false : (count > 1 ? i === count : false));
         shedsData.push({
           name: isMale ? `Shed ${i} Male` : `Shed ${i}`,
-          type: isMale ? 'Male' : 'Female',
+          type: (isMale ? 'Male' : 'Female') as 'Male' | 'Female',
           order: i,
-          parts: {
-            create: [
-              {
-                name: 'Part A',
-                order: 1,
-                lines: {
-                  create: [
-                    {
-                      name: 'Line 1',
-                      weights: [],
-                    },
-                  ],
-                },
-              },
-            ],
-          },
         });
       }
 
       const newFarm = await prisma.farm.create({
         data: {
           id: farmId,
-          name: farmName,
+          name: trimmedName,
           flockDate: farmDate,
           ageWeek: farmAge,
           season: farmSeason,
-          sheds: {
-            create: shedsData,
-          },
+          ...(shedsData.length > 0 && {
+            sheds: {
+              create: shedsData,
+            },
+          }),
         },
         include: {
           sheds: {
@@ -617,6 +568,19 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
           },
         },
       });
+
+      // If created by a manager without '*', assign them to this farm
+      if (user && user.role === 'Manager' && !user.assignedFarms.includes('*')) {
+        try {
+          await prisma.user.update({
+            where: { id: user.id },
+            data: {
+              assignedFarms: [...user.assignedFarms, newFarm.id, newFarm.name]
+            }
+          });
+        } catch {}
+      }
+
       return res.status(201).json(newFarm);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create farm failed:', err?.message || err);
@@ -628,33 +592,29 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
     }
   }
 
-  // Memory fallback with dynamic count
+  // Memory fallback
+  const duplicateMem = memoryFarms.find(f => f.name.toLowerCase() === trimmedName.toLowerCase());
+  if (duplicateMem) {
+    return res.status(400).json({ error: `A farm named "${trimmedName}" already exists.` });
+  }
+
   const fallbackSheds: MemShed[] = [];
   for (let i = 1; i <= count; i++) {
     const isMale = sexSplit === 'all_male' ? true : (sexSplit === 'all_female' ? false : (count > 1 ? i === count : false));
     const shedId = `shed-${farmId}-${i}`;
-    const partAId = `part-${shedId}-a`;
     fallbackSheds.push({
       id: shedId,
       farmId,
       name: isMale ? `Shed ${i} Male` : `Shed ${i}`,
       type: isMale ? 'Male' : 'Female',
       order: i,
-      parts: [
-        {
-          id: partAId,
-          shedId,
-          name: 'Part A',
-          order: 1,
-          lines: [{ id: `line-${partAId}-1`, partId: partAId, name: 'Line 1', weights: [] }],
-        },
-      ],
+      parts: [],
     });
   }
 
   const newMemFarm: MemFarm = {
     id: farmId,
-    name: farmName,
+    name: trimmedName,
     flockDate: farmDate,
     ageWeek: farmAge,
     season: farmSeason,
@@ -687,6 +647,26 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
               },
             },
           },
+          submissions: {
+            orderBy: { submittedAt: 'desc' },
+            take: 20,
+            select: {
+              id: true,
+              farmId: true,
+              status: true,
+              submittedAt: true,
+              submitterName: true,
+              submitterRole: true,
+              totalBirds: true,
+              femaleAvgWeight: true,
+              maleAvgWeight: true,
+              overallAvgWeight: true,
+              uniformity: true,
+            }
+          },
+          _count: {
+            select: { sheds: true, submissions: true }
+          }
         },
       });
       if (!farm) {
@@ -710,7 +690,26 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         }
       }
 
-      return res.json(farm);
+      const latestSub = farm.submissions && farm.submissions[0];
+      const isCompleted = Boolean(latestSub && latestSub.status === 'COMPLETED');
+      const audit = latestSub ? {
+        status: isCompleted ? 'COMPLETED' : 'DRAFT',
+        lastSubmittedAt: latestSub.submittedAt ? new Date(latestSub.submittedAt).toISOString() : null,
+        lastSubmittedBy: latestSub.submitterName,
+        lastSubmittedRole: latestSub.submitterRole,
+        submittedBy: latestSub.submitterName,
+        submittedRole: latestSub.submitterRole,
+        totalBirdsSubmitted: latestSub.totalBirds,
+        femaleAvgWeight: latestSub.femaleAvgWeight,
+        maleAvgWeight: latestSub.maleAvgWeight,
+      } : undefined;
+
+      return res.json({
+        ...farm,
+        status: isCompleted ? 'COMPLETED' : 'DRAFT',
+        submissionCount: farm._count.submissions,
+        audit,
+      });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL get /farms/:id error:', err?.message || err);
       return res.status(503).json({
@@ -742,7 +741,29 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
     }
   }
 
-  return res.json(memFarm);
+  const farmSubs = memorySubmissions.filter(s => s.farmId === farmId);
+  const latestMemSub = farmSubs[0];
+  const isCompleted = Boolean(latestMemSub && latestMemSub.status === 'COMPLETED');
+  const audit = latestMemSub ? {
+    status: isCompleted ? 'COMPLETED' : 'DRAFT',
+    lastSubmittedAt: latestMemSub.submittedAt ? new Date(latestMemSub.submittedAt).toISOString() : null,
+    lastSubmittedBy: latestMemSub.submitterName,
+    lastSubmittedRole: latestMemSub.submitterRole,
+    submittedBy: latestMemSub.submitterName,
+    submittedRole: latestMemSub.submitterRole,
+    totalBirdsSubmitted: latestMemSub.totalBirds,
+    femaleAvgWeight: latestMemSub.femaleAvgWeight,
+    maleAvgWeight: latestMemSub.maleAvgWeight,
+  } : memFarm.audit;
+
+  return res.json({
+    ...memFarm,
+    status: isCompleted ? 'COMPLETED' : (memFarm.status || 'DRAFT'),
+    submissions: farmSubs.slice(0, 20),
+    submissionCount: farmSubs.length,
+    _count: { sheds: memFarm.sheds.length, submissions: farmSubs.length },
+    audit,
+  });
 });
 
 // --------------------------------------------------------------------------
@@ -750,22 +771,127 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
   const farmId = req.params.id;
+  const user = await getAuthUserFromRequest(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
   const { name, flockDate, ageWeek, season } = req.body;
   const now = new Date();
 
+  // Validate farm name if provided
+  let trimmedName: string | undefined = undefined;
+  if (name !== undefined) {
+    trimmedName = String(name).trim();
+    if (!trimmedName || trimmedName.length === 0) {
+      return res.status(400).json({ error: 'Farm name cannot be blank.' });
+    }
+    if (trimmedName.length > 100) {
+      return res.status(400).json({ error: 'Farm name cannot exceed 100 characters.' });
+    }
+  }
+
   if (isPostgresConfigured()) {
     try {
+      const existing = await prisma.farm.findUnique({
+        where: { id: farmId },
+        include: {
+          _count: { select: { sheds: true, submissions: true } }
+        }
+      });
+      if (!existing) {
+        return res.status(404).json({ error: 'Farm not found in PostgreSQL database.' });
+      }
+
+      // Check permissions:
+      // Admin: can edit any farm
+      // Manager: can edit if assigned to '*' or farm is in user.assignedFarms
+      // Supervisor / In-Charge: can edit ONLY if explicitly authorized for that assigned farm
+      const userAssigned = user.assignedFarms || [];
+      const isAssigned = userAssigned.includes('*') || userAssigned.includes(existing.id) || userAssigned.includes(existing.name);
+      
+      if (user.role === 'Admin') {
+        // Allowed
+      } else if (user.role === 'Manager') {
+        if (!isAssigned) {
+          return res.status(403).json({ error: 'Access Denied: You are not authorized to edit this farm.' });
+        }
+      } else if (user.role === 'Supervisor' || user.role === 'In-Charge' || user.role === 'Incharge') {
+        if (!isAssigned) {
+          return res.status(403).json({ error: 'Access Denied: You can only edit farm details for your explicitly assigned farm.' });
+        }
+      } else {
+        return res.status(403).json({ error: 'Access Denied: Insufficient permissions to edit farm.' });
+      }
+
+      // If name is changing, check for duplicate name
+      if (trimmedName && trimmedName.toLowerCase() !== existing.name.toLowerCase()) {
+        const duplicate = await prisma.farm.findFirst({
+          where: {
+            id: { not: farmId },
+            name: { equals: trimmedName, mode: 'insensitive' }
+          }
+        });
+        if (duplicate) {
+          return res.status(400).json({ error: `A farm named "${trimmedName}" already exists.` });
+        }
+      }
+
       const updated = await prisma.farm.update({
         where: { id: farmId },
         data: {
-          ...(name && { name: name.trim() }),
+          ...(trimmedName && { name: trimmedName }),
           ...(flockDate && { flockDate }),
           ...(ageWeek && { ageWeek }),
           ...(season && { season }),
           updatedAt: now,
         },
+        include: {
+          _count: { select: { sheds: true, submissions: true } }
+        }
       });
-      return res.json(updated);
+
+      // If farm name changed, preserve and synchronize operator assignments
+      if (trimmedName && trimmedName !== existing.name) {
+        try {
+          const usersWithFarm = await prisma.user.findMany({
+            where: {
+              OR: [
+                { assignedFarms: { has: existing.name } },
+                { assignedFarms: { has: existing.id } }
+              ]
+            }
+          });
+          for (const u of usersWithFarm) {
+            const rawAssigned: string[] = u.assignedFarms || [];
+            const newAssigned: string[] = rawAssigned.map((af: string) => (af === existing.name ? trimmedName! : af));
+            if (!newAssigned.includes(trimmedName!)) newAssigned.push(trimmedName!);
+            if (!newAssigned.includes(farmId)) newAssigned.push(farmId);
+            await prisma.user.update({
+              where: { id: u.id },
+              data: { assignedFarms: newAssigned }
+            });
+          }
+
+          // Create activity log
+          await prisma.activityLog.create({
+            data: {
+              farmId,
+              userId: user.id,
+              userName: `${user.name} (${user.role})`,
+              action: `Farm renamed from "${existing.name}" to "${trimmedName}"`,
+              status: 'COMPLETED',
+            }
+          });
+        } catch (logErr) {
+          console.warn('PostgreSQL log/assignment update notice:', logErr);
+        }
+      }
+
+      return res.json({
+        ...updated,
+        message: 'Farm details updated successfully.'
+      });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL update details error:', err?.message || err);
       return res.status(503).json({
@@ -775,42 +901,315 @@ farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
     }
   }
 
+  // Memory fallback
   const memFarm = memoryFarms.find(f => f.id === farmId);
   if (!memFarm) return res.status(404).json({ error: 'Farm not found' });
 
-  if (name) memFarm.name = name.trim();
+  const userAssigned = user.assignedFarms || [];
+  const isAssigned = userAssigned.includes('*') || userAssigned.includes(memFarm.id) || userAssigned.includes(memFarm.name);
+  if (user.role !== 'Admin' && !isAssigned) {
+    return res.status(403).json({ error: 'Access Denied: You are not authorized to edit this farm.' });
+  }
+
+  if (trimmedName && trimmedName.toLowerCase() !== memFarm.name.toLowerCase()) {
+    const dup = memoryFarms.find(f => f.id !== farmId && f.name.toLowerCase() === trimmedName!.toLowerCase());
+    if (dup) {
+      return res.status(400).json({ error: `A farm named "${trimmedName}" already exists.` });
+    }
+    const oldName = memFarm.name;
+    memFarm.name = trimmedName;
+
+    // Update memory users' assignedFarms
+    memoryUsers.forEach(u => {
+      if ((u.assignedFarms || []).includes(oldName)) {
+        u.assignedFarms = u.assignedFarms.map(af => (af === oldName ? trimmedName! : af));
+        if (!u.assignedFarms.includes(trimmedName!)) u.assignedFarms.push(trimmedName!);
+      }
+    });
+  }
+
   if (flockDate) memFarm.flockDate = flockDate;
   if (ageWeek) memFarm.ageWeek = ageWeek;
   if (season) memFarm.season = season;
   memFarm.updatedAt = now;
 
-  return res.json(memFarm);
+  return res.json({
+    ...memFarm,
+    message: 'Farm details updated successfully.'
+  });
 });
 
 // --------------------------------------------------------------------------
-// 5. DELETE /api/farms/:id - Delete a farm
+// 5.A GET /api/farms/:id/delete-impact - Check record count before deletion (Admin only)
 // --------------------------------------------------------------------------
-farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
+farmRouter.get('/farms/:id/delete-impact', async (req: Request, res: Response) => {
+  const user = await getAuthUserFromRequest(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+  if (user.role !== 'Admin') {
+    return res.status(403).json({ error: 'Access Denied: Only Administrator accounts can inspect farm deletion impact.' });
+  }
+
   const farmId = req.params.id;
+
   if (isPostgresConfigured()) {
     try {
-      await prisma.farm.delete({ where: { id: farmId } });
-      return res.json({ success: true, message: 'Farm deleted from PostgreSQL database' });
+      const farm = await prisma.farm.findUnique({
+        where: { id: farmId },
+        include: {
+          _count: {
+            select: {
+              sheds: true,
+              submissions: true,
+              logs: true,
+            }
+          }
+        }
+      });
+
+      if (!farm) {
+        return res.status(404).json({ error: 'Farm not found in database.' });
+      }
+
+      // Count bird weights, parts, and lines
+      const [birdWeightsCount, partsCount, linesCount] = await Promise.all([
+        prisma.birdWeight.count({ where: { farmId } }),
+        prisma.part.count({ where: { shed: { farmId } } }),
+        prisma.line.count({ where: { part: { shed: { farmId } } } }),
+      ]);
+
+      const shedsCount = farm._count.sheds;
+      const submissionsCount = farm._count.submissions;
+      const logsCount = farm._count.logs;
+      const hasRecords = shedsCount > 0 || submissionsCount > 0 || birdWeightsCount > 0 || logsCount > 0;
+
+      return res.json({
+        farmId: farm.id,
+        farmName: farm.name,
+        isArchived: farm.isArchived,
+        hasRecords,
+        shedsCount,
+        partsCount,
+        linesCount,
+        submissionsCount,
+        birdWeightsCount,
+        logsCount,
+      });
+    } catch (err: any) {
+      console.error('❌ [DB] Delete impact inspection error:', err?.message || err);
+      return res.status(500).json({ error: 'Failed to inspect farm deletion impact', details: err?.message });
+    }
+  }
+
+  // Memory fallback
+  const memFarm = memoryFarms.find(f => f.id === farmId);
+  if (!memFarm) return res.status(404).json({ error: 'Farm not found' });
+
+  const shedsCount = memFarm.sheds.length;
+  const partsCount = memFarm.sheds.reduce((acc, s) => acc + s.parts.length, 0);
+  const linesCount = memFarm.sheds.reduce((acc, s) => acc + s.parts.reduce((pAcc, p) => pAcc + p.lines.length, 0), 0);
+  const memSubs = memorySubmissions.filter(s => s.farmId === farmId);
+  const submissionsCount = memSubs.length;
+  const memBws = memoryBirdWeights.filter(bw => bw.farmId === farmId);
+  const birdWeightsCount = memBws.length;
+  const memLogsForFarm = memoryLogs.filter(l => l.farmId === farmId);
+  const logsCount = memLogsForFarm.length;
+  const hasRecords = shedsCount > 0 || submissionsCount > 0 || birdWeightsCount > 0;
+
+  return res.json({
+    farmId: memFarm.id,
+    farmName: memFarm.name,
+    isArchived: Boolean(memFarm.isArchived),
+    hasRecords,
+    shedsCount,
+    partsCount,
+    linesCount,
+    submissionsCount,
+    birdWeightsCount,
+    logsCount,
+  });
+});
+
+// --------------------------------------------------------------------------
+// 5.B DELETE /api/farms/:id - Safe Archive or Authorized Permanent Delete (Admin only)
+// --------------------------------------------------------------------------
+farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
+  const user = await getAuthUserFromRequest(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+  if (user.role !== 'Admin') {
+    return res.status(403).json({ error: 'Access Denied: Only Administrator accounts can delete or archive farms.' });
+  }
+
+  const farmId = req.params.id;
+  const mode = (req.body?.mode || req.query.mode || 'archive') as 'archive' | 'permanent';
+  const confirmFarmName = req.body?.confirmFarmName || req.query.confirmFarmName;
+
+  if (isPostgresConfigured()) {
+    try {
+      const farm = await prisma.farm.findUnique({
+        where: { id: farmId },
+        include: {
+          _count: {
+            select: {
+              sheds: true,
+              submissions: true,
+              logs: true,
+            }
+          }
+        }
+      });
+      if (!farm) {
+        return res.status(404).json({ error: 'Farm not found in PostgreSQL database.' });
+      }
+
+      const birdWeightCount = await prisma.birdWeight.count({ where: { farmId } });
+      const hasRecords = farm._count.sheds > 0 || farm._count.submissions > 0 || birdWeightCount > 0;
+
+      // Safe Policy: Archive (Soft-Delete)
+      if (mode === 'archive' || (hasRecords && mode !== 'permanent')) {
+        const archived = await prisma.farm.update({
+          where: { id: farmId },
+          data: {
+            isArchived: true,
+            archivedAt: new Date(),
+          }
+        });
+
+        // Log archiving activity
+        try {
+          await prisma.activityLog.create({
+            data: {
+              farmId,
+              userId: user.id,
+              userName: `${user.name} (Admin)`,
+              action: `Farm "${farm.name}" Archived (Safe soft-delete). Historical submissions preserved.`,
+              status: 'COMPLETED',
+            }
+          });
+        } catch {}
+
+        return res.json({
+          success: true,
+          archived: true,
+          message: `Farm "${farm.name}" has been safely archived. Historical submissions and bird weights remain intact and accessible to authorized users.`,
+          farm: archived,
+        });
+      }
+
+      // Permanent Delete Mode: Strict confirmation required!
+      if (mode === 'permanent') {
+        if (!confirmFarmName || String(confirmFarmName).trim().toLowerCase() !== farm.name.trim().toLowerCase()) {
+          return res.status(400).json({
+            error: `Permanent deletion requires typing the exact farm name "${farm.name}" to confirm.`
+          });
+        }
+
+        // Delete cascade records safely within transaction
+        await prisma.$transaction(async (tx) => {
+          await tx.birdWeight.deleteMany({ where: { farmId } });
+          await tx.submission.deleteMany({ where: { farmId } });
+          await tx.activityLog.deleteMany({ where: { farmId } });
+          await tx.farm.delete({ where: { id: farmId } });
+        });
+
+        return res.json({
+          success: true,
+          permanentlyDeleted: true,
+          message: `Farm "${farm.name}" and all related data have been permanently deleted.`,
+        });
+      }
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete farm error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to delete farm from PostgreSQL database.',
+        error: 'Database error: Failed to process farm deletion in PostgreSQL database.',
         details: err?.message,
       });
     }
   }
 
+  // Memory fallback
   const idx = memoryFarms.findIndex(f => f.id === farmId);
-  if (idx !== -1) {
-    memoryFarms.splice(idx, 1);
-    return res.json({ success: true, message: 'Farm deleted' });
+  if (idx === -1) {
+    return res.status(404).json({ error: 'Farm not found' });
   }
-  return res.status(404).json({ error: 'Farm not found' });
+
+  const memFarm = memoryFarms[idx];
+  const memSubsCount = memorySubmissions.filter(s => s.farmId === farmId).length;
+  const hasMemRecords = memFarm.sheds.length > 0 || memSubsCount > 0;
+
+  if (mode === 'archive' || (hasMemRecords && mode !== 'permanent')) {
+    memFarm.isArchived = true;
+    memFarm.archivedAt = new Date();
+    return res.json({
+      success: true,
+      archived: true,
+      message: `Farm "${memFarm.name}" safely archived. Historical submissions remain preserved.`,
+      farm: memFarm,
+    });
+  }
+
+  if (mode === 'permanent') {
+    if (!confirmFarmName || String(confirmFarmName).trim().toLowerCase() !== memFarm.name.trim().toLowerCase()) {
+      return res.status(400).json({
+        error: `Permanent deletion requires typing the exact farm name "${memFarm.name}" to confirm.`
+      });
+    }
+
+    memoryFarms.splice(idx, 1);
+    return res.json({
+      success: true,
+      permanentlyDeleted: true,
+      message: `Farm "${memFarm.name}" permanently deleted.`,
+    });
+  }
+});
+
+// --------------------------------------------------------------------------
+// 5.C POST /api/farms/:id/restore - Restore an archived farm (Admin only)
+// --------------------------------------------------------------------------
+farmRouter.post('/farms/:id/restore', async (req: Request, res: Response) => {
+  const user = await getAuthUserFromRequest(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+  if (user.role !== 'Admin') {
+    return res.status(403).json({ error: 'Access Denied: Only Administrator accounts can restore farms.' });
+  }
+
+  const farmId = req.params.id;
+
+  if (isPostgresConfigured()) {
+    try {
+      const restored = await prisma.farm.update({
+        where: { id: farmId },
+        data: {
+          isArchived: false,
+          archivedAt: null,
+        }
+      });
+      return res.json({
+        success: true,
+        message: `Farm "${restored.name}" restored successfully.`,
+        farm: restored,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: 'Failed to restore farm', details: err?.message });
+    }
+  }
+
+  const memFarm = memoryFarms.find(f => f.id === farmId);
+  if (!memFarm) return res.status(404).json({ error: 'Farm not found' });
+
+  memFarm.isArchived = false;
+  memFarm.archivedAt = null;
+  return res.json({
+    success: true,
+    message: `Farm "${memFarm.name}" restored successfully.`,
+    farm: memFarm,
+  });
 });
 
 // --------------------------------------------------------------------------
@@ -818,30 +1217,34 @@ farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.post('/sheds', async (req: Request, res: Response) => {
   const { farmId, name, type, order } = req.body;
-  if (!farmId || !name) return res.status(400).json({ error: 'farmId and name required' });
+  if (!farmId || !name || !String(name).trim()) {
+    return res.status(400).json({ error: 'farmId and non-blank shed name required' });
+  }
 
+  const trimmedName = String(name).trim();
   const shedId = crypto.randomUUID();
-  const shedOrder = order || 99;
+  const shedOrder = Number(order) || 1;
   const shedType = type === 'Male' ? 'Male' : 'Female';
 
   if (isPostgresConfigured()) {
     try {
+      const existing = await prisma.shed.findFirst({
+        where: {
+          farmId,
+          name: { equals: trimmedName, mode: 'insensitive' }
+        }
+      });
+      if (existing) {
+        return res.status(400).json({ error: `A shed named "${trimmedName}" already exists on this farm.` });
+      }
+
       const newShed = await prisma.shed.create({
         data: {
           id: shedId,
           farmId,
-          name: name.trim(),
+          name: trimmedName,
           type: shedType,
           order: shedOrder,
-          parts: {
-            create: [
-              {
-                name: 'Part A',
-                order: 1,
-                lines: { create: [{ name: 'Line 1', weights: [] }] },
-              },
-            ],
-          },
         },
         include: {
           parts: { include: { lines: true } },
@@ -861,22 +1264,18 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
   const memFarm = memoryFarms.find(f => f.id === farmId);
   if (!memFarm) return res.status(404).json({ error: 'Farm not found' });
 
-  const partId = `part-${Date.now()}`;
+  const dupMem = memFarm.sheds.find(s => s.name.toLowerCase() === trimmedName.toLowerCase());
+  if (dupMem) {
+    return res.status(400).json({ error: `A shed named "${trimmedName}" already exists on this farm.` });
+  }
+
   const newMemShed: MemShed = {
     id: shedId,
     farmId,
-    name: name.trim(),
+    name: trimmedName,
     type: shedType,
-    order: shedOrder,
-    parts: [
-      {
-        id: partId,
-        shedId,
-        name: 'Part A',
-        order: 1,
-        lines: [{ id: `line-${Date.now()}`, partId, name: 'Line 1', weights: [] }],
-      },
-    ],
+    order: shedOrder || memFarm.sheds.length + 1,
+    parts: [],
   };
   memFarm.sheds.push(newMemShed);
   memFarm.updatedAt = new Date();
@@ -923,14 +1322,42 @@ farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
 farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
   const shedId = req.params.shedId;
   const { name, type } = req.body;
+  const validGender = type !== undefined ? (type === 'Male' ? 'Male' : 'Female') : undefined;
+  const trimmedName = name !== undefined ? String(name).trim() : undefined;
+
+  if (trimmedName !== undefined && trimmedName.length === 0) {
+    return res.status(400).json({ error: 'Shed name cannot be blank.' });
+  }
+
   if (isPostgresConfigured()) {
     try {
+      const currentShed = await prisma.shed.findUnique({ where: { id: shedId } });
+      if (!currentShed) {
+        return res.status(404).json({ error: 'Shed not found' });
+      }
+
+      if (trimmedName && trimmedName.toLowerCase() !== currentShed.name.toLowerCase()) {
+        const dup = await prisma.shed.findFirst({
+          where: {
+            farmId: currentShed.farmId,
+            id: { not: shedId },
+            name: { equals: trimmedName, mode: 'insensitive' }
+          }
+        });
+        if (dup) {
+          return res.status(400).json({ error: `A shed named "${trimmedName}" already exists on this farm.` });
+        }
+      }
+
       const updated = await prisma.shed.update({
         where: { id: shedId },
         data: {
-          ...(name && { name: name.trim() }),
-          ...(type && { type }),
+          ...(trimmedName && { name: trimmedName }),
+          ...(validGender && { type: validGender }),
         },
+        include: {
+          parts: { include: { lines: true } }
+        }
       });
       await touchFarm(updated.farmId);
       return res.json(updated);
@@ -946,8 +1373,14 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
   for (const farm of memoryFarms) {
     const s = farm.sheds.find(shed => shed.id === shedId);
     if (s) {
-      if (name) s.name = name.trim();
-      if (type) s.type = type;
+      if (trimmedName && trimmedName.toLowerCase() !== s.name.toLowerCase()) {
+        const dup = farm.sheds.find(other => other.id !== shedId && other.name.toLowerCase() === trimmedName.toLowerCase());
+        if (dup) {
+          return res.status(400).json({ error: `A shed named "${trimmedName}" already exists on this farm.` });
+        }
+        s.name = trimmedName;
+      }
+      if (validGender) s.type = validGender;
       farm.updatedAt = new Date();
       return res.json(s);
     }
@@ -1479,7 +1912,7 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
       progressPercentage: progressPercentage || 0,
       updatedAt: now,
       createdAt: now,
-      sheds: sheds || generateDefaultSheds(farmId),
+      sheds: sheds || [],
       audit: audit || undefined,
     };
     memoryFarms.unshift(newFarm);

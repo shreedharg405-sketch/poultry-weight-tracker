@@ -30,3 +30,10 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 .wrangler/
+
+# Desktop and Electron distribution artifacts
+release/
+desktop/dist/
+
+# Scratch & test scripts
+scratch/

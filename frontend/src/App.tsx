@@ -33,7 +33,9 @@ import {
   ShieldCheck,
   FileText,
   UploadCloud,
-  Save
+  Save,
+  Grid,
+  Home
 } from 'lucide-react';
 import { 
   ShedData, 
@@ -173,7 +175,7 @@ export default function App() {
   }, [isLiveClock]);
 
   // Farm Profile State
-  const [farmName, setFarmName] = useState('SAI FARM - UNIT 1');
+  const [farmName, setFarmName] = useState('');
   const [date, setDate] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -202,55 +204,18 @@ export default function App() {
 
   // Multi-Farm Management & Real-Time Cloud Sync State (Req 1 & 2)
   const [farmsList, setFarmsList] = useState<FarmSummary[]>(() => {
-    const saved = localStorage.getItem('poultry_farms_list_v2');
+    const saved = localStorage.getItem('poultry_farms_list_v4') || localStorage.getItem('poultry_farms_list_v2');
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
     }
-    return [
-      {
-        id: 'farm-sai-1',
-        name: 'SAI FARM - UNIT 1',
-        flockDate: new Date().toISOString().split('T')[0],
-        ageWeek: 'W18',
-        season: 'Summer',
-        status: 'DRAFT',
-        assignedUserNames: ['Suresh Kumar (Supervisor)', 'Ramesh (Supervisor)', 'John (Incharge)'],
-        updatedAt: new Date().toISOString(),
-        _count: { sheds: 10 }
-      },
-      {
-        id: 'farm-zara-1',
-        name: 'Zara Unit-I',
-        flockDate: new Date().toISOString().split('T')[0],
-        ageWeek: 'W16',
-        season: 'Summer',
-        status: 'COMPLETED',
-        assignedUserNames: ['Ramesh (Supervisor)', 'John (Incharge)', 'Suresh Kumar (Supervisor)'],
-        updatedAt: new Date().toISOString(),
-        _count: { sheds: 8 },
-        audit: {
-          lastSubmittedAt: 'Date(12-10-2026) - Time(11:30 AM)',
-          submittedBy: 'Ramesh (Supervisor)',
-          submittedRole: 'Supervisor',
-          totalBirdsSubmitted: 180,
-          femaleAvgWeight: 1410,
-          maleAvgWeight: 3050,
-        }
-      },
-      {
-        id: 'farm-sai-2',
-        name: 'Sai Farm Unit-2',
-        flockDate: new Date().toISOString().split('T')[0],
-        ageWeek: 'W20',
-        season: 'Winter',
-        status: 'DRAFT',
-        assignedUserNames: ['John (Incharge)', 'Anil (Incharge)'],
-        updatedAt: new Date().toISOString(),
-        _count: { sheds: 12 }
-      }
-    ];
+    return [];
   });
-  const [activeFarmId, setActiveFarmId] = useState<string>('farm-sai-1');
+  const [activeFarmId, setActiveFarmId] = useState<string>(() => {
+    return localStorage.getItem('poultry_active_farm_id') || '';
+  });
   const [syncStatus, setSyncStatus] = useState<'synced' | 'saving' | 'offline' | 'refreshing'>('synced');
   const [lastUpdatedString, setLastUpdatedString] = useState<string>('Just now');
   const [lastServerUpdatedAt, setLastServerUpdatedAt] = useState<string>('');
@@ -265,16 +230,19 @@ export default function App() {
   });
   const [newFarmAgeWeek, setNewFarmAgeWeek] = useState<string>('W18');
   const [newFarmSeason, setNewFarmSeason] = useState<'Summer' | 'Winter'>('Summer');
-  const [newFarmShedCount, setNewFarmShedCount] = useState<number>(10);
+  const [newFarmShedCount, setNewFarmShedCount] = useState<number>(2);
   const [newFarmSexSplit, setNewFarmSexSplit] = useState<'last_male' | 'all_female' | 'all_male'>('last_male');
   const [isCreatingFarm, setIsCreatingFarm] = useState<boolean>(false);
 
   // Farm Audit, Draft Status & Batch Submission State
   const [farmStatus, setFarmStatus] = useState<FarmStatus>(() => {
-    try {
-      const saved = localStorage.getItem('poultry_status_farm-sai-1');
-      if (saved === 'DRAFT' || saved === 'UPLOADING' || saved === 'COMPLETED' || saved === 'UPLOAD_FAILED') return saved as FarmStatus;
-    } catch {}
+    const activeId = localStorage.getItem('poultry_active_farm_id') || '';
+    if (activeId) {
+      try {
+        const saved = localStorage.getItem(`poultry_status_${activeId}`);
+        if (saved === 'DRAFT' || saved === 'UPLOADING' || saved === 'COMPLETED' || saved === 'UPLOAD_FAILED') return saved as FarmStatus;
+      } catch {}
+    }
     return 'DRAFT';
   });
   const [uploadErrorMessage, setUploadErrorMessage] = useState<string | null>(null);
@@ -282,20 +250,24 @@ export default function App() {
   const [showFarmDetailsModal, setShowFarmDetailsModal] = useState<boolean>(false);
   const [isSubmittingBatch, setIsSubmittingBatch] = useState<boolean>(false);
   const [isPendingSubmission, setIsPendingSubmission] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('poultry_pending_submission_farm-sai-1');
-      return saved === 'true';
-    } catch {
-      return false;
+    const activeId = localStorage.getItem('poultry_active_farm_id') || '';
+    if (activeId) {
+      try {
+        const saved = localStorage.getItem(`poultry_pending_submission_${activeId}`);
+        return saved === 'true';
+      } catch {}
     }
+    return false;
   });
   const [farmAudit, setFarmAudit] = useState<FarmAudit | null>(() => {
-    try {
-      const saved = localStorage.getItem('poultry_audit_farm-sai-1');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
+    const activeId = localStorage.getItem('poultry_active_farm_id') || '';
+    if (activeId) {
+      try {
+        const saved = localStorage.getItem(`poultry_audit_${activeId}`);
+        return saved ? JSON.parse(saved) : null;
+      } catch {}
     }
+    return null;
   });
 
   // Cloud API Settings Modal State
@@ -508,38 +480,12 @@ export default function App() {
   const [activityLogs, setActivityLogs] = useState<ActivityLogItem[]>(() => {
     const saved = localStorage.getItem('poultry_activity_logs_v1');
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
     }
-    return [
-      {
-        id: 'log-1',
-        farmId: 'farm-sai-1',
-        farmName: 'SAI FARM - UNIT 1',
-        userName: 'Suresh Kumar - Supervisor',
-        action: 'Batch Weighing Submitted • 240 Birds (♀ Act: 1420g, ♂ Act: 3120g)',
-        sampleCount: 240,
-        avgWeight: 1420,
-        femaleAvgWeight: 1420,
-        maleAvgWeight: 3120,
-        timestamp: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-        status: 'COMPLETED',
-        isLive: false,
-      },
-      {
-        id: 'log-2',
-        farmId: 'farm-green-valley',
-        farmName: 'GREEN VALLEY FARM',
-        userName: 'Anand M. - Incharge',
-        action: 'Batch Weighing Submitted • 180 Birds (♀ Act: 1395g, ♂ Act: 2980g)',
-        sampleCount: 180,
-        avgWeight: 1395,
-        femaleAvgWeight: 1395,
-        maleAvgWeight: 2980,
-        timestamp: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-        status: 'COMPLETED',
-        isLive: false,
-      }
-    ];
+    return [];
   });
   const [historyFilter, setHistoryFilter] = useState<'all' | 'live' | 'currentFarm'>('all');
   const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
@@ -588,9 +534,9 @@ export default function App() {
   };
 
   // Active Selections for Hierarchy
-  const [selectedShedId, setSelectedShedId] = useState('1');
-  const [selectedPartId, setSelectedPartId] = useState('part-1-a');
-  const [selectedLineId, setSelectedLineId] = useState<number | string>(1);
+  const [selectedShedId, setSelectedShedId] = useState<string>('');
+  const [selectedPartId, setSelectedPartId] = useState<string>('');
+  const [selectedLineId, setSelectedLineId] = useState<number | string>('');
   const [inputWeight, setInputWeight] = useState('');
 
   // Modals & In-App Confirmations
@@ -602,6 +548,12 @@ export default function App() {
   const [partPendingDelete, setPartPendingDelete] = useState<{ id: string; name: string; totalWeights: number } | null>(null);
   const [linePendingDelete, setLinePendingDelete] = useState<{ id: number | string; name: string; weights: number[] } | null>(null);
 
+  // Edit Farm Name Modal State (Accessible across all authorized roles)
+  const [showEditFarmModal, setShowEditFarmModal] = useState<boolean>(false);
+  const [editFarmNameInput, setEditFarmNameInput] = useState<string>('');
+  const [editFarmNameError, setEditFarmNameError] = useState<string | null>(null);
+  const [isSavingFarmName, setIsSavingFarmName] = useState<boolean>(false);
+
   // Toast Notification State
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const showToast = (msg: string) => {
@@ -609,149 +561,20 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3800);
   };
 
-  // Initial 10 Sheds Hierarchy Matching Excel Sheet Structure
-  const [sheds, setSheds] = useState<ShedData[]>([
-    {
-      id: '1',
-      name: 'Shed 1',
-      sheetName: 'Shed 1',
-      type: 'Female',
-      parts: [
-        {
-          id: 'part-1-a',
-          name: 'Part A',
-          lines: [
-            { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1850, 1950, 1985, 1990] },
-            { id: 2, name: 'Line 2', weights: [1280, 1310, 1320, 1340, 1390, 1420, 1460, 1500] }
-          ]
-        },
-        {
-          id: 'part-1-b',
-          name: 'Part B',
-          lines: [
-            { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1350, 1380, 1400, 1450] }
-          ]
+  // Dynamic Sheds Hierarchy - Authoritative Data from Database / Cache, No Hardcoded Defaults
+  const [sheds, setSheds] = useState<ShedData[]>(() => {
+    const activeId = localStorage.getItem('poultry_active_farm_id');
+    if (activeId) {
+      try {
+        const saved = localStorage.getItem(`poultry_farm_${activeId}`);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed?.sheds)) return parsed.sheds;
         }
-      ]
-    },
-    {
-      id: '2',
-      name: 'Shed 2',
-      sheetName: 'Shed 2',
-      type: 'Female',
-      parts: [
-        {
-          id: 'part-2-a',
-          name: 'Part A',
-          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1500, 1510] }]
-        }
-      ]
-    },
-    {
-      id: '3',
-      name: 'Shed 3',
-      sheetName: 'Shed 3',
-      type: 'Female',
-      parts: [
-        {
-          id: 'part-3-a',
-          name: 'Part A',
-          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1500] }]
-        }
-      ]
-    },
-    {
-      id: '4',
-      name: 'Shed 4',
-      sheetName: 'Shed 4',
-      type: 'Female',
-      parts: [
-        {
-          id: 'part-4-a',
-          name: 'Part A',
-          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470] }]
-        }
-      ]
-    },
-    {
-      id: '5',
-      name: 'Shed 5',
-      sheetName: 'Shed 5',
-      type: 'Female',
-      parts: [
-        {
-          id: 'part-5-a',
-          name: 'Part A',
-          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450] }]
-        }
-      ]
-    },
-    {
-      id: '6',
-      name: 'Shed 6',
-      sheetName: 'Shed 6',
-      type: 'Female',
-      parts: [
-        {
-          id: 'part-6-a',
-          name: 'Part A',
-          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400] }]
-        }
-      ]
-    },
-    {
-      id: '7',
-      name: 'Shed 7',
-      sheetName: 'Shed 7',
-      type: 'Female',
-      parts: [
-        {
-          id: 'part-7-a',
-          name: 'Part A',
-          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390] }]
-        }
-      ]
-    },
-    {
-      id: '8',
-      name: 'Shed 8 Male',
-      sheetName: ' Shed 8 Male',
-      type: 'Male',
-      parts: [
-        {
-          id: 'part-8-a',
-          name: 'Part A',
-          lines: [{ id: 1, name: 'Line 1', weights: [2800, 3000, 3800, 2650, 2950, 2456, 3566, 2800, 3000, 3800] }]
-        }
-      ]
-    },
-    {
-      id: '9',
-      name: 'Shed 9',
-      sheetName: 'Shed 9',
-      type: 'Female',
-      parts: [
-        {
-          id: 'part-9-a',
-          name: 'Part A',
-          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470] }]
-        }
-      ]
-    },
-    {
-      id: '10',
-      name: 'Shed 10',
-      sheetName: 'Shed 10',
-      type: 'Female',
-      parts: [
-        {
-          id: 'part-10-a',
-          name: 'Part A',
-          lines: [{ id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1500] }]
-        }
-      ]
+      } catch {}
     }
-  ]);
+    return [];
+  });
 
   // Hardware Back Button & Mobile Popstate Routing Trap with Hash Navigation
   const currentScreenRef = useRef<ScreenType>('home');
@@ -766,97 +589,118 @@ export default function App() {
   const selectedLineIdRef = useRef(selectedLineId);
   selectedLineIdRef.current = selectedLineId;
 
+  // Strict step-by-step backward hierarchy (Req 2)
+  // Entering: home -> shed_select -> part_select -> line_select -> weigh_pad
+  // Swiping back: weigh_pad -> line_select -> part_select -> shed_select -> home
+  const getParentScreen = (screen: ScreenType): ScreenType => {
+    switch (screen) {
+      case 'weigh_pad':
+        return 'line_select';
+      case 'line_select':
+        return 'part_select';
+      case 'part_select':
+        return 'shed_select';
+      case 'shed_select':
+        return 'home';
+      case 'submit_page':
+        return 'home';
+      case 'conclusion':
+        return 'home';
+      case 'submission_update':
+        return 'history';
+      case 'history':
+        return 'home';
+      case 'sheds_manage':
+        return 'home';
+      case 'setup':
+        return 'home';
+      case 'auth':
+        return 'home';
+      default:
+        return 'home';
+    }
+  };
+
+  const getHashForScreen = (screen: ScreenType): string => {
+    switch (screen) {
+      case 'weigh_pad': return '#weigh';
+      case 'line_select': return '#lines';
+      case 'part_select': return '#parts';
+      case 'shed_select': return '#sheds';
+      case 'conclusion': return '#conclusion';
+      case 'submit_page': return '#submit';
+      case 'history': return '#submissions';
+      case 'submission_update': return updatingSubmissionId ? `#submission-update?id=${updatingSubmissionId}` : '#submission-update';
+      case 'sheds_manage': return '#manage';
+      case 'setup': return '#setup';
+      case 'auth': return '#auth';
+      case 'home':
+      default:
+        return '#home';
+    }
+  };
+
   const handlePopState = (event?: PopStateEvent) => {
     const active = currentScreenRef.current;
     const targetState = event?.state as { screen?: ScreenType; shedId?: string; partId?: string; lineId?: number | string } | null;
-    const hash = window.location.hash;
 
     // Restore hierarchy identifiers from event state if available
     if (targetState?.shedId) setSelectedShedId(targetState.shedId);
     if (targetState?.partId) setSelectedPartId(targetState.partId);
     if (targetState?.lineId !== undefined) setSelectedLineId(targetState.lineId);
 
-    // Determine target screen from state or hash
-    let targetScreen: ScreenType | null = null;
-    if (targetState?.screen) {
-      targetScreen = targetState.screen;
-    } else if (hash === '#weigh') {
-      targetScreen = 'weigh_pad';
-    } else if (hash === '#lines') {
-      targetScreen = 'line_select';
-    } else if (hash === '#parts') {
-      targetScreen = 'part_select';
-    } else if (hash === '#sheds') {
-      targetScreen = 'shed_select';
-    } else if (hash === '#conclusion') {
-      targetScreen = 'conclusion';
-    } else if (hash.startsWith('#submission-update')) {
-      targetScreen = 'submission_update';
-      const q = hash.split('?')[1];
-      if (q) {
-        const params = new URLSearchParams(q);
-        const sid = params.get('id');
-        if (sid) setUpdatingSubmissionId(sid);
-      }
-    } else if (hash === '#manage') {
-      targetScreen = 'sheds_manage';
-      } else if (hash === '#setup') {
-      targetScreen = 'setup';
-    } else if (hash === '#history' || hash === '#submissions') {
-      targetScreen = 'history';
-    } else if (hash === '#submit') {
-      targetScreen = 'submit_page';
-    } else if (hash === '#auth') {
-      targetScreen = 'auth';
-    } else if (hash === '#home' || !hash || hash === '') {
-      targetScreen = 'home';
-    }
-
-    if (targetScreen && targetScreen !== active) {
-      // Clean natural backward transition without fighting the browser history stack
-      setCurrentScreen(targetScreen);
-    } else if (active === 'home') {
-      // Swiped back while on home -> Show Exit Confirmation Dialog
+    // If active screen is already 'home': swiping back on home triggers the Exit confirmation
+    if (active === 'home') {
       setShowExitConfirm(true);
       window.history.pushState({ screen: 'home' }, '', '#home');
-    } else {
-      // Fallback hierarchy if state was lost
-      if (active === 'weigh_pad') {
-        setCurrentScreen('line_select');
-      } else if (active === 'line_select') {
-        setCurrentScreen('part_select');
-      } else if (active === 'part_select') {
-        setCurrentScreen('shed_select');
-      } else {
-        setCurrentScreen('home');
-      }
+      return;
     }
+
+    // While inside the farm hierarchy: ALWAYS step back one level hierarchically
+    // (weigh_pad -> line_select -> part_select -> shed_select -> home)
+    // Never jump directly to home or exit while inside farm!
+    const parent = getParentScreen(active);
+    setCurrentScreen(parent);
+    window.history.replaceState(
+      { screen: parent, shedId: selectedShedIdRef.current, partId: selectedPartIdRef.current },
+      '',
+      getHashForScreen(parent)
+    );
   };
 
   useEffect(() => {
-    // Prime root state with hash
+    // Prime root state with hash or parse existing shared link hash
     if (!window.location.hash || window.location.hash === '#home' || window.location.hash === '#') {
       window.history.replaceState({ screen: 'home' }, '', '#home');
       window.history.pushState({ screen: 'home' }, '', '#home');
+    } else {
+      // Direct deep link restoration (e.g., #submissions, #submission-update?id=...)
+      handlePopState();
     }
 
+    const onHashChange = () => handlePopState();
     window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
+    window.addEventListener('hashchange', onHashChange);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('hashchange', onHashChange);
+    };
   }, []);
 
-  // Consistent UI Back Button handler: calls window.history.back() for natural parity
+  // Consistent UI Back Button handler: steps down hierarchical level identically to swipe back
   const handleGoBack = () => {
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      const active = currentScreenRef.current;
-      if (active === 'weigh_pad') setCurrentScreen('line_select');
-      else if (active === 'line_select') setCurrentScreen('part_select');
-      else if (active === 'part_select') setCurrentScreen('shed_select');
-      else if (active === 'submit_page') setCurrentScreen('home');
-      else if (active === 'home') setShowExitConfirm(true);
-      else setCurrentScreen('home');
+    const active = currentScreenRef.current;
+    if (active === 'home') {
+      setShowExitConfirm(true);
+      return;
     }
+    const parent = getParentScreen(active);
+    setCurrentScreen(parent);
+    window.history.pushState(
+      { screen: parent, shedId: selectedShedIdRef.current, partId: selectedPartIdRef.current },
+      '',
+      getHashForScreen(parent)
+    );
   };
 
   // Synchronized Forward Navigation Helpers with Hash Anchors (Recognized by Android Chrome)
@@ -961,13 +805,23 @@ export default function App() {
           setFarmAudit(data.audit);
           localStorage.setItem(`poultry_audit_${targetFarmId}`, JSON.stringify(data.audit));
         }
-        if (data.sheds && data.sheds.length > 0) {
+        if (Array.isArray(data.sheds)) {
           setSheds(data.sheds);
-          setSelectedShedId(data.sheds[0].id);
-          const firstPart = data.sheds[0].parts[0];
-          if (firstPart) {
-            setSelectedPartId(firstPart.id);
-            if (firstPart.lines[0]) setSelectedLineId(firstPart.lines[0].id);
+          if (data.sheds.length > 0) {
+            setSelectedShedId(data.sheds[0].id);
+            const firstPart = data.sheds[0].parts?.[0];
+            if (firstPart) {
+              setSelectedPartId(firstPart.id);
+              if (firstPart.lines?.[0]) setSelectedLineId(firstPart.lines[0].id);
+              else setSelectedLineId('');
+            } else {
+              setSelectedPartId('');
+              setSelectedLineId('');
+            }
+          } else {
+            setSelectedShedId('');
+            setSelectedPartId('');
+            setSelectedLineId('');
           }
         }
         setLastServerUpdatedAt(data.updatedAt);
@@ -984,7 +838,25 @@ export default function App() {
       if (localCached) {
         try {
           const parsed = JSON.parse(localCached);
-          if (parsed.sheds) setSheds(parsed.sheds);
+          if (Array.isArray(parsed.sheds)) {
+            setSheds(parsed.sheds);
+            if (parsed.sheds.length > 0) {
+              setSelectedShedId(parsed.sheds[0].id);
+              const firstPart = parsed.sheds[0].parts?.[0];
+              if (firstPart) {
+                setSelectedPartId(firstPart.id);
+                if (firstPart.lines?.[0]) setSelectedLineId(firstPart.lines[0].id);
+                else setSelectedLineId('');
+              } else {
+                setSelectedPartId('');
+                setSelectedLineId('');
+              }
+            } else {
+              setSelectedShedId('');
+              setSelectedPartId('');
+              setSelectedLineId('');
+            }
+          }
           if (parsed.farmName) setFarmName(parsed.farmName);
           if (parsed.date) setDate(parsed.date);
           if (parsed.ageWeek) setAgeWeek(parsed.ageWeek);
@@ -1154,6 +1026,7 @@ export default function App() {
       });
 
       if (created) {
+        const shedCount = Array.isArray(created.sheds) ? created.sheds.length : (created._count?.sheds ?? newFarmShedCount);
         const newSummary: FarmSummary = {
           id: created.id,
           name: created.name,
@@ -1163,7 +1036,7 @@ export default function App() {
           status: 'DRAFT',
           progressPercentage: 0,
           updatedAt: created.updatedAt,
-          _count: { sheds: created.sheds?.length || newFarmShedCount },
+          _count: { sheds: shedCount },
         };
         setFarmsList(prev => [newSummary, ...prev]);
         setActiveFarmId(created.id);
@@ -1174,14 +1047,29 @@ export default function App() {
         setDate(created.flockDate);
         setAgeWeek(created.ageWeek);
         setSeason(created.season as any);
-        if (created.sheds && created.sheds.length > 0) {
+        if (Array.isArray(created.sheds)) {
           setSheds(created.sheds);
-          setSelectedShedId(created.sheds[0].id);
-          const p1 = created.sheds[0].parts[0];
-          if (p1) {
-            setSelectedPartId(p1.id);
-            if (p1.lines[0]) setSelectedLineId(p1.lines[0].id);
+          if (created.sheds.length > 0) {
+            setSelectedShedId(created.sheds[0].id);
+            const p1 = created.sheds[0].parts?.[0];
+            if (p1) {
+              setSelectedPartId(p1.id);
+              if (p1.lines?.[0]) setSelectedLineId(p1.lines[0].id);
+              else setSelectedLineId('');
+            } else {
+              setSelectedPartId('');
+              setSelectedLineId('');
+            }
+          } else {
+            setSelectedShedId('');
+            setSelectedPartId('');
+            setSelectedLineId('');
           }
+        } else {
+          setSheds([]);
+          setSelectedShedId('');
+          setSelectedPartId('');
+          setSelectedLineId('');
         }
         setLastServerUpdatedAt(created.updatedAt);
         setLastUpdatedString('Just now');
@@ -1191,61 +1079,83 @@ export default function App() {
         setIsPendingSubmission(true);
         setFarmAudit(null);
         localStorage.setItem(`poultry_pending_submission_${created.id}`, 'true');
-        showToast(`Created Farm: ${created.name} (${newFarmShedCount} sheds)`);
+        showToast(`Created Farm: ${created.name} (${shedCount} sheds)`);
       }
     } catch (err: any) {
-      console.warn('Create farm cloud error, saving locally:', err);
-      const fallbackId = `farm-${Date.now()}`;
-      const fallbackSheds: ShedData[] = [];
-      for (let i = 1; i <= newFarmShedCount; i++) {
-        const isMale = newFarmSexSplit === 'all_male' ? true : (newFarmSexSplit === 'all_female' ? false : (newFarmShedCount > 1 ? i === newFarmShedCount : false));
-        fallbackSheds.push({
-          id: `shed-${fallbackId}-${i}`,
-          name: isMale ? `Shed ${i} Male` : `Shed ${i}`,
-          sheetName: `Shed ${i}`,
-          type: isMale ? 'Male' : 'Female',
-          parts: [
-            {
-              id: `part-${fallbackId}-${i}-a`,
-              name: 'Part A',
-              lines: [{ id: 1, name: 'Line 1', weights: [] }]
-            }
-          ]
-        });
-      }
-
-      const newSummary: FarmSummary = {
-        id: fallbackId,
-        name: newFarmName.trim(),
-        flockDate: newFarmFlockDate,
-        ageWeek: newFarmAgeWeek,
-        season: newFarmSeason,
-        status: 'DRAFT',
-        progressPercentage: 0,
-        updatedAt: new Date().toISOString(),
-        _count: { sheds: newFarmShedCount },
-      };
-      setFarmsList(prev => [newSummary, ...prev]);
-      setActiveFarmId(fallbackId);
-      setFarmStatus('DRAFT');
-      localStorage.setItem(`poultry_status_${fallbackId}`, 'DRAFT');
-      setFarmName(newFarmName.trim());
-      setDate(newFarmFlockDate);
-      setAgeWeek(newFarmAgeWeek);
-      setSeason(newFarmSeason);
-      setSheds(fallbackSheds);
-      setSelectedShedId(fallbackSheds[0].id);
-      setSelectedPartId(fallbackSheds[0].parts[0].id);
-      setSelectedLineId(1);
-      setShowNewFarmModal(false);
-      setNewFarmName('');
-      setIsPendingSubmission(true);
-      setFarmAudit(null);
-      localStorage.setItem(`poultry_pending_submission_${fallbackId}`, 'true');
-      setSyncStatus('offline');
-      showToast(`Created offline: ${newFarmName.trim()} (${newFarmShedCount} sheds)`);
+      console.error('Create farm error:', err);
+      showToast(err?.message || 'Failed to create farm on server. Please try again.');
     } finally {
       setIsCreatingFarm(false);
+    }
+  };
+
+  // Rename Farm Handler (Supported across all authorized roles)
+  const handleRenameFarm = async (farmId: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      showToast('Farm name cannot be blank.');
+      throw new Error('Farm name cannot be blank.');
+    }
+    try {
+      await cloudApi.updateFarmDetails(farmId, { name: trimmed });
+      setFarmsList(prev => prev.map(f => f.id === farmId ? { ...f, name: trimmed } : f));
+      if (activeFarmId === farmId) {
+        setFarmName(trimmed);
+      }
+      if (currentUser && currentUser.assignedFarms) {
+        const oldFarm = farmsList.find(f => f.id === farmId);
+        if (oldFarm && currentUser.assignedFarms.includes(oldFarm.name)) {
+          const updatedAssigned = currentUser.assignedFarms.map(af => af === oldFarm.name ? trimmed : af);
+          const updatedUser = { ...currentUser, assignedFarms: updatedAssigned };
+          setCurrentUser(updatedUser);
+          localStorage.setItem('poultry_current_user', JSON.stringify(updatedUser));
+        }
+      }
+      const updated = await cloudApi.getFarms();
+      if (updated && updated.length > 0) {
+        setFarmsList(updated);
+        localStorage.setItem('poultry_farms_list_v4', JSON.stringify(updated));
+      }
+      showToast(`Farm renamed to "${trimmed}"`);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to rename farm');
+      throw err;
+    }
+  };
+
+  // Toggle Shed-Wise Female/Male Gender Selection
+  const handleToggleShedGender = async (shedId: string, newGender: 'Female' | 'Male') => {
+    setSheds(prev => prev.map(s => s.id === shedId ? { ...s, type: newGender } : s));
+    try {
+      await cloudApi.updateShed(shedId, { type: newGender });
+      showToast(`Shed gender set to ${newGender === 'Male' ? '♂ Male' : '♀ Female'}`);
+    } catch (err: any) {
+      offlineQueue.enqueue({
+        type: 'UPDATE_SHED',
+        payload: { shedId, data: { type: newGender } }
+      });
+      setPendingSyncCount(offlineQueue.count());
+      showToast(`Shed gender updated to ${newGender} (offline queued)`);
+    }
+  };
+
+  // Delete / Archive Farm Handler (Req 3: Admin Only)
+  const handleDeleteFarm = async (farmId: string, options?: { mode?: 'archive' | 'permanent'; confirmFarmName?: string }) => {
+    try {
+      await cloudApi.deleteFarm(farmId, options);
+      // Refresh farms list from cloud
+      const updatedFarms = await cloudApi.getFarms();
+      setFarmsList(updatedFarms);
+      localStorage.setItem('poultry_farms_list_v4', JSON.stringify(updatedFarms));
+
+      // If active farm was deleted, switch to first remaining farm
+      if (activeFarmId === farmId && updatedFarms.length > 0) {
+        switchFarm(updatedFarms[0].id);
+      }
+      showToast(options?.mode === 'permanent' ? 'Farm permanently removed' : 'Farm safely archived');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete farm');
+      throw err;
     }
   };
 
@@ -1350,10 +1260,10 @@ export default function App() {
     }
   };
 
-  // Active Pointers
-  const activeShed = sheds.find(s => s.id === selectedShedId) || sheds[0];
-  const activePart = activeShed?.parts.find(p => p.id === selectedPartId) || activeShed?.parts[0];
-  const activeLine = activePart?.lines.find(l => l.id === selectedLineId) || activePart?.lines[0];
+  // Active Pointers (Null safe for farms with 0 sheds or parts)
+  const activeShed = sheds.find(s => s.id === selectedShedId) || sheds[0] || null;
+  const activePart = activeShed?.parts?.find(p => p.id === selectedPartId) || activeShed?.parts?.[0] || null;
+  const activeLine = activePart?.lines?.find(l => l.id === selectedLineId) || activePart?.lines?.[0] || null;
 
   const activeStd = activeShed?.type === 'Male' ? stdWeightMale : stdWeightFemale;
   const activeBands = useMemo(() => getGradingBands(activeStd, weekNum), [activeStd, weekNum]);
@@ -1361,18 +1271,18 @@ export default function App() {
   // Real-time Calculations
   const lineStats = useMemo(() => {
     if (!activeLine) return calculateFlockStats([], activeStd, weekNum);
-    return calculateFlockStats(activeLine.weights, activeStd, weekNum);
+    return calculateFlockStats(activeLine.weights || [], activeStd, weekNum);
   }, [activeLine, activeStd, weekNum]);
 
   const partStats = useMemo(() => {
     if (!activePart) return calculateFlockStats([], activeStd, weekNum);
-    const weights = activePart.lines.flatMap(l => l.weights);
+    const weights = (activePart.lines || []).flatMap(l => l.weights || []);
     return calculateFlockStats(weights, activeStd, weekNum);
   }, [activePart, activeStd, weekNum]);
 
   const shedStats = useMemo(() => {
     if (!activeShed) return calculateFlockStats([], activeStd, weekNum);
-    const weights = activeShed.parts.flatMap(p => p.lines.flatMap(l => l.weights));
+    const weights = (activeShed.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || []));
     return calculateFlockStats(weights, activeStd, weekNum);
   }, [activeShed, activeStd, weekNum]);
 
@@ -1418,9 +1328,9 @@ export default function App() {
       path: string;
     }> = [];
 
-    sheds.forEach(shed => {
-      shed.parts.forEach(part => {
-        part.lines.forEach(line => {
+    (sheds || []).forEach(shed => {
+      (shed.parts || []).forEach(part => {
+        (part.lines || []).forEach(line => {
           totalLines++;
           if (line.weights && line.weights.length > 0) {
             completedLines++;
@@ -1783,6 +1693,17 @@ export default function App() {
       setLastUpdatedString('Updated Just now');
       setLastServerUpdatedAt(timestampISO);
       showToast('Batch submitted and committed to cloud database successfully! You may now download the official worksheet.');
+
+      // Refresh farms from persistent database so Admin dashboard displays accurate submission counts and audit data (Req 2)
+      try {
+        const freshFarms = await cloudApi.getFarms();
+        if (freshFarms && freshFarms.length > 0) {
+          setFarmsList(freshFarms);
+          localStorage.setItem('poultry_farms_list_v4', JSON.stringify(freshFarms));
+        }
+      } catch (refErr) {
+        console.warn('Could not auto-refresh farm list after submit:', refErr);
+      }
     } catch (err: any) {
       console.warn('Batch upload failed:', err);
       // FAILED UPLOAD: Preserve draft locally! DO NOT mark completed!
@@ -2123,6 +2044,9 @@ export default function App() {
               onOpenAuth={() => navigateTo('auth')}
               onLogout={handleLogout}
               onNewFarm={handleOpenNewFarmModal}
+              onRefreshFarms={handleManualRefresh}
+              onDeleteFarm={handleDeleteFarm}
+              onRenameFarm={handleRenameFarm}
             />
           ) : (
             // Dashboard A: Field Operator Dashboard (Supervisor & Incharge)
@@ -2141,6 +2065,7 @@ export default function App() {
               onViewSubmissionsUpdate={() => navigateTo('history')}
               onOpenAuth={() => navigateTo('auth')}
               onLogout={handleLogout}
+              onRenameFarm={handleRenameFarm}
             />
           )
         )}
@@ -2177,7 +2102,7 @@ export default function App() {
         {/* ========================================================= */}
         {currentScreen === 'shed_select' && (
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-3.5">
               <button 
                 onClick={handleGoBack} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
@@ -2189,46 +2114,121 @@ export default function App() {
               </h2>
             </div>
 
-            <p className="text-xs text-slate-500 mb-3 px-1 font-medium">Choose a shed to enter or view its parts:</p>
+            {/* Active Farm Header with Rename Option for All Authorized Roles */}
+            <div className="flex items-center justify-between bg-white px-3.5 py-2.5 rounded-2xl border border-slate-200 shadow-2xs mb-3">
+              <div className="min-w-0">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Active Farm</span>
+                <span className="text-sm font-black text-slate-900 truncate block">{farmName || 'Farm Unit'}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditFarmNameInput(farmName);
+                  setEditFarmNameError(null);
+                  setShowEditFarmModal(true);
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200 text-xs font-bold transition active:scale-95 cursor-pointer shrink-0"
+                title="Rename Farm"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                <span className="text-[11px]">Edit Name</span>
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500 mb-2.5 px-1 font-medium">Choose a shed or toggle its Female / Male flock gender:</p>
 
             <div className="space-y-3 overflow-y-auto flex-1 pb-4">
-              {sheds.map(s => {
-                const sStd = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
-                const sStats = calculateFlockStats(s.parts.flatMap(p => p.lines.flatMap(l => l.weights)), sStd, weekNum);
-                return (
+              {sheds.length === 0 ? (
+                <div className="bg-white p-8 rounded-3xl border border-slate-200 text-center space-y-3 my-4 shadow-xs">
+                  <div className="w-14 h-14 bg-emerald-50 rounded-2xl flex items-center justify-center mx-auto text-emerald-600 border border-emerald-200">
+                    <Grid className="w-7 h-7" />
+                  </div>
+                  <h3 className="font-black text-slate-900 text-base">No sheds created yet</h3>
+                  <p className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed">
+                    This farm has no sheds configured. Click below to add the first shed.
+                  </p>
                   <button
-                    key={s.id}
-                    onClick={() => {
-                      navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a');
-                    }}
-                    className="w-full bg-white hover:bg-slate-50 active:scale-[0.98] transition p-4 rounded-2xl border border-slate-200 text-left flex items-center justify-between group shadow-xs cursor-pointer"
+                    type="button"
+                    onClick={() => setShowAddShedModal(true)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 active:scale-95 transition cursor-pointer"
                   >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-black text-base text-slate-900 group-hover:text-emerald-600 transition">
-                          {s.name}
-                        </span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-black border ${
-                          s.type === 'Male' ? 'bg-blue-100 text-blue-950 border-blue-400' : 'bg-pink-100 text-pink-950 border-pink-400'
-                        }`}>
-                          {s.type === 'Male' ? '♂ Male' : '♀ Female'}
-                        </span>
-                      </div>
-                      <span className="text-xs text-slate-500 mt-1 block">
-                        {s.parts.length} {s.parts.length === 1 ? 'Part' : 'Parts'} • {sStats.count} birds weighed
-                      </span>
-                    </div>
-
-                    <div className="text-right flex items-center gap-2.5">
-                      <div>
-                        <div className="text-base font-black text-emerald-600 font-mono">{sStats.avg}g</div>
-                        <div className="text-[11px] text-amber-600 font-bold">Std Uniformity: {sStats.sPct}%</div>
-                      </div>
-                      <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-emerald-600 group-hover:translate-x-1 transition" />
-                    </div>
+                    <Plus className="w-4 h-4" /> Add First Shed
                   </button>
-                );
-              })}
+                </div>
+              ) : (
+                sheds.map(s => {
+                  const sStd = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
+                  const sStats = calculateFlockStats((s.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || [])), sStd, weekNum);
+                  return (
+                    <div
+                      key={s.id}
+                      className="w-full bg-white hover:bg-slate-50/70 p-4 rounded-2xl border border-slate-200 flex flex-col gap-3 shadow-xs transition"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div 
+                          className="flex items-center gap-2 cursor-pointer min-w-0"
+                          onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
+                        >
+                          <span className="font-black text-base text-slate-900 hover:text-emerald-600 transition truncate">
+                            {s.name}
+                          </span>
+                        </div>
+
+                        {/* Interactive High-Contrast Shed-Wise Female/Male Selection */}
+                        <div 
+                          className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0" 
+                          onClick={e => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (s.type !== 'Female') handleToggleShedGender(s.id, 'Female');
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                              s.type === 'Female'
+                                ? 'bg-pink-600 text-white shadow-xs'
+                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                            }`}
+                            title="Set shed to Female"
+                          >
+                            <span>♀ Female</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (s.type !== 'Male') handleToggleShedGender(s.id, 'Male');
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                              s.type === 'Male'
+                                ? 'bg-blue-600 text-white shadow-xs'
+                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                            }`}
+                            title="Set shed to Male"
+                          >
+                            <span>♂ Male</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div 
+                        className="flex items-center justify-between text-xs text-slate-500 pt-1 border-t border-slate-100 cursor-pointer"
+                        onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
+                      >
+                        <span className="font-medium">
+                          {(s.parts || []).length} {(s.parts || []).length === 1 ? 'Part' : 'Parts'} • {sStats.count} birds weighed
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-black text-emerald-600 text-sm">{sStats.avg > 0 ? `${sStats.avg}g` : '—'}</span>
+                          <span className="text-[11px] font-bold text-amber-600 font-mono">Unif: {sStats.count > 0 ? `${sStats.uniformity10Pct}%` : '—'}</span>
+                          <ChevronRight className="w-4 h-4 text-slate-400" />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
 
               <button
                 onClick={() => setShowAddShedModal(true)}
@@ -2253,13 +2253,42 @@ export default function App() {
                 <ArrowLeft className="w-4 h-4" /> Sheds
               </button>
 
-              <span className={`text-xs font-black px-3 py-1 rounded-full border ${
-                activeShed.type === 'Male' 
-                  ? 'bg-blue-100 text-blue-950 border-blue-400' 
-                  : 'bg-pink-100 text-pink-950 border-pink-400'
-              }`}>
-                {activeShed.name} ({activeShed.type === 'Male' ? '♂ Male' : '♀ Female'})
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-bold text-slate-700 bg-white px-2.5 py-1 rounded-full border border-slate-200">
+                  {activeShed.name}
+                </span>
+                <div 
+                  className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200" 
+                  onClick={e => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeShed.type !== 'Female') handleToggleShedGender(activeShed.id, 'Female');
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
+                      activeShed.type === 'Female'
+                        ? 'bg-pink-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    ♀ Female
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeShed.type !== 'Male') handleToggleShedGender(activeShed.id, 'Male');
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
+                      activeShed.type === 'Male'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    ♂ Male
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="flex items-center justify-between px-1 mb-2.5">
@@ -2418,6 +2447,8 @@ export default function App() {
             <div className="space-y-3 overflow-y-auto flex-1 pb-4">
               {activePart.lines.map((line, lineIndex) => {
                 const lStats = calculateFlockStats(line.weights, activeStd, weekNum);
+                const hasWeights = (line.weights || []).length > 0;
+                const isComplete = lStats.isComplete;
 
                 return (
                   <div
@@ -2430,21 +2461,55 @@ export default function App() {
                           L{line.name.replace(/Line\s*/i, '').trim() || (lineIndex + 1)}
                         </span>
                         <div className="min-w-0">
-                          <h3 className="font-black text-base text-slate-900 truncate">{line.name}</h3>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <h3 className="font-black text-base text-slate-900 truncate">{line.name}</h3>
+                            <span className={`text-[10px] font-black px-2 py-0.2 rounded-full border ${
+                              activeShed.type === 'Male'
+                                ? 'bg-blue-100 text-blue-900 border-blue-300'
+                                : 'bg-pink-100 text-pink-900 border-pink-300'
+                            }`}>
+                              {activeShed.name} ({activeShed.type === 'Male' ? '♂ Male' : '♀ Female'})
+                            </span>
+                          </div>
                           <span className="text-xs text-slate-500 block truncate">
                             {line.weights.length} {line.weights.length === 1 ? 'Bird Weighed' : 'Birds Weighed'}
                           </span>
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={(e) => handleDeleteLine(line.id, e)}
-                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer shrink-0"
-                        title={`Delete ${line.name}`}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {/* Line Status / Grade Badge */}
+                        {!hasWeights ? (
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                            🟡 Pending
+                          </span>
+                        ) : !isComplete ? (
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-300">
+                            🟡 In Progress ({lStats.count}/10)
+                          </span>
+                        ) : lStats.status === 'EXCELLENT' ? (
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                            🟢 EXCELLENT ({lStats.uniformity10Pct}%)
+                          </span>
+                        ) : lStats.status === 'ACCEPTABLE' ? (
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
+                            🔵 ACCEPTABLE ({lStats.uniformity10Pct}%)
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
+                            🔴 POOR ({lStats.uniformity10Pct}%)
+                          </span>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteLine(line.id, e)}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer shrink-0"
+                          title={`Delete ${line.name}`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs font-mono min-w-0 max-w-full">
@@ -2454,15 +2519,21 @@ export default function App() {
                       </div>
                       <div className="min-w-0">
                         <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">AVG WT</span>
-                        <div className="font-extrabold text-emerald-600 truncate font-mono">{lStats.avg}g</div>
+                        <div className="font-extrabold text-emerald-600 truncate font-mono">
+                          {hasWeights ? `${lStats.avg}g` : '—'}
+                        </div>
                       </div>
                       <div className="min-w-0">
-                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">Uniformity</span>
-                        <div className="font-extrabold text-amber-600 truncate font-mono">{lStats.sPct}%</div>
+                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">Uniformity (±10%)</span>
+                        <div className="font-extrabold text-amber-600 truncate font-mono">
+                          {hasWeights ? `${lStats.uniformity10Pct}%` : '—'}
+                        </div>
                       </div>
                       <div className="min-w-0">
                         <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">CV %</span>
-                        <div className="font-extrabold text-sky-600 truncate font-mono">{lStats.cv}%</div>
+                        <div className="font-extrabold text-sky-600 truncate font-mono">
+                          {hasWeights ? `${lStats.cv}%` : '—'}
+                        </div>
                       </div>
                     </div>
 
@@ -2505,17 +2576,43 @@ export default function App() {
                 <span className="text-sky-700 font-extrabold">{activeLine.name}</span>
               </div>
 
-              <span className={`text-[10px] px-2.5 py-1 rounded-full font-black border shrink-0 ${
-                activeShed.type === 'Male' 
-                  ? 'bg-blue-100 text-blue-950 border-blue-400' 
-                  : 'bg-pink-100 text-pink-950 border-pink-400'
-              }`}>
-                {activeShed.type === 'Male' ? '♂ M' : '♀ F'}
-              </span>
+              <div 
+                className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200 shrink-0" 
+                onClick={e => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (activeShed.type !== 'Female') handleToggleShedGender(activeShed.id, 'Female');
+                  }}
+                  className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
+                    activeShed.type === 'Female'
+                      ? 'bg-pink-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                  title="Set shed to Female"
+                >
+                  ♀ Female
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (activeShed.type !== 'Male') handleToggleShedGender(activeShed.id, 'Male');
+                  }}
+                  className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
+                    activeShed.type === 'Male'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                  title="Set shed to Male"
+                >
+                  ♂ Male
+                </button>
+              </div>
             </div>
 
             {/* Real-Time Metric Strip for Current Line & Part */}
-            <div className="bg-white p-3 rounded-2xl border border-slate-200 grid grid-cols-4 gap-1 text-center mb-3 shadow-xs">
+            <div className="bg-white p-3 rounded-2xl border border-slate-200 grid grid-cols-4 gap-1 text-center mb-2 shadow-xs">
               <div className="min-w-0">
                 <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Weighed</span>
                 <div className="text-base font-black text-slate-900">{lineStats.count}</div>
@@ -2523,19 +2620,53 @@ export default function App() {
               </div>
               <div className="min-w-0">
                 <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Avg Wt</span>
-                <div className="text-base font-black text-emerald-600 font-mono">{lineStats.avg}g</div>
-                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.avg}g</span>
+                <div className="text-base font-black text-emerald-600 font-mono">
+                  {lineStats.count > 0 ? `${lineStats.avg}g` : '—'}
+                </div>
+                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.avg}g` : '—'}</span>
               </div>
               <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Uniformity</span>
-                <div className="text-base font-black text-amber-600 font-mono">{lineStats.sPct}%</div>
-                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.sPct}%</span>
+                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Uniformity (±10%)</span>
+                <div className="text-base font-black text-amber-600 font-mono">
+                  {lineStats.count > 0 ? `${lineStats.uniformity10Pct}%` : '—'}
+                </div>
+                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.uniformity10Pct}%` : '—'}</span>
               </div>
               <div className="min-w-0">
                 <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">CV %</span>
-                <div className="text-base font-black text-sky-600 font-mono">{lineStats.cv}%</div>
-                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.cv}%</span>
+                <div className="text-base font-black text-sky-600 font-mono">
+                  {lineStats.count > 0 ? `${lineStats.cv}%` : '—'}
+                </div>
+                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.cv}%` : '—'}</span>
               </div>
+            </div>
+
+            {/* Live Line Status Indicator */}
+            <div className="flex items-center justify-between bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 text-xs mb-2.5">
+              <span className="text-[11px] font-bold text-slate-600">
+                {activeLine.name} Uniformity Status:
+              </span>
+              {lineStats.count === 0 ? (
+                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
+                  🟡 Pending (0 Birds)
+                </span>
+              ) : !lineStats.isComplete ? (
+                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                  🟡 In Progress ({lineStats.count}/10 birds)
+                </span>
+              ) : lineStats.status === 'EXCELLENT' ? (
+                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                  🟢 EXCELLENT ({lineStats.uniformity10Pct}%)
+                </span>
+              ) : lineStats.status === 'ACCEPTABLE' ? (
+                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
+                  🔵 ACCEPTABLE ({lineStats.uniformity10Pct}%)
+                </span>
+              ) : (
+                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
+                  🔴 POOR ({lineStats.uniformity10Pct}%)
+                </span>
+              )}
             </div>
 
             {/* Manual Entry Form - Compact & Fast */}
@@ -3608,14 +3739,17 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
-                      Number of Sheds (1-20) *
+                      Number of Sheds (0-50) *
                     </label>
                     <input
                       type="number"
-                      min={1}
-                      max={20}
+                      min={0}
+                      max={50}
                       value={newFarmShedCount}
-                      onChange={(e) => setNewFarmShedCount(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        setNewFarmShedCount(isNaN(val) ? 0 : Math.max(0, Math.min(50, val)));
+                      }}
                       className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
                     />
                   </div>
@@ -3625,8 +3759,9 @@ export default function App() {
                     </label>
                     <select
                       value={newFarmSexSplit}
+                      disabled={newFarmShedCount === 0}
                       onChange={(e) => setNewFarmSexSplit(e.target.value as any)}
-                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition disabled:opacity-50"
                     >
                       <option value="last_male">Sheds 1–{Math.max(1, newFarmShedCount - 1)} ♀, Shed {newFarmShedCount} ♂</option>
                       <option value="all_female">All Female Sheds ♀</option>
@@ -3637,7 +3772,12 @@ export default function App() {
 
                 <div className="bg-emerald-50/70 p-3 rounded-xl border border-emerald-200 text-[11px] text-emerald-800 flex items-start gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                  <span>Will auto-provision {newFarmShedCount} sheds with Part A & Line 1 ready for staged weighing.</span>
+                  <span>
+                    {newFarmShedCount === 0 
+                      ? 'Will create farm with 0 sheds. You can add sheds anytime.' 
+                      : `Will create ${newFarmShedCount} shed${newFarmShedCount === 1 ? '' : 's'}. Each shed can be assigned Female or Male individually.`
+                    }
+                  </span>
                 </div>
 
                 <div className="flex gap-2 pt-2">
@@ -3663,6 +3803,106 @@ export default function App() {
                         <Plus className="w-3.5 h-3.5" />
                         <span>Create Farm</span>
                       </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODAL: EDIT FARM NAME (All Authorized Roles)              */}
+        {/* ========================================================= */}
+        {showEditFarmModal && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
+              <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl border border-emerald-200">
+                    <Edit3 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-base text-slate-900">Edit Farm Name</h3>
+                    <p className="text-[11px] text-slate-500">Update authoritative database record</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowEditFarmModal(false)}
+                  className="text-slate-400 hover:text-slate-700 p-1 rounded-lg cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                const trimmed = editFarmNameInput.trim();
+                if (!trimmed) {
+                  setEditFarmNameError('Farm name cannot be blank.');
+                  return;
+                }
+                setEditFarmNameError(null);
+                setIsSavingFarmName(true);
+                try {
+                  await handleRenameFarm(activeFarmId, trimmed);
+                  setShowEditFarmModal(false);
+                } catch (err: any) {
+                  setEditFarmNameError(err.message || 'Failed to update farm name.');
+                } finally {
+                  setIsSavingFarmName(false);
+                }
+              }} className="space-y-3.5">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
+                    New Farm Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Green Valley Farm Unit 1"
+                    value={editFarmNameInput}
+                    onChange={(e) => {
+                      setEditFarmNameInput(e.target.value);
+                      if (editFarmNameError) setEditFarmNameError(null);
+                    }}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                    autoFocus
+                  />
+                  {editFarmNameError && (
+                    <p className="text-[11px] text-rose-600 font-bold mt-1.5 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{editFarmNameError}</span>
+                    </p>
+                  )}
+                </div>
+
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-[11px] text-slate-600 flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <span>Renaming preserves all sheds, parts, lines, recorded weights, and submission history.</span>
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowEditFarmModal(false)}
+                    className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingFarmName}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2.5 rounded-xl text-xs font-black text-white shadow-md shadow-emerald-600/20 active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    {isSavingFarmName ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <span>Save Farm Name</span>
                     )}
                   </button>
                 </div>

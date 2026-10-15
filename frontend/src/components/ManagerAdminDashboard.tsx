@@ -24,9 +24,16 @@ import {
   AlertCircle,
   Loader2,
   UserCheck,
-  UserX
+  UserX,
+  Archive,
+  ArchiveRestore,
+  Eye,
+  Layers,
+  AlertTriangle,
+  Scale,
+  History
 } from 'lucide-react';
-import { FarmSummary, AppUser, UserRole, cloudApi } from '../services/cloudSyncService';
+import { FarmSummary, AppUser, UserRole, cloudApi, FullFarmData, DeleteImpactResult } from '../services/cloudSyncService';
 import { formatDateTimeIST } from '../utils/dateFormatter';
 
 export interface ManagerAdminDashboardProps {
@@ -41,6 +48,9 @@ export interface ManagerAdminDashboardProps {
   onOpenAuth: () => void;
   onLogout: () => void;
   onNewFarm: () => void;
+  onRefreshFarms?: () => Promise<void>;
+  onDeleteFarm?: (farmId: string, options?: { mode?: 'archive' | 'permanent'; confirmFarmName?: string }) => Promise<void>;
+  onRenameFarm?: (farmId: string, newName: string) => Promise<void>;
 }
 
 export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
@@ -55,10 +65,94 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   onOpenAuth,
   onLogout,
   onNewFarm,
+  onRefreshFarms,
+  onDeleteFarm,
+  onRenameFarm,
 }) => {
   const userRole = currentUser?.role || 'Manager';
   const isAdmin = userRole === 'Admin';
   const userDisplayName = currentUser?.userName || currentUser?.name || 'Executive User';
+
+  // 1. View Farm Details & Submissions Modal State (Req 2)
+  const [viewingFarm, setViewingFarm] = useState<FarmSummary | null>(null);
+  const [viewingFarmDetails, setViewingFarmDetails] = useState<FullFarmData | null>(null);
+  const [isLoadingFarmDetails, setIsLoadingFarmDetails] = useState<boolean>(false);
+
+  // 2. Farm Deletion / Archival Modal State (Req 3)
+  const [deletingFarm, setDeletingFarm] = useState<FarmSummary | null>(null);
+  const [deleteImpact, setDeleteImpact] = useState<DeleteImpactResult | null>(null);
+  const [isLoadingImpact, setIsLoadingImpact] = useState<boolean>(false);
+  const [deleteMode, setDeleteMode] = useState<'archive' | 'permanent'>('archive');
+  const [confirmNameInput, setConfirmNameInput] = useState<string>('');
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [deleteFeedback, setDeleteFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  // 3. Archived Farms List Toggle & Management
+  const [showArchivedView, setShowArchivedView] = useState<boolean>(false);
+  const [archivedFarmsList, setArchivedFarmsList] = useState<FarmSummary[]>([]);
+  const [isLoadingArchived, setIsLoadingArchived] = useState<boolean>(false);
+  const [restoringFarmId, setRestoringFarmId] = useState<string | null>(null);
+
+  // 4. Farm Renaming Modal State (Req 1)
+  const [renamingFarm, setRenamingFarm] = useState<FarmSummary | null>(null);
+  const [renameFarmInput, setRenameFarmInput] = useState<string>('');
+  const [isRenamingFarm, setIsRenamingFarm] = useState<boolean>(false);
+  const [renameFarmError, setRenameFarmError] = useState<string | null>(null);
+  const [renameFarmSuccess, setRenameFarmSuccess] = useState<string | null>(null);
+
+  const canEditFarm = (farm: FarmSummary) => {
+    if (isAdmin) return true;
+    if (userRole === 'Manager') {
+      const assigned = currentUser?.assignedFarms || [];
+      return assigned.includes('*') || assigned.includes(farm.id) || assigned.includes(farm.name);
+    }
+    return false;
+  };
+
+  const handleOpenRenameFarm = (farm: FarmSummary) => {
+    if (!canEditFarm(farm)) {
+      alert('You are not authorized to edit this farm.');
+      return;
+    }
+    setRenamingFarm(farm);
+    setRenameFarmInput(farm.name);
+    setRenameFarmError(null);
+    setRenameFarmSuccess(null);
+  };
+
+  const handleSaveRenameFarm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!renamingFarm) return;
+    const trimmed = renameFarmInput.trim();
+    if (!trimmed) {
+      setRenameFarmError('Farm name cannot be blank.');
+      return;
+    }
+    if (trimmed === renamingFarm.name) {
+      setRenamingFarm(null);
+      return;
+    }
+    setIsRenamingFarm(true);
+    setRenameFarmError(null);
+    try {
+      if (onRenameFarm) {
+        await onRenameFarm(renamingFarm.id, trimmed);
+      } else {
+        await cloudApi.updateFarmDetails(renamingFarm.id, { name: trimmed });
+      }
+      if (onRefreshFarms) {
+        await onRefreshFarms();
+      }
+      setRenameFarmSuccess(`Farm successfully renamed to "${trimmed}"`);
+      setTimeout(() => {
+        setRenamingFarm(null);
+      }, 700);
+    } catch (err: any) {
+      setRenameFarmError(err?.message || 'Failed to rename farm');
+    } finally {
+      setIsRenamingFarm(false);
+    }
+  };
 
   // Assignment Modal State (Req 5: Real Database Field Operators)
   const [assigningFarmId, setAssigningFarmId] = useState<string | null>(null);
@@ -240,56 +334,190 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     }
   };
 
+  // 1. Open Farm Details & Submissions Modal (Req 2)
+  const handleOpenFarmDetails = async (farm: FarmSummary) => {
+    setViewingFarm(farm);
+    setIsLoadingFarmDetails(true);
+    setViewingFarmDetails(null);
+    try {
+      const full = await cloudApi.getFarmDetails(farm.id);
+      setViewingFarmDetails(full);
+    } catch (err: any) {
+      console.warn('Could not load full farm details:', err);
+    } finally {
+      setIsLoadingFarmDetails(false);
+    }
+  };
+
+  // 2. Open Delete / Archive Farm Modal (Req 3)
+  const handleOpenDeleteModal = async (farm: FarmSummary) => {
+    setDeletingFarm(farm);
+    setDeleteImpact(null);
+    setIsLoadingImpact(true);
+    setDeleteMode('archive');
+    setConfirmNameInput('');
+    setDeleteFeedback(null);
+
+    try {
+      const impact = await cloudApi.getFarmDeleteImpact(farm.id);
+      setDeleteImpact(impact);
+      if (!impact.hasRecords) {
+        setDeleteMode('permanent');
+      } else {
+        setDeleteMode('archive');
+      }
+    } catch (err: any) {
+      console.warn('Could not fetch delete impact:', err);
+      setDeleteImpact({
+        farmId: farm.id,
+        farmName: farm.name,
+        hasRecords: (farm.submissionCount ?? 0) > 0 || (farm._count?.sheds ?? 0) > 0,
+        shedsCount: farm._count?.sheds ?? 10,
+        partsCount: 10,
+        linesCount: 10,
+        submissionsCount: farm.submissionCount ?? 0,
+        birdWeightsCount: farm.audit?.totalBirdsSubmitted ?? 0,
+        logsCount: 0,
+      });
+    } finally {
+      setIsLoadingImpact(false);
+    }
+  };
+
+  // 3. Execute Delete or Archive Action (Req 3)
+  const handleExecuteDelete = async () => {
+    if (!deletingFarm || isDeleting) return;
+
+    if (deleteMode === 'permanent' && deleteImpact?.hasRecords) {
+      if (confirmNameInput.trim().toLowerCase() !== deletingFarm.name.trim().toLowerCase()) {
+        setDeleteFeedback({
+          type: 'error',
+          text: `Farm name does not match. Please type "${deletingFarm.name}" exactly.`,
+        });
+        return;
+      }
+    }
+
+    setIsDeleting(true);
+    setDeleteFeedback(null);
+    try {
+      if (onDeleteFarm) {
+        await onDeleteFarm(deletingFarm.id, {
+          mode: deleteMode,
+          confirmFarmName: confirmNameInput.trim(),
+        });
+      } else {
+        await cloudApi.deleteFarm(deletingFarm.id, {
+          mode: deleteMode,
+          confirmFarmName: confirmNameInput.trim(),
+        });
+        if (onRefreshFarms) await onRefreshFarms();
+      }
+
+      setDeleteFeedback({
+        type: 'success',
+        text: deleteMode === 'archive' 
+          ? `Farm "${deletingFarm.name}" was safely archived. Historical submissions and bird weights preserved.`
+          : `Farm "${deletingFarm.name}" was permanently removed.`,
+      });
+
+      setTimeout(() => {
+        setDeletingFarm(null);
+        setDeleteFeedback(null);
+      }, 1000);
+    } catch (err: any) {
+      setDeleteFeedback({
+        type: 'error',
+        text: err.message || 'Operation failed. Please try again.',
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // 4. Load & Restore Archived Farms (Req 3)
+  const loadArchivedFarms = async () => {
+    setIsLoadingArchived(true);
+    try {
+      const all = await cloudApi.getFarms(true);
+      setArchivedFarmsList(all.filter(f => f.isArchived));
+    } catch (err: any) {
+      console.warn('Failed to load archived farms:', err);
+    } finally {
+      setIsLoadingArchived(false);
+    }
+  };
+
+  const handleRestoreFarm = async (farmId: string) => {
+    setRestoringFarmId(farmId);
+    try {
+      await cloudApi.restoreFarm(farmId);
+      if (onRefreshFarms) await onRefreshFarms();
+      await loadArchivedFarms();
+    } catch (err: any) {
+      alert(err.message || 'Failed to restore farm');
+    } finally {
+      setRestoringFarmId(null);
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col p-3 sm:p-4 md:p-6 lg:p-8 animate-in fade-in duration-150">
-      {/* Top Header: Session & Role Bar */}
-      <div className="flex items-center justify-between mb-4 px-1">
-        <div 
-          onClick={onOpenAuth}
-          className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition bg-white px-3 py-2 rounded-xl border border-slate-200/90 shadow-2xs"
-          title="View Session Details"
-        >
-          <div className={`w-8 h-8 rounded-lg text-white flex items-center justify-center font-black text-xs shadow-xs ${
-            isAdmin ? 'bg-purple-600' : 'bg-sky-600'
-          }`}>
-            {userDisplayName.charAt(0).toUpperCase()}
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-black text-slate-900 block leading-tight truncate max-w-[130px] sm:max-w-[200px]">
-                {userDisplayName}
-              </span>
-              {currentUser?.username && (
-                <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
-                  @{currentUser.username}
-                </span>
-              )}
-            </div>
-            <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border mt-0.5 ${
-              isAdmin ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-sky-50 text-sky-700 border-sky-200'
-            }`}>
-              {userRole}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 sm:gap-2">
-          <button
-            onClick={onViewSubmissionsUpdate}
-            className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-xl active:scale-95 transition cursor-pointer shadow-2xs"
+      {/* Top Header: Session & Role Bar with Integrated Logout (Req 1) */}
+      <div className="flex items-center justify-between gap-2.5 mb-4 px-1">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
+          <div 
+            onClick={onOpenAuth}
+            className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition bg-white px-3 py-2 rounded-xl border border-slate-200/90 shadow-2xs min-w-0"
+            title="View Session Details"
           >
-            <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
-            <span className="truncate">Submissions Update</span>
-          </button>
+            <div className={`w-8 h-8 rounded-lg text-white flex items-center justify-center font-black text-xs shadow-xs shrink-0 ${
+              isAdmin ? 'bg-purple-600' : 'bg-sky-600'
+            }`}>
+              {userDisplayName.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-black text-slate-900 block leading-tight truncate">
+                  {userDisplayName}
+                </span>
+                {currentUser?.username && (
+                  <span className="text-[10px] text-slate-400 font-mono hidden md:inline">
+                    @{currentUser.username}
+                  </span>
+                )}
+              </div>
+              <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border mt-0.5 ${
+                isAdmin ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-sky-50 text-sky-700 border-sky-200'
+              }`}>
+                {userRole}
+              </span>
+            </div>
+          </div>
 
+          {/* Integrated Logout in User Area */}
           <button
+            type="button"
             onClick={onLogout}
-            className="flex items-center gap-1.5 px-3 py-1.5 sm:py-2 text-rose-600 hover:text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-xl font-bold text-xs shadow-2xs transition active:scale-95 cursor-pointer"
+            className="flex items-center gap-1 px-2.5 py-2 text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200/90 rounded-xl font-bold text-xs shadow-2xs transition active:scale-95 cursor-pointer shrink-0"
             title="Log Out Session"
             aria-label="Log Out"
           >
-            <LogOut className="w-3.5 h-3.5" />
-            <span>Logout</span>
+            <LogOut className="w-3.5 h-3.5 shrink-0" />
+            <span className="text-[11px]">Logout</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onViewSubmissionsUpdate}
+            className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 px-2.5 py-2 sm:px-3 rounded-xl active:scale-95 transition cursor-pointer shadow-2xs shrink-0"
+            title="View Live Submissions Update Feed"
+          >
+            <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse shrink-0" />
+            <span className="hidden sm:inline">Submissions Update</span>
+            <span className="sm:hidden">Submissions</span>
           </button>
         </div>
       </div>
@@ -365,7 +593,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
         <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
           <span className="text-[10px] uppercase font-bold text-slate-400 block">Total Sheds</span>
           <span className="text-lg md:text-2xl font-black text-sky-600 font-mono mt-0.5">
-            {farms.reduce((acc, f) => acc + (f._count?.sheds || 10), 0)}
+            {farms.reduce((acc, f) => acc + (f._count?.sheds ?? 0), 0)}
           </span>
         </div>
         <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
@@ -384,19 +612,111 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       </div>
 
       {/* Master Farm Roster Header */}
-      <div className="flex items-center justify-between px-1 mb-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1 mb-3">
         <div className="flex items-center gap-2">
           <h3 className="text-xs sm:text-sm font-black uppercase tracking-wider text-slate-700">
-            Master Farm Roster ({farms.length} Units)
+            Master Farm Roster ({farms.length} Active Units)
           </h3>
           <span className="hidden sm:inline-block text-[11px] text-slate-400 font-medium">
-            • Multi-unit grid view adapted for desktop screens
+            • Tap any farm to view details & submissions
           </span>
         </div>
-        <span className="text-xs text-slate-500 font-medium">
-          Select unit for One-Tap Conclusion
-        </span>
+
+        <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                const next = !showArchivedView;
+                setShowArchivedView(next);
+                if (next) loadArchivedFarms();
+              }}
+              className={`text-xs font-bold px-2.5 py-1.5 rounded-xl border transition flex items-center gap-1.5 cursor-pointer shadow-2xs ${
+                showArchivedView
+                  ? 'bg-amber-100 text-amber-900 border-amber-300'
+                  : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
+              }`}
+            >
+              <Archive className="w-3.5 h-3.5 text-amber-600" />
+              <span>{showArchivedView ? 'Hide Archived' : 'Archived Units'}</span>
+            </button>
+          )}
+
+          <span className="text-xs text-slate-500 font-medium hidden md:inline">
+            One-Tap View & Conclusion
+          </span>
+        </div>
       </div>
+
+      {/* Archived Farms View Banner & Grid (Admin Only - Req 3) */}
+      {showArchivedView && isAdmin && (
+        <div className="mb-6 p-4 bg-amber-50/70 border border-amber-200 rounded-2xl animate-in fade-in duration-150 space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-amber-200/80">
+            <div className="flex items-center gap-2">
+              <Archive className="w-4 h-4 text-amber-700" />
+              <h4 className="font-black text-xs sm:text-sm text-amber-900">
+                Archived Farm Units ({archivedFarmsList.length})
+              </h4>
+            </div>
+            <span className="text-[11px] text-amber-800 font-medium">
+              Safely preserved historical submissions & reports
+            </span>
+          </div>
+
+          {isLoadingArchived ? (
+            <div className="p-6 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-amber-600" />
+              <span>Loading archived units...</span>
+            </div>
+          ) : archivedFarmsList.length === 0 ? (
+            <p className="text-xs text-slate-500 italic py-2">
+              No archived farm units. Active farms can be safely archived via the Delete button.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {archivedFarmsList.map((af) => (
+                <div key={af.id} className="p-3 bg-white rounded-xl border border-amber-200 shadow-2xs space-y-2">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h5 className="font-black text-xs text-slate-900">{af.name}</h5>
+                      <span className="text-[10px] text-slate-500 font-medium">
+                        {af.ageWeek} • {af._count?.sheds ?? 0} Sheds • {af.submissionCount ?? af._count?.submissions ?? 0} Submissions
+                      </span>
+                    </div>
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                      Archived
+                    </span>
+                  </div>
+
+                  <div className="flex gap-1.5 pt-1 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenFarmDetails(af)}
+                      className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-700 py-1.5 rounded-lg text-[10px] font-bold border border-slate-200 flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <Layers className="w-3 h-3 text-sky-600" />
+                      <span>View Submissions</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRestoreFarm(af.id)}
+                      disabled={restoringFarmId === af.id}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white py-1.5 px-3 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
+                    >
+                      {restoringFarmId === af.id ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <ArchiveRestore className="w-3 h-3" />
+                      )}
+                      <span>Restore</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Master Farm Roster List (Responsive grid: 1 col on mobile, 2 on tablet, 3 on PC desktop) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4 md:gap-5 overflow-y-auto flex-1 pb-6">
@@ -428,6 +748,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
             return result;
           })();
           const assignedCount = validOperators.length;
+          const subCount = farm.submissionCount ?? farm._count?.submissions ?? (isCompleted ? 1 : 0);
 
           return (
             <div 
@@ -440,18 +761,42 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
             >
               {/* Unit Title and Status Pill */}
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
+                <div 
+                  className="min-w-0 flex-1 cursor-pointer group"
+                  onClick={() => handleOpenFarmDetails(farm)}
+                  title="Click to view full farm details and submissions"
+                >
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <h4 className="font-black text-sm text-slate-900 truncate">{farm.name}</h4>
+                    <h4 className="font-black text-sm text-slate-900 truncate group-hover:text-emerald-700 transition">
+                      {farm.name}
+                    </h4>
+                    {canEditFarm(farm) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenRenameFarm(farm);
+                        }}
+                        className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition active:scale-95 cursor-pointer shrink-0"
+                        title={`Rename ${farm.name}`}
+                        aria-label="Rename Farm"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500">
+                  <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500 flex-wrap">
                     <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-bold text-[10px] border border-slate-200">
                       {farm.ageWeek}
                     </span>
                     <span>{farm.season} Brood</span>
                     <span>•</span>
-                    <span className="font-mono">{farm._count?.sheds || 10} Sheds</span>
+                    <span className="font-mono font-semibold">{farm._count?.sheds ?? 0} Sheds</span>
+                    <span>•</span>
+                    <span className="font-mono font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 text-[10px]">
+                      {subCount} {subCount === 1 ? 'Submission' : 'Submissions'}
+                    </span>
                   </div>
                 </div>
 
@@ -500,39 +845,89 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 )}
               </div>
 
-              {/* Audit Summary Details */}
-              {farm.audit && (
-                <div className="mt-2 text-[10px] text-slate-500 flex items-center justify-between">
-                  <span>
-                    Last Submission: <strong className="text-slate-800">{farm.audit.lastSubmittedBy || 'Supervisor'}</strong>
+              {/* Audit Summary & Available Batch Details (Req 2) */}
+              <div className="mt-2.5 p-2 bg-slate-50/80 rounded-xl border border-slate-100 text-[10px] space-y-1">
+                <div className="text-slate-600 flex items-center justify-between">
+                  <span className="font-medium truncate pr-1">
+                    Last Submission: <strong className="text-slate-800">{farm.audit?.lastSubmittedBy || farm.audit?.submittedBy || (isCompleted ? 'Supervisor' : 'Draft Session')}</strong>
                   </span>
-                  <span className="font-mono text-slate-700">
-                    {farm.audit.lastSubmittedAt ? formatDateTimeIST(farm.audit.lastSubmittedAt) : 'Draft'}
+                  <span className="font-mono text-slate-700 font-bold shrink-0">
+                    {farm.audit?.lastSubmittedAt ? formatDateTimeIST(farm.audit.lastSubmittedAt) : (isCompleted ? 'Completed' : 'Draft')}
                   </span>
                 </div>
-              )}
+                {farm.audit && (farm.audit.totalBirdsSubmitted || farm.audit.femaleAvgWeight || farm.audit.maleAvgWeight) ? (
+                  <div className="flex items-center justify-between text-slate-500 pt-1 border-t border-slate-200/50">
+                    <span>
+                      Batch: <strong className="text-slate-700 font-mono">{farm.audit.totalBirdsSubmitted || 0} birds</strong>
+                    </span>
+                    <span className="font-mono text-slate-700 font-semibold">
+                      {farm.audit.femaleAvgWeight ? `♀ ${farm.audit.femaleAvgWeight}g` : ''} {farm.audit.maleAvgWeight ? `♂ ${farm.audit.maleAvgWeight}g` : ''}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
 
-              {/* Action Buttons: One-Tap Conclusion & Set Active */}
-              <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => onOpenConclusion(farm.id)}
-                  className="flex-1 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 active:scale-95 transition cursor-pointer"
-                >
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-amber-600" />
-                  <span>One-Tap Conclusion (Cons)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSelectFarm(farm.id)}
-                  className={`px-3 py-2 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer ${
-                    activeFarmId === farm.id
-                      ? 'bg-slate-200 text-slate-800'
-                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                  }`}
-                >
-                  {activeFarmId === farm.id ? 'Active Unit' : 'Select'}
-                </button>
+              {/* Action Buttons: Clean Non-Overlapping Layout (Req 1, 2 & 3) */}
+              <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenFarmDetails(farm)}
+                    className="flex-1 bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 active:scale-95 transition cursor-pointer"
+                    title="View farm details and submissions"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-sky-600" />
+                    <span>View Details & Submissions</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onOpenConclusion(farm.id)}
+                    className="bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 font-bold px-3 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 active:scale-95 transition cursor-pointer shrink-0"
+                    title="One-Tap Excel Cons Conclusion"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Cons</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onSelectFarm(farm.id)}
+                    className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer text-center ${
+                      activeFarmId === farm.id
+                        ? 'bg-slate-200 text-slate-800'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    {activeFarmId === farm.id ? 'Active Unit' : 'Select Farm'}
+                  </button>
+
+                  {canEditFarm(farm) && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRenameFarm(farm)}
+                      className="px-2.5 py-1.5 text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 shrink-0"
+                      title={`Edit name of ${farm.name}`}
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                      <span>Edit</span>
+                    </button>
+                  )}
+
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenDeleteModal(farm)}
+                      className="px-2.5 py-1.5 text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 shrink-0"
+                      title={`Delete or Archive ${farm.name}`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete</span>
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           );
@@ -1055,6 +1450,649 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: FARM DETAILS & SUBMISSION HISTORY (Req 2)         */}
+      {/* ========================================================= */}
+      {viewingFarm && (
+        <div 
+          className="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-slate-900 border border-slate-700 text-slate-100 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-900/90">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-emerald-500/20 text-emerald-400 rounded-xl border border-emerald-500/30">
+                  <Building2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-black text-sm sm:text-base text-white">
+                      {viewingFarm.name}
+                    </h3>
+                    {canEditFarm(viewingFarm) && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenRenameFarm(viewingFarm)}
+                        className="p-1 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded-lg transition active:scale-95 cursor-pointer"
+                        title="Edit Farm Name"
+                        aria-label="Edit Farm Name"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+                      {viewingFarm.ageWeek}
+                    </span>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      viewingFarm.status === 'COMPLETED'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                    }`}>
+                      {viewingFarm.status === 'COMPLETED' ? '🟢 Submitted' : '🟡 In Progress'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    {viewingFarm.season} Brood • Unit Details & Complete Submissions History
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleOpenFarmDetails(viewingFarm)}
+                  disabled={isLoadingFarmDetails}
+                  className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl border border-slate-700 transition cursor-pointer text-xs font-semibold flex items-center gap-1"
+                  title="Refresh farm data from persistent database"
+                >
+                  <Cloud className={`w-3.5 h-3.5 ${isLoadingFarmDetails ? 'animate-spin text-sky-400' : 'text-slate-400'}`} />
+                  <span className="hidden sm:inline text-[11px]">Refresh</span>
+                </button>
+                <button 
+                  onClick={() => {
+                    setViewingFarm(null);
+                    setViewingFarmDetails(null);
+                  }}
+                  className="text-slate-400 hover:text-white p-1.5 rounded-xl hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable Content Body */}
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+              {isLoadingFarmDetails ? (
+                <div className="py-12 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                  <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+                  <span>Loading persistent farm details and submissions...</span>
+                </div>
+              ) : (
+                <>
+                  {/* Summary Metric Cards */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                        Sheds
+                      </span>
+                      <span className="text-base font-black text-white font-mono mt-0.5 block">
+                        {viewingFarmDetails?.sheds?.length ?? viewingFarm._count?.sheds ?? 0}
+                      </span>
+                    </div>
+
+                    <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                        Submissions
+                      </span>
+                      <span className="text-base font-black text-emerald-400 font-mono mt-0.5 block">
+                        {viewingFarmDetails?.submissions?.length ?? viewingFarm.submissionCount ?? (viewingFarm.status === 'COMPLETED' ? 1 : 0)}
+                      </span>
+                    </div>
+
+                    <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                        Total Birds
+                      </span>
+                      <span className="text-base font-black text-white font-mono mt-0.5 block">
+                        {viewingFarmDetails?.audit?.totalBirdsSubmitted ?? viewingFarm.audit?.totalBirdsSubmitted ?? '—'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                        Avg Weights
+                      </span>
+                      <span className="text-xs font-bold text-sky-400 font-mono mt-1 block">
+                        ♀ {viewingFarmDetails?.audit?.femaleAvgWeight ?? viewingFarm.audit?.femaleAvgWeight ?? '—'}g / ♂ {viewingFarmDetails?.audit?.maleAvgWeight ?? viewingFarm.audit?.maleAvgWeight ?? '—'}g
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Shed Layout & Line-Wise Uniformity Roster */}
+                  {viewingFarmDetails?.sheds && viewingFarmDetails.sheds.length > 0 ? (
+                    <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-800 space-y-3">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-slate-200">Configured Sheds ({viewingFarmDetails.sheds.length})</span>
+                        <span className="text-[10px] text-slate-400 font-medium">Shed-wise gender & line uniformity</span>
+                      </div>
+
+                      <div className="space-y-2.5">
+                        {viewingFarmDetails.sheds.map((shed: any, idx: number) => {
+                          const shedParts = shed.parts || [];
+                          const shedLines = shedParts.flatMap((p: any) => p.lines || []);
+                          const shedWeights = shedLines.flatMap((l: any) => l.weights || []);
+                          const count = shedWeights.length;
+                          const avg = count > 0 ? Math.round((shedWeights.reduce((a: number, b: number) => a + b, 0) / count) * 10) / 10 : 0;
+                          const lower10 = avg * 0.9;
+                          const upper10 = avg * 1.1;
+                          const inRange = count > 0 ? shedWeights.filter((w: number) => w >= lower10 && w <= upper10).length : 0;
+                          const unifPct = count > 0 ? Math.round((inRange / count) * 1000) / 10 : 0;
+
+                          return (
+                            <div key={shed.id || idx} className="p-2.5 bg-slate-900 rounded-xl border border-slate-800 space-y-2">
+                              <div className="flex items-center justify-between text-xs">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-black text-white">{shed.name || `Shed ${idx + 1}`}</span>
+                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                                    shed.type === 'Male'
+                                      ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                                      : 'bg-pink-500/20 text-pink-300 border-pink-500/30'
+                                  }`}>
+                                    {shed.type === 'Male' ? '♂ Male' : '♀ Female'}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] font-mono font-bold text-slate-300">
+                                  {count > 0 ? `${count} birds • ${avg}g • ${unifPct}% Unif` : '0 birds weighed'}
+                                </div>
+                              </div>
+
+                              {/* Line-wise uniformity breakdown */}
+                              {shedLines.length > 0 && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1 border-t border-slate-800">
+                                  {shedLines.map((line: any, lIdx: number) => {
+                                    const lWeights: number[] = line.weights || [];
+                                    const lCount = lWeights.length;
+                                    const lAvg = lCount > 0 ? Math.round((lWeights.reduce((a, b) => a + b, 0) / lCount) * 10) / 10 : 0;
+                                    const lLower = lAvg * 0.9;
+                                    const lUpper = lAvg * 1.1;
+                                    const lIn = lCount > 0 ? lWeights.filter(w => w >= lLower && w <= lUpper).length : 0;
+                                    const lUnif = lCount > 0 ? Math.round((lIn / lCount) * 1000) / 10 : 0;
+                                    const lStatus = lCount === 0 ? 'PENDING' : (lUnif >= 80 ? 'EXCELLENT' : (lUnif >= 70 ? 'ACCEPTABLE' : 'POOR'));
+
+                                    return (
+                                      <div key={line.id || lIdx} className="bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 flex items-center justify-between text-[11px]">
+                                        <span className="font-bold text-slate-300 truncate max-w-[120px]">{line.name}</span>
+                                        <div className="flex items-center gap-1.5 font-mono">
+                                          <span className="text-slate-400">{lCount > 0 ? `${lCount}b` : '0b'}</span>
+                                          <span className="text-emerald-400 font-semibold">{lCount > 0 ? `${lAvg}g` : '—'}</span>
+                                          <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold ${
+                                            lStatus === 'EXCELLENT' ? 'bg-emerald-500/20 text-emerald-300' :
+                                            lStatus === 'ACCEPTABLE' ? 'bg-blue-500/20 text-blue-300' :
+                                            lStatus === 'POOR' ? 'bg-rose-500/20 text-rose-300' :
+                                            'bg-amber-500/20 text-amber-300'
+                                          }`}>
+                                            {lCount > 0 ? `${lUnif}%` : 'Pending'}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 text-center space-y-1">
+                      <Layers className="w-5 h-5 text-slate-600 mx-auto" />
+                      <p className="text-xs text-slate-300 font-semibold">No sheds created yet for this farm unit</p>
+                      <p className="text-[11px] text-slate-500">
+                        Configure sheds to start staged weighing sessions.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Historical Submissions Section */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <History className="w-4 h-4 text-emerald-400" />
+                        <h4 className="font-black text-xs sm:text-sm text-white">
+                          Submission History & Batches ({viewingFarmDetails?.submissions?.length || 0})
+                        </h4>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        Persistent cloud records
+                      </span>
+                    </div>
+
+                    {(!viewingFarmDetails?.submissions || viewingFarmDetails.submissions.length === 0) ? (
+                      <div className="p-6 bg-slate-950 rounded-xl border border-slate-800 text-center space-y-1">
+                        <Scale className="w-6 h-6 text-slate-600 mx-auto" />
+                        <p className="text-xs text-slate-300 font-semibold">No batches submitted yet for this farm</p>
+                        <p className="text-[11px] text-slate-500">
+                          Field operators (Supervisor or In-Charge) will populate this list upon completing weighing sessions.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(viewingFarmDetails?.submissions || []).map((sub: any, idx: number, arr: any[]) => {
+                          const dateStr = sub.submittedAt || sub.createdAt || sub.date;
+                          const formattedDate = dateStr ? formatDateTimeIST(dateStr) : 'Recorded';
+                          return (
+                            <div 
+                              key={sub.id || idx}
+                              className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-2 hover:border-slate-700 transition"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-black text-xs text-white">
+                                      Batch #{arr.length - idx}
+                                    </span>
+                                    <span className="text-[10px] font-mono text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                                      {sub.status || 'COMPLETED'}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400">
+                                    <Clock className="w-3 h-3 text-slate-500" />
+                                    <span>{formattedDate}</span>
+                                    <span>•</span>
+                                    <span>Operator: <strong className="text-slate-200">{sub.submittedBy || sub.userName || 'Field Operator'}</strong></span>
+                                  </div>
+                                </div>
+
+                                <div className="text-right">
+                                  <span className="text-xs font-mono font-black text-white block">
+                                    {sub.totalBirdsSubmitted || sub.totalBirds || 0} birds
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-medium">weighed</span>
+                                </div>
+                              </div>
+
+                              {/* Weights breakdown bar */}
+                              <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-900 text-center">
+                                <div className="bg-slate-900/60 p-1.5 rounded-lg border border-slate-800/80">
+                                  <span className="text-[9px] text-slate-500 block uppercase font-bold">Female Avg</span>
+                                  <span className="text-xs font-mono font-bold text-pink-400">
+                                    {sub.femaleAvgWeight ? `${sub.femaleAvgWeight}g` : '—'}
+                                  </span>
+                                </div>
+                                <div className="bg-slate-900/60 p-1.5 rounded-lg border border-slate-800/80">
+                                  <span className="text-[9px] text-slate-500 block uppercase font-bold">Male Avg</span>
+                                  <span className="text-xs font-mono font-bold text-sky-400">
+                                    {sub.maleAvgWeight ? `${sub.maleAvgWeight}g` : '—'}
+                                  </span>
+                                </div>
+                                <div className="bg-slate-900/60 p-1.5 rounded-lg border border-slate-800/80">
+                                  <span className="text-[9px] text-slate-500 block uppercase font-bold">Uniformity</span>
+                                  <span className="text-xs font-mono font-bold text-emerald-400">
+                                    {sub.uniformity ? `${sub.uniformity}%` : '—'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {sub.notes && (
+                                <p className="text-[10px] text-slate-400 italic pt-1 border-t border-slate-900">
+                                  Notes: {sub.notes}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="p-3 sm:p-4 border-t border-slate-800 flex items-center justify-between shrink-0 bg-slate-900">
+              <button
+                type="button"
+                onClick={() => {
+                  onSelectFarm(viewingFarm.id);
+                  setViewingFarm(null);
+                }}
+                className="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                Set as Active Weighing Unit
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setViewingFarm(null);
+                  setViewingFarmDetails(null);
+                }}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: SAFE FARM DELETION & ARCHIVAL (Req 3: Admin Only)   */}
+      {/* ========================================================= */}
+      {deletingFarm && (
+        <div 
+          className="fixed inset-0 bg-black/75 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-slate-900 border border-slate-700 text-slate-100 rounded-2xl w-full max-w-lg p-5 space-y-4 shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-rose-500/20 text-rose-400 rounded-xl border border-rose-500/30">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-sm sm:text-base text-white">
+                    Farm Deletion & Archival Control
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Target Unit: <strong className="text-white">{deletingFarm.name}</strong>
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => {
+                  if (!isDeleting) {
+                    setDeletingFarm(null);
+                    setDeleteFeedback(null);
+                  }
+                }}
+                disabled={isDeleting}
+                className="text-slate-400 hover:text-white p-1 rounded-lg disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Feedback Alert */}
+            {deleteFeedback && (
+              <div className={`p-3 rounded-xl text-xs font-bold flex items-center gap-2 ${
+                deleteFeedback.type === 'success'
+                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                  : 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+              }`}>
+                {deleteFeedback.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                )}
+                <span>{deleteFeedback.text}</span>
+              </div>
+            )}
+
+            {/* Impact Analysis Check */}
+            {isLoadingImpact ? (
+              <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-rose-400" />
+                <span>Checking related records (sheds, bird weights, submissions)...</span>
+              </div>
+            ) : deleteImpact ? (
+              <div className="space-y-3">
+                {deleteImpact.hasRecords ? (
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-2">
+                    <div className="flex items-center gap-2 text-amber-400">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span className="font-bold text-xs">
+                        Associated Production Records Detected
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      This farm currently holds:
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-center text-[10px]">
+                      <div className="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                        <span className="text-slate-400 block font-medium">Sheds</span>
+                        <strong className="font-mono text-white text-xs">{deleteImpact.shedsCount}</strong>
+                      </div>
+                      <div className="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                        <span className="text-slate-400 block font-medium">Submissions</span>
+                        <strong className="font-mono text-amber-400 text-xs">{deleteImpact.submissionsCount}</strong>
+                      </div>
+                      <div className="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                        <span className="text-slate-400 block font-medium">Bird Weights</span>
+                        <strong className="font-mono text-emerald-400 text-xs">{deleteImpact.birdWeightsCount}</strong>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300">
+                    This farm has no submitted batch records or bird weights. It can be safely removed.
+                  </div>
+                )}
+
+                {/* Safe Policy Selection (Req 3) */}
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Choose Deletion Policy:
+                  </label>
+
+                  <div className="space-y-2">
+                    {/* Option 1: Safe Archive (Recommended) */}
+                    <div 
+                      onClick={() => setDeleteMode('archive')}
+                      className={`p-3 rounded-xl border text-xs cursor-pointer transition select-none ${
+                        deleteMode === 'archive'
+                          ? 'bg-amber-950/40 border-amber-500/70 text-amber-200'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="deletePolicy"
+                          checked={deleteMode === 'archive'}
+                          onChange={() => setDeleteMode('archive')}
+                          className="text-amber-500 focus:ring-amber-400 cursor-pointer"
+                        />
+                        <div className="flex items-center gap-1.5 font-black text-xs text-white">
+                          <Archive className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Archive Farm (Recommended — Safe & Non-Destructive)</span>
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-1 pl-5">
+                        Removes farm from active operator rosters while preserving all historical submissions, weight logs, and reports. Can be un-archived anytime.
+                      </p>
+                    </div>
+
+                    {/* Option 2: Permanent Deletion */}
+                    <div 
+                      onClick={() => setDeleteMode('permanent')}
+                      className={`p-3 rounded-xl border text-xs cursor-pointer transition select-none ${
+                        deleteMode === 'permanent'
+                          ? 'bg-rose-950/40 border-rose-500/70 text-rose-200'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="deletePolicy"
+                          checked={deleteMode === 'permanent'}
+                          onChange={() => setDeleteMode('permanent')}
+                          className="text-rose-500 focus:ring-rose-400 cursor-pointer"
+                        />
+                        <div className="flex items-center gap-1.5 font-black text-xs text-rose-300">
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                          <span>Permanent Deletion (Destructive)</span>
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-1 pl-5">
+                        Permanently deletes the farm and cascades through all related sheds, parts, lines, and bird weights.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Confirmation Input for Permanent Deletion */}
+                {deleteMode === 'permanent' && deleteImpact.hasRecords && (
+                  <div className="p-3 bg-rose-950/30 border border-rose-800/60 rounded-xl space-y-1.5 animate-in fade-in duration-150">
+                    <label className="text-[10px] font-bold text-rose-300 uppercase tracking-wider block">
+                      To confirm permanent deletion, type the exact farm name:
+                    </label>
+                    <p className="text-[11px] font-mono font-bold text-rose-200 bg-black/40 px-2 py-1 rounded">
+                      {deletingFarm.name}
+                    </p>
+                    <input
+                      type="text"
+                      value={confirmNameInput}
+                      onChange={(e) => setConfirmNameInput(e.target.value)}
+                      placeholder={`Type "${deletingFarm.name}" to confirm`}
+                      className="w-full bg-slate-950 border border-rose-700/60 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-500 font-mono"
+                    />
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {/* Action Buttons */}
+            <div className="flex gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeletingFarm(null);
+                  setDeleteFeedback(null);
+                }}
+                disabled={isDeleting}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExecuteDelete}
+                disabled={
+                  isDeleting || 
+                  isLoadingImpact || 
+                  (deleteMode === 'permanent' && deleteImpact?.hasRecords && confirmNameInput.trim().toLowerCase() !== deletingFarm.name.trim().toLowerCase())
+                }
+                className={`flex-1 font-black py-2.5 rounded-xl text-xs shadow-md transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed ${
+                  deleteMode === 'archive'
+                    ? 'bg-amber-600 hover:bg-amber-500 text-slate-950'
+                    : 'bg-rose-600 hover:bg-rose-500 text-white'
+                }`}
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Processing...</span>
+                  </>
+                ) : deleteMode === 'archive' ? (
+                  <>
+                    <Archive className="w-3.5 h-3.5" />
+                    <span>Safely Archive Farm</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Permanently Delete Farm</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EDIT / RENAME FARM (Req 1) */}
+      {renamingFarm && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 text-slate-900 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Edit2 className="w-4 h-4 text-emerald-600" />
+                <h3 className="font-black text-sm text-slate-900">Edit Farm Name</h3>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setRenamingFarm(null)} 
+                className="text-slate-400 hover:text-slate-700 p-1 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveRenameFarm} className="space-y-3">
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
+                  Farm Name *
+                </label>
+                <input
+                  type="text"
+                  value={renameFarmInput}
+                  onChange={(e) => {
+                    setRenameFarmInput(e.target.value);
+                    setRenameFarmError(null);
+                  }}
+                  placeholder="Enter farm name..."
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
+                  autoFocus
+                />
+              </div>
+
+              {renameFarmError && (
+                <div className="p-2 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{renameFarmError}</span>
+                </div>
+              )}
+
+              {renameFarmSuccess && (
+                <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-700 text-xs flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>{renameFarmSuccess}</span>
+                </div>
+              )}
+
+              <div className="text-[10px] text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                ℹ️ Renaming updates all authorized dashboards, reports, and preserves existing sheds, weights, and batch submissions.
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setRenamingFarm(null)}
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 py-2 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isRenamingFarm}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2 rounded-xl text-xs font-black shadow-xs active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  {isRenamingFarm ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <span>Save Changes</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

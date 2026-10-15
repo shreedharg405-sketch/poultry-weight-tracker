@@ -120,6 +120,9 @@ export interface StatisticalSummary {
   aPct: number;
   maPct: number;
   unif: number;
+  uniformity10Pct: number;
+  status: 'EXCELLENT' | 'ACCEPTABLE' | 'POOR' | 'INCOMPLETE';
+  isComplete: boolean;
   tolerance: number;
   bands: GradingTolerance;
 }
@@ -150,6 +153,9 @@ export function calculateFlockStats(weights: number[], stdWeight: number, weekNu
       aPct: 0,
       maPct: 0,
       unif: 0,
+      uniformity10Pct: 0,
+      status: 'INCOMPLETE',
+      isComplete: false,
       tolerance: bands.tolerance,
       bands
     };
@@ -184,6 +190,23 @@ export function calculateFlockStats(weights: number[], stdWeight: number, weekNu
 
   const sPct = Number(((sCount / count) * 100).toFixed(1));
 
+  // Official +/- 10% from mean uniformity calculation
+  const lower10Pct = avg * 0.90;
+  const upper10Pct = avg * 1.10;
+  const birdsIn10Pct = weights.filter(w => w >= lower10Pct && w <= upper10Pct).length;
+  const uniformity10Pct = Number(((birdsIn10Pct / count) * 100).toFixed(1));
+
+  let status: 'EXCELLENT' | 'ACCEPTABLE' | 'POOR' | 'INCOMPLETE' = 'POOR';
+  if (count === 0) {
+    status = 'INCOMPLETE';
+  } else if (sPct >= 80 || uniformity10Pct >= 80) {
+    status = 'EXCELLENT';
+  } else if (sPct >= 70 || uniformity10Pct >= 70) {
+    status = 'ACCEPTABLE';
+  } else {
+    status = 'POOR';
+  }
+
   return {
     count,
     avg,
@@ -205,6 +228,9 @@ export function calculateFlockStats(weights: number[], stdWeight: number, weekNu
     aPct: Number(((aCount / count) * 100).toFixed(1)),
     maPct: Number(((maCount / count) * 100).toFixed(1)),
     unif: sPct,
+    uniformity10Pct,
+    status,
+    isComplete: count > 0,
     tolerance: bands.tolerance,
     bands
   };

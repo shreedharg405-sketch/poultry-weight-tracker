@@ -65,8 +65,12 @@ export interface FarmSummary {
   assignedUserNames?: string[];
   updatedAt: string;
   createdAt?: string;
-  _count?: { sheds: number };
+  isArchived?: boolean;
+  archivedAt?: string | null;
+  submissionCount?: number;
+  _count?: { sheds: number; submissions?: number };
   audit?: FarmAudit;
+  submissions?: any[];
 }
 
 export interface FullFarmData {
@@ -80,8 +84,26 @@ export interface FullFarmData {
   assignedUserNames?: string[];
   updatedAt: string;
   createdAt?: string;
+  isArchived?: boolean;
+  archivedAt?: string | null;
+  submissionCount?: number;
+  _count?: { sheds: number; submissions?: number };
   sheds: ShedData[];
   audit?: FarmAudit;
+  submissions?: any[];
+}
+
+export interface DeleteImpactResult {
+  farmId: string;
+  farmName: string;
+  isArchived?: boolean;
+  hasRecords: boolean;
+  shedsCount: number;
+  partsCount: number;
+  linesCount: number;
+  submissionsCount: number;
+  birdWeightsCount: number;
+  logsCount: number;
 }
 
 export interface FarmData {
@@ -143,8 +165,9 @@ export function getAuthHeaders(): Record<string, string> {
 
 export const cloudApi = {
   // 1. Fetch all farm summaries
-  async getFarms(): Promise<FarmSummary[]> {
-    const res = await fetch(`${getApiBaseUrl()}/farms`, {
+  async getFarms(includeArchived = false): Promise<FarmSummary[]> {
+    const url = includeArchived ? `${getApiBaseUrl()}/farms?includeArchived=true` : `${getApiBaseUrl()}/farms`;
+    const res = await fetch(url, {
       headers: getAuthHeaders(),
     });
     if (!res.ok) throw new Error(`Failed to fetch farms (${res.status})`);
@@ -165,7 +188,10 @@ export const cloudApi = {
       headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
-    if (!res.ok) throw new Error(`Failed to create farm (${res.status})`);
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error || `Failed to create farm (${res.status})`);
+    }
     return res.json();
   },
 
@@ -174,7 +200,10 @@ export const cloudApi = {
     const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}`, {
       headers: getAuthHeaders(),
     });
-    if (!res.ok) throw new Error(`Failed to fetch farm details (${res.status})`);
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error || `Failed to fetch farm details (${res.status})`);
+    }
     return res.json();
   },
 
@@ -182,19 +211,53 @@ export const cloudApi = {
   async updateFarmDetails(farmId: string, data: { name?: string; flockDate?: string; ageWeek?: string; season?: string }): Promise<any> {
     const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/details`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
-    if (!res.ok) throw new Error(`Failed to update farm details (${res.status})`);
-    return res.json();
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(result.error || `Failed to update farm details (${res.status})`);
+    }
+    return result;
   },
 
-  // 5. Delete farm
-  async deleteFarm(farmId: string): Promise<boolean> {
+  // 5. Delete or Archive farm (Admin only)
+  async deleteFarm(farmId: string, options?: { mode?: 'archive' | 'permanent'; confirmFarmName?: string }): Promise<{ success: boolean; archived?: boolean; permanentlyDeleted?: boolean; message: string }> {
     const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(options || { mode: 'archive' }),
     });
-    return res.ok;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to delete/archive farm (${res.status})`);
+    }
+    return data;
+  },
+
+  // 5b. Get Farm Delete Impact (Admin only)
+  async getFarmDeleteImpact(farmId: string): Promise<DeleteImpactResult> {
+    const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/delete-impact`, {
+      headers: getAuthHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to inspect farm deletion impact (${res.status})`);
+    }
+    return data;
+  },
+
+  // 5c. Restore Archived Farm (Admin only)
+  async restoreFarm(farmId: string): Promise<{ success: boolean; message: string }> {
+    const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/restore`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to restore farm (${res.status})`);
+    }
+    return data;
   },
 
   // 6. Push single weight entry
@@ -230,29 +293,37 @@ export const cloudApi = {
   async addShed(data: { farmId: string; name: string; type: 'Female' | 'Male'; order?: number }): Promise<any> {
     const res = await fetch(`${getApiBaseUrl()}/sheds`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
-    if (!res.ok) throw new Error(`Failed to add shed (${res.status})`);
-    return res.json();
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.error || `Failed to add shed (${res.status})`);
+    return result;
   },
 
   // 10. Delete shed
   async deleteShed(shedId: string): Promise<boolean> {
     const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
-    return res.ok;
+    if (!res.ok) {
+      const result = await res.json().catch(() => ({}));
+      throw new Error(result.error || `Failed to delete shed (${res.status})`);
+    }
+    return true;
   },
 
-  // 11. Rename shed
+  // 11. Rename / change type of shed
   async updateShed(shedId: string, data: { name?: string; type?: 'Female' | 'Male' }): Promise<any> {
     const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
-    return res.json();
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.error || `Failed to update shed (${res.status})`);
+    return result;
   },
 
   // 12. Add Part
@@ -747,7 +818,7 @@ export const cloudApi = {
 // --------------------------------------------------------------------------
 export interface PendingSyncItem {
   id: string;
-  type: 'PUSH_WEIGHT' | 'DELETE_WEIGHT' | 'SYNC_FARM';
+  type: 'PUSH_WEIGHT' | 'DELETE_WEIGHT' | 'SYNC_FARM' | 'UPDATE_SHED';
   payload: any;
   timestamp: string;
   retries: number;
@@ -800,6 +871,9 @@ export const offlineQueue = {
           successCount++;
         } else if (item.type === 'SYNC_FARM') {
           await cloudApi.syncFullFarm(item.payload.farmId, item.payload.data);
+          successCount++;
+        } else if (item.type === 'UPDATE_SHED') {
+          await cloudApi.updateShed(item.payload.shedId, item.payload.data);
           successCount++;
         }
       } catch (err) {
