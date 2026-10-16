@@ -693,66 +693,66 @@ export const ExcelReplicaDashboard: React.FC = () => {
       {/* 3. ACTIVE TAB CONTENT */}
 
       {/* ================================================================= */}
-      {/* VIEW 1: CONSOLIDATED CONCLUSION ("Cons" Sheet Replica)            */}
+      {/* VIEW 1: CONSOLIDATED CONCLUSION ("Cons" Sheet Replica - Compact)  */}
       {/* ================================================================= */}
       {activeTab === 'Cons' && (
-        <div className="space-y-6">
+        <div className="space-y-3.5">
           
           {/* Top Cards: Female vs Male Overall Breakdown */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             
             {/* Female Overall Card */}
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl relative overflow-hidden">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-5">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-pink-500/10 border border-pink-500/30 flex items-center justify-center text-pink-400 font-bold text-lg">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 sm:p-4 shadow-lg relative overflow-hidden">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-pink-500/10 border border-pink-500/30 flex items-center justify-center text-pink-400 font-bold text-base">
                     ♀
                   </div>
                   <div>
-                    <h3 className="font-black text-base sm:text-lg text-white">Female Overall (W{femaleAgeWeek}F)</h3>
-                    <p className="text-[11px] text-slate-400">Target Standard Weight: <span className="text-white font-mono font-bold">{stdWeightFemale}g</span></p>
+                    <h3 className="font-black text-sm sm:text-base text-white">Female Overall (W{femaleAgeWeek}F)</h3>
+                    <p className="text-[10px] text-slate-400">Target Standard Weight: <span className="text-white font-mono font-bold">{stdWeightFemale}g</span></p>
                   </div>
                 </div>
-                <span className="text-xs bg-pink-950/70 text-pink-300 font-bold px-3 py-1 rounded-full border border-pink-800/40">
+                <span className="text-[11px] bg-pink-950/70 text-pink-300 font-bold px-2.5 py-0.5 rounded-full border border-pink-800/40">
                   {consolidatedStats.fStats.count} birds weighed
                 </span>
               </div>
 
-              <div className="grid grid-cols-3 gap-3 text-center mb-5">
-                <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold tracking-wider">Act B.Wt</span>
-                  <div className="text-xl sm:text-2xl font-black text-emerald-400 mt-0.5">
+              <div className="grid grid-cols-3 gap-2 text-center mb-3">
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[9px] text-slate-400 uppercase font-semibold tracking-wider">Act B.Wt</span>
+                  <div className="text-lg sm:text-xl font-black text-emerald-400 mt-0.5">
                     {consolidatedStats.fStats.avg}g
                   </div>
-                  <span className={`text-[10px] font-mono font-bold ${consolidatedStats.fStats.diff >= 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  <span className={`text-[9px] font-mono font-bold ${consolidatedStats.fStats.diff >= 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
                     Diff: {consolidatedStats.fStats.diff > 0 ? `+${consolidatedStats.fStats.diff}` : consolidatedStats.fStats.diff}g
                   </span>
                 </div>
 
-                <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold tracking-wider">Uniformity (S%)</span>
-                  <div className="text-xl sm:text-2xl font-black text-amber-400 mt-0.5">
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[9px] text-slate-400 uppercase font-semibold tracking-wider">Uniformity (S%)</span>
+                  <div className="text-lg sm:text-xl font-black text-amber-400 mt-0.5">
                     {consolidatedStats.fStats.unif}%
                   </div>
-                  <span className="text-[10px] text-slate-400 font-medium">Standard Target ±10%</span>
+                  <span className="text-[9px] text-slate-400 font-medium">Target ±10%</span>
                 </div>
 
-                <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold tracking-wider">CV % (F-Factor)</span>
-                  <div className="text-xl sm:text-2xl font-black text-sky-400 mt-0.5">
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[9px] text-slate-400 uppercase font-semibold tracking-wider">CV % (F-Factor)</span>
+                  <div className="text-lg sm:text-xl font-black text-sky-400 mt-0.5">
                     {consolidatedStats.fStats.cv}%
                   </div>
-                  <span className="text-[10px] text-slate-400 font-mono">
-                    Min {consolidatedStats.fStats.min} / Max {consolidatedStats.fStats.max}
+                  <span className="text-[9px] text-slate-400 font-mono">
+                    {consolidatedStats.fStats.min}g - {consolidatedStats.fStats.max}g
                   </span>
                 </div>
               </div>
 
               {/* Grade Spread Progress Bar */}
-              <div className="bg-slate-950/90 p-4 rounded-2xl border border-slate-800 text-xs">
-                <div className="flex flex-wrap justify-between text-[11px] text-slate-400 font-semibold mb-2 gap-2">
+              <div className="bg-slate-950/90 p-2.5 rounded-xl border border-slate-800 text-xs">
+                <div className="flex flex-wrap justify-between text-[10px] text-slate-400 font-semibold mb-1.5 gap-2">
                   <span className="text-white font-bold">Standard Grade Spread:</span>
-                  <div className="flex gap-2 text-[10px] font-mono">
+                  <div className="flex gap-2 text-[9px] font-mono">
                     <span className="text-rose-400">MB: {consolidatedStats.fStats.mb}%</span>
                     <span className="text-amber-400">B: {consolidatedStats.fStats.b}%</span>
                     <span className="text-emerald-400 font-bold">S: {consolidatedStats.fStats.s}%</span>
@@ -760,7 +760,7 @@ export const ExcelReplicaDashboard: React.FC = () => {
                     <span className="text-purple-400">MA: {consolidatedStats.fStats.ma}%</span>
                   </div>
                 </div>
-                <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden flex shadow-inner">
+                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden flex shadow-inner">
                   <div style={{ width: `${consolidatedStats.fStats.mb}%` }} className="bg-rose-500" title={`MB: ${consolidatedStats.fStats.mb}%`} />
                   <div style={{ width: `${consolidatedStats.fStats.b}%` }} className="bg-amber-500" title={`B: ${consolidatedStats.fStats.b}%`} />
                   <div style={{ width: `${consolidatedStats.fStats.s}%` }} className="bg-emerald-500" title={`S: ${consolidatedStats.fStats.s}%`} />
@@ -771,57 +771,57 @@ export const ExcelReplicaDashboard: React.FC = () => {
             </div>
 
             {/* Male Overall Card */}
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl relative overflow-hidden">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-5">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 font-bold text-lg">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 sm:p-4 shadow-lg relative overflow-hidden">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 font-bold text-base">
                     ♂
                   </div>
                   <div>
-                    <h3 className="font-black text-base sm:text-lg text-white">Male Overall (M{maleAgeWeek})</h3>
-                    <p className="text-[11px] text-slate-400">Target Standard Weight: <span className="text-white font-mono font-bold">{stdWeightMale}g</span></p>
+                    <h3 className="font-black text-sm sm:text-base text-white">Male Overall (M{maleAgeWeek})</h3>
+                    <p className="text-[10px] text-slate-400">Target Standard Weight: <span className="text-white font-mono font-bold">{stdWeightMale}g</span></p>
                   </div>
                 </div>
-                <span className="text-xs bg-blue-950/70 text-blue-300 font-bold px-3 py-1 rounded-full border border-blue-800/40">
+                <span className="text-[11px] bg-blue-950/70 text-blue-300 font-bold px-2.5 py-0.5 rounded-full border border-blue-800/40">
                   {consolidatedStats.mStats.count} birds weighed
                 </span>
               </div>
 
-              <div className="grid grid-cols-3 gap-3 text-center mb-5">
-                <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold tracking-wider">Act B.Wt</span>
-                  <div className="text-xl sm:text-2xl font-black text-emerald-400 mt-0.5">
+              <div className="grid grid-cols-3 gap-2 text-center mb-3">
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[9px] text-slate-400 uppercase font-semibold tracking-wider">Act B.Wt</span>
+                  <div className="text-lg sm:text-xl font-black text-emerald-400 mt-0.5">
                     {consolidatedStats.mStats.avg}g
                   </div>
-                  <span className={`text-[10px] font-mono font-bold ${consolidatedStats.mStats.diff >= 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  <span className={`text-[9px] font-mono font-bold ${consolidatedStats.mStats.diff >= 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
                     Diff: {consolidatedStats.mStats.diff > 0 ? `+${consolidatedStats.mStats.diff}` : consolidatedStats.mStats.diff}g
                   </span>
                 </div>
 
-                <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold tracking-wider">Uniformity (S%)</span>
-                  <div className="text-xl sm:text-2xl font-black text-amber-400 mt-0.5">
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[9px] text-slate-400 uppercase font-semibold tracking-wider">Uniformity (S%)</span>
+                  <div className="text-lg sm:text-xl font-black text-amber-400 mt-0.5">
                     {consolidatedStats.mStats.unif}%
                   </div>
-                  <span className="text-[10px] text-slate-400 font-medium">Standard Target ±10%</span>
+                  <span className="text-[9px] text-slate-400 font-medium">Target ±10%</span>
                 </div>
 
-                <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold tracking-wider">CV % (F-Factor)</span>
-                  <div className="text-xl sm:text-2xl font-black text-sky-400 mt-0.5">
+                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[9px] text-slate-400 uppercase font-semibold tracking-wider">CV % (F-Factor)</span>
+                  <div className="text-lg sm:text-xl font-black text-sky-400 mt-0.5">
                     {consolidatedStats.mStats.cv}%
                   </div>
-                  <span className="text-[10px] text-slate-400 font-mono">
-                    Min {consolidatedStats.mStats.min} / Max {consolidatedStats.mStats.max}
+                  <span className="text-[9px] text-slate-400 font-mono">
+                    {consolidatedStats.mStats.min}g - {consolidatedStats.mStats.max}g
                   </span>
                 </div>
               </div>
 
               {/* Grade Spread Progress Bar */}
-              <div className="bg-slate-950/90 p-4 rounded-2xl border border-slate-800 text-xs">
-                <div className="flex flex-wrap justify-between text-[11px] text-slate-400 font-semibold mb-2 gap-2">
+              <div className="bg-slate-950/90 p-2.5 rounded-xl border border-slate-800 text-xs">
+                <div className="flex flex-wrap justify-between text-[10px] text-slate-400 font-semibold mb-1.5 gap-2">
                   <span className="text-white font-bold">Standard Grade Spread:</span>
-                  <div className="flex gap-2 text-[10px] font-mono">
+                  <div className="flex gap-2 text-[9px] font-mono">
                     <span className="text-rose-400">MB: {consolidatedStats.mStats.mb}%</span>
                     <span className="text-amber-400">B: {consolidatedStats.mStats.b}%</span>
                     <span className="text-emerald-400 font-bold">S: {consolidatedStats.mStats.s}%</span>
@@ -829,7 +829,7 @@ export const ExcelReplicaDashboard: React.FC = () => {
                     <span className="text-purple-400">MA: {consolidatedStats.mStats.ma}%</span>
                   </div>
                 </div>
-                <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden flex shadow-inner">
+                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden flex shadow-inner">
                   <div style={{ width: `${consolidatedStats.mStats.mb}%` }} className="bg-rose-500" title={`MB: ${consolidatedStats.mStats.mb}%`} />
                   <div style={{ width: `${consolidatedStats.mStats.b}%` }} className="bg-amber-500" title={`B: ${consolidatedStats.mStats.b}%`} />
                   <div style={{ width: `${consolidatedStats.mStats.s}%` }} className="bg-emerald-500" title={`S: ${consolidatedStats.mStats.s}%`} />
@@ -842,7 +842,7 @@ export const ExcelReplicaDashboard: React.FC = () => {
           </div>
 
           {/* Shed-Wise Comparison Table (Excel Cons Sheet Columns I to L) */}
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
             <div className="px-6 py-4 border-b border-slate-800 flex flex-wrap justify-between items-center bg-slate-900/90 gap-2">
               <div>
                 <h3 className="font-black text-base text-white flex items-center gap-2">

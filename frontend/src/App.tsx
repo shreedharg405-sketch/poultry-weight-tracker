@@ -641,7 +641,6 @@ export default function App() {
   };
 
   const handlePopState = (event?: PopStateEvent) => {
-    const active = currentScreenRef.current;
     const targetState = event?.state as { screen?: ScreenType; shedId?: string; partId?: string; lineId?: number | string } | null;
 
     // Restore hierarchy identifiers from event state if available
@@ -649,6 +648,27 @@ export default function App() {
     if (targetState?.partId) setSelectedPartId(targetState.partId);
     if (targetState?.lineId !== undefined) setSelectedLineId(targetState.lineId);
 
+    // If explicit screen state exists in popstate, honor it directly
+    if (targetState?.screen) {
+      if (targetState.screen === 'home') {
+        setCurrentScreen('home');
+        currentScreenRef.current = 'home';
+        return;
+      }
+      setCurrentScreen(targetState.screen);
+      currentScreenRef.current = targetState.screen;
+      return;
+    }
+
+    // Direct hash check
+    const hash = window.location.hash;
+    if (!hash || hash === '#home' || hash === '#') {
+      setCurrentScreen('home');
+      currentScreenRef.current = 'home';
+      return;
+    }
+
+    const active = currentScreenRef.current;
     // If active screen is already 'home': swiping back on home triggers the Exit confirmation
     if (active === 'home') {
       setShowExitConfirm(true);
@@ -658,9 +678,9 @@ export default function App() {
 
     // While inside the farm hierarchy: ALWAYS step back one level hierarchically
     // (weigh_pad -> line_select -> part_select -> shed_select -> home)
-    // Never jump directly to home or exit while inside farm!
     const parent = getParentScreen(active);
     setCurrentScreen(parent);
+    currentScreenRef.current = parent;
     window.history.replaceState(
       { screen: parent, shedId: selectedShedIdRef.current, partId: selectedPartIdRef.current },
       '',
@@ -687,8 +707,15 @@ export default function App() {
     };
   }, []);
 
+  // Dedicated Home Navigation: always directly returns to Dashboard Home
+  const handleGoHome = useCallback(() => {
+    setCurrentScreen('home');
+    currentScreenRef.current = 'home';
+    window.history.pushState({ screen: 'home' }, '', '#home');
+  }, []);
+
   // Consistent UI Back Button handler: steps down hierarchical level identically to swipe back
-  const handleGoBack = () => {
+  const handleGoBack = useCallback(() => {
     const active = currentScreenRef.current;
     if (active === 'home') {
       setShowExitConfirm(true);
@@ -696,12 +723,13 @@ export default function App() {
     }
     const parent = getParentScreen(active);
     setCurrentScreen(parent);
+    currentScreenRef.current = parent;
     window.history.pushState(
       { screen: parent, shedId: selectedShedIdRef.current, partId: selectedPartIdRef.current },
       '',
       getHashForScreen(parent)
     );
-  };
+  }, []);
 
   // Synchronized Forward Navigation Helpers with Hash Anchors (Recognized by Android Chrome)
   const navigateToShedSelect = () => {
@@ -1141,19 +1169,33 @@ export default function App() {
 
   // Delete / Archive Farm Handler (Req 3: Admin Only)
   const handleDeleteFarm = async (farmId: string, options?: { mode?: 'archive' | 'permanent'; confirmFarmName?: string }) => {
+    // 1. Optimistically remove farm immediately from UI & local storage
+    setFarmsList(prev => {
+      const remaining = prev.filter(f => f.id !== farmId);
+      localStorage.setItem('poultry_farms_list_v4', JSON.stringify(remaining));
+      return remaining;
+    });
+
     try {
       await cloudApi.deleteFarm(farmId, options);
       // Refresh farms list from cloud
       const updatedFarms = await cloudApi.getFarms();
-      setFarmsList(updatedFarms);
-      localStorage.setItem('poultry_farms_list_v4', JSON.stringify(updatedFarms));
+      if (Array.isArray(updatedFarms)) {
+        setFarmsList(updatedFarms);
+        localStorage.setItem('poultry_farms_list_v4', JSON.stringify(updatedFarms));
 
-      // If active farm was deleted, switch to first remaining farm
-      if (activeFarmId === farmId && updatedFarms.length > 0) {
-        switchFarm(updatedFarms[0].id);
+        // If active farm was deleted, switch to first remaining farm
+        if (activeFarmId === farmId && updatedFarms.length > 0) {
+          switchFarm(updatedFarms[0].id);
+        }
       }
       showToast(options?.mode === 'permanent' ? 'Farm permanently removed' : 'Farm safely archived');
     } catch (err: any) {
+      // Re-fetch in case of failure
+      const reverted = await cloudApi.getFarms().catch(() => null);
+      if (reverted && Array.isArray(reverted)) {
+        setFarmsList(reverted);
+      }
       showToast(err.message || 'Failed to delete farm');
       throw err;
     }
@@ -2008,14 +2050,8 @@ export default function App() {
       {isInitialLoading && <LoadingScreen message={loadingMessage} />}
       {isExporting && <LoadingScreen message={exportMessage} />}
 
-      <div className="flex justify-center bg-slate-100 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
-        <div className={`w-full min-h-screen bg-slate-50 border-x border-slate-200 flex flex-col shadow-2xl relative pb-6 transition-all duration-300 ${
-          currentUserRole === 'Supervisor'
-            ? 'max-w-md mx-auto'
-            : (currentUserRole === 'Admin' || currentUserRole === 'Manager') && (currentScreen === 'home' || currentScreen === 'conclusion' || currentScreen === 'history' || currentScreen === 'setup')
-              ? 'max-w-7xl md:px-4 lg:px-6'
-              : 'max-w-md mx-auto'
-        }`}>
+      <div className="flex justify-center bg-slate-100/70 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
+        <div className="w-full max-w-7xl mx-auto min-h-screen bg-slate-50 border-x border-slate-200/80 flex flex-col shadow-xl relative pb-8 transition-all duration-300 px-3 sm:px-6 lg:px-8">
         
         {!isAuthenticated ? (
           <LoginScreen onLoginSuccess={handleLoginSuccess} />
@@ -2089,7 +2125,7 @@ export default function App() {
             canSaveDraft={currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge'}
             isSavingDraft={isSavingDraft}
             onSaveDraft={handleManualSaveDraft}
-            onBack={handleGoBack}
+            onBack={handleGoHome}
             onSubmitUpload={handleCompleteFarmSubmission}
             onRetryUpload={handleCompleteFarmSubmission}
             onDownloadExcel={handleDownloadExcel}
@@ -2100,25 +2136,29 @@ export default function App() {
         {/* ========================================================= */}
         {/* 2. SHED SELECTION SCREEN (CLEAN LIGHT CARDS)              */}
         {/* ========================================================= */}
+        {/* ========================================================= */}
+        {/* 2. SHED SELECTION SCREEN (CLEAN LIGHT CARDS)              */}
+        {/* ========================================================= */}
         {currentScreen === 'shed_select' && (
-          <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
-            <div className="flex items-center justify-between mb-3.5">
+          <div className="flex-1 flex flex-col p-2 sm:p-4 animate-in slide-in-from-right duration-150">
+            <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={handleGoBack} 
+                onClick={handleGoHome} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                title="Return to Dashboard Home"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
               </button>
-              <h2 className="text-xs font-black text-emerald-700 uppercase tracking-wide bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+              <h2 className="text-xs font-black text-emerald-700 uppercase tracking-wide bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
                 Select Shed
               </h2>
             </div>
 
             {/* Active Farm Header with Rename Option for All Authorized Roles */}
-            <div className="flex items-center justify-between bg-white px-3.5 py-2.5 rounded-2xl border border-slate-200 shadow-2xs mb-3">
+            <div className="flex items-center justify-between bg-white px-4 py-3 rounded-2xl border border-slate-200 shadow-2xs mb-4">
               <div className="min-w-0">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Active Farm</span>
-                <span className="text-sm font-black text-slate-900 truncate block">{farmName || 'Farm Unit'}</span>
+                <span className="text-base font-black text-slate-900 truncate block">{farmName || 'Farm Unit'}</span>
               </div>
               <button
                 type="button"
@@ -2127,19 +2167,19 @@ export default function App() {
                   setEditFarmNameError(null);
                   setShowEditFarmModal(true);
                 }}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200 text-xs font-bold transition active:scale-95 cursor-pointer shrink-0"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200 text-xs font-bold transition active:scale-95 cursor-pointer shrink-0"
                 title="Rename Farm"
               >
                 <Edit3 className="w-3.5 h-3.5" />
-                <span className="text-[11px]">Edit Name</span>
+                <span className="text-xs">Edit Name</span>
               </button>
             </div>
 
-            <p className="text-xs text-slate-500 mb-2.5 px-1 font-medium">Choose a shed or toggle its Female / Male flock gender:</p>
+            <p className="text-xs text-slate-500 mb-3 px-1 font-medium">Choose a shed or toggle its Female / Male flock gender:</p>
 
-            <div className="space-y-3 overflow-y-auto flex-1 pb-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6 overflow-y-auto flex-1">
               {sheds.length === 0 ? (
-                <div className="bg-white p-8 rounded-3xl border border-slate-200 text-center space-y-3 my-4 shadow-xs">
+                <div className="col-span-full bg-white p-8 rounded-3xl border border-slate-200 text-center space-y-3 my-4 shadow-xs">
                   <div className="w-14 h-14 bg-emerald-50 rounded-2xl flex items-center justify-center mx-auto text-emerald-600 border border-emerald-200">
                     <Grid className="w-7 h-7" />
                   </div>
@@ -2162,67 +2202,79 @@ export default function App() {
                   return (
                     <div
                       key={s.id}
-                      className="w-full bg-white hover:bg-slate-50/70 p-4 rounded-2xl border border-slate-200 flex flex-col gap-3 shadow-xs transition"
+                      className="w-full bg-white hover:bg-slate-50/70 p-4 rounded-2xl border border-slate-200 flex flex-col justify-between gap-3 shadow-xs transition"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <div 
-                          className="flex items-center gap-2 cursor-pointer min-w-0"
-                          onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
-                        >
-                          <span className="font-black text-base text-slate-900 hover:text-emerald-600 transition truncate">
-                            {s.name}
-                          </span>
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <div 
+                            className="flex items-center gap-2 cursor-pointer min-w-0"
+                            onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
+                          >
+                            <span className="font-black text-base text-slate-900 hover:text-emerald-600 transition truncate">
+                              {s.name}
+                            </span>
+                          </div>
+
+                          {/* Interactive High-Contrast Shed-Wise Female/Male Selection */}
+                          <div 
+                            className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0" 
+                            onClick={e => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (s.type !== 'Female') handleToggleShedGender(s.id, 'Female');
+                              }}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                                s.type === 'Female'
+                                  ? 'bg-pink-600 text-white shadow-xs'
+                                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                              }`}
+                              title="Set shed to Female"
+                            >
+                              <span>♀ Female</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (s.type !== 'Male') handleToggleShedGender(s.id, 'Male');
+                              }}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                                s.type === 'Male'
+                                  ? 'bg-blue-600 text-white shadow-xs'
+                                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                              }`}
+                              title="Set shed to Male"
+                            >
+                              <span>♂ Male</span>
+                            </button>
+                          </div>
                         </div>
 
-                        {/* Interactive High-Contrast Shed-Wise Female/Male Selection */}
-                        <div 
-                          className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0" 
-                          onClick={e => e.stopPropagation()}
-                        >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (s.type !== 'Female') handleToggleShedGender(s.id, 'Female');
-                            }}
-                            className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
-                              s.type === 'Female'
-                                ? 'bg-pink-600 text-white shadow-xs'
-                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                            }`}
-                            title="Set shed to Female"
-                          >
-                            <span>♀ Female</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (s.type !== 'Male') handleToggleShedGender(s.id, 'Male');
-                            }}
-                            className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
-                              s.type === 'Male'
-                                ? 'bg-blue-600 text-white shadow-xs'
-                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                            }`}
-                            title="Set shed to Male"
-                          >
-                            <span>♂ Male</span>
-                          </button>
+                        <div className="text-xs text-slate-500 mb-2">
+                          {(s.parts || []).length} {(s.parts || []).length === 1 ? 'Part' : 'Parts'} • {sStats.count} birds weighed
                         </div>
                       </div>
 
                       <div 
-                        className="flex items-center justify-between text-xs text-slate-500 pt-1 border-t border-slate-100 cursor-pointer"
+                        className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100 cursor-pointer"
                         onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
                       >
-                        <span className="font-medium">
-                          {(s.parts || []).length} {(s.parts || []).length === 1 ? 'Part' : 'Parts'} • {sStats.count} birds weighed
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-black text-emerald-600 text-sm">{sStats.avg > 0 ? `${sStats.avg}g` : '—'}</span>
-                          <span className="text-[11px] font-bold text-amber-600 font-mono">Unif: {sStats.count > 0 ? `${sStats.uniformity10Pct}%` : '—'}</span>
-                          <ChevronRight className="w-4 h-4 text-slate-400" />
+                        <div className="flex items-center gap-3">
+                          <div>
+                            <span className="text-[10px] text-slate-400 block uppercase font-bold">Avg</span>
+                            <span className="font-mono font-black text-emerald-600 text-sm">{sStats.avg > 0 ? `${sStats.avg}g` : '—'}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block uppercase font-bold">Unif (±10%)</span>
+                            <span className="text-xs font-bold text-amber-600 font-mono">{sStats.count > 0 ? `${sStats.uniformity10Pct}%` : '—'}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                          <span>Open Parts</span>
+                          <ChevronRight className="w-3.5 h-3.5 text-emerald-600" />
                         </div>
                       </div>
                     </div>
@@ -2232,7 +2284,7 @@ export default function App() {
 
               <button
                 onClick={() => setShowAddShedModal(true)}
-                className="w-full py-3 bg-white hover:bg-slate-50 text-emerald-700 rounded-2xl text-xs font-bold flex items-center justify-center gap-1.5 border border-dashed border-emerald-300 transition cursor-pointer shadow-xs"
+                className="col-span-full py-3.5 bg-white hover:bg-slate-50 text-emerald-700 rounded-2xl text-xs font-bold flex items-center justify-center gap-1.5 border border-dashed border-emerald-300 transition cursor-pointer shadow-xs"
               >
                 <Plus className="w-4 h-4" /> Add New Shed
               </button>
@@ -2244,17 +2296,26 @@ export default function App() {
         {/* 3. PART SELECTION SCREEN (CLEAN LIGHT CARDS)              */}
         {/* ========================================================= */}
         {currentScreen === 'part_select' && activeShed && (
-          <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
-            <div className="flex items-center justify-between mb-3.5">
-              <button 
-                onClick={handleGoBack} 
-                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" /> Sheds
-              </button>
+          <div className="flex-1 flex flex-col p-2 sm:p-4 animate-in slide-in-from-right duration-150">
+            <div className="flex items-center justify-between mb-4 gap-2">
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={handleGoBack} 
+                  className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" /> Sheds
+                </button>
+                <button 
+                  onClick={handleGoHome} 
+                  className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                  title="Return to Dashboard Home"
+                >
+                  <Home className="w-4 h-4 text-emerald-600" /> Home
+                </button>
+              </div>
 
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-bold text-slate-700 bg-white px-2.5 py-1 rounded-full border border-slate-200">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-700 bg-white px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs">
                   {activeShed.name}
                 </span>
                 <div 
@@ -2291,7 +2352,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between px-1 mb-2.5">
+            <div className="flex items-center justify-between px-1 mb-3">
               <div>
                 <h2 className="text-base font-black text-slate-900">Parts in {activeShed.name}</h2>
                 <p className="text-xs text-slate-500">Select a part to view its pen lines</p>
@@ -2305,23 +2366,23 @@ export default function App() {
             </div>
 
             {/* Shed Mini Stats Summary */}
-            <div className="grid grid-cols-3 gap-1.5 bg-white p-3 rounded-2xl border border-slate-200 text-center text-xs mb-3 font-mono shadow-xs">
+            <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-white p-3.5 rounded-2xl border border-slate-200 text-center text-xs mb-4 font-mono shadow-xs">
               <div className="min-w-0">
                 <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Shed Birds</span>
-                <span className="font-black text-slate-900 text-sm truncate block">{shedStats.count}</span>
+                <span className="font-black text-slate-900 text-sm sm:text-base truncate block">{shedStats.count}</span>
               </div>
               <div className="min-w-0">
                 <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Shed Avg</span>
-                <span className="font-black text-emerald-600 text-sm truncate block font-mono">{shedStats.avg}g</span>
+                <span className="font-black text-emerald-600 text-sm sm:text-base truncate block font-mono">{shedStats.avg}g</span>
               </div>
               <div className="min-w-0">
                 <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Uniformity</span>
-                <span className="font-black text-amber-600 text-sm truncate block font-mono">{shedStats.sPct}%</span>
+                <span className="font-black text-amber-600 text-sm sm:text-base truncate block font-mono">{shedStats.sPct}%</span>
               </div>
             </div>
 
-            {/* Vertical Scrollable Part Cards */}
-            <div className="space-y-3 overflow-y-auto flex-1 pb-4">
+            {/* Responsive Multi-Column Part Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6 overflow-y-auto flex-1">
               {activeShed.parts.map((part, partIndex) => {
                 const partStat = calculateFlockStats(part.lines.flatMap(l => l.weights), activeStd, weekNum);
                 const partBirds = part.lines.reduce((acc, l) => acc + l.weights.length, 0);
@@ -2329,53 +2390,55 @@ export default function App() {
                 return (
                   <div
                     key={part.id}
-                    className="w-full bg-white p-4 rounded-2xl border border-slate-200 flex flex-col gap-3 shadow-xs min-w-0 max-w-full"
+                    className="w-full bg-white p-4 rounded-2xl border border-slate-200 flex flex-col justify-between gap-3 shadow-xs min-w-0 max-w-full"
                   >
-                    <div className="flex items-center justify-between gap-2 min-w-0">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 font-black flex items-center justify-center text-xs shrink-0 overflow-hidden">
-                          {part.name.replace(/Part\s*/i, '').trim() || String.fromCharCode(65 + partIndex)}
-                        </span>
-                        <div className="min-w-0">
-                          <h3 className="font-black text-base text-slate-900 truncate">{part.name}</h3>
-                          <span className="text-xs text-slate-500 block truncate">
-                            {part.lines.length} {part.lines.length === 1 ? 'Line' : 'Lines'} • {partBirds} birds
+                    <div>
+                      <div className="flex items-center justify-between gap-2 min-w-0 mb-2">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 font-black flex items-center justify-center text-xs shrink-0 overflow-hidden">
+                            {part.name.replace(/Part\s*/i, '').trim() || String.fromCharCode(65 + partIndex)}
                           </span>
+                          <div className="min-w-0">
+                            <h3 className="font-black text-base text-slate-900 truncate">{part.name}</h3>
+                            <span className="text-xs text-slate-500 block truncate">
+                              {part.lines.length} {part.lines.length === 1 ? 'Line' : 'Lines'} • {partBirds} birds
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleStartEditPart(part)}
+                            className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-slate-100 rounded-lg text-xs cursor-pointer"
+                            title={`Rename ${part.name}`}
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeletePart(part.id, e)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer"
+                            title={`Delete ${part.name}`}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleStartEditPart(part)}
-                          className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-slate-100 rounded-lg text-xs cursor-pointer"
-                          title={`Rename ${part.name}`}
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleDeletePart(part.id, e)}
-                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer"
-                          title={`Delete ${part.name}`}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-1 bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-center text-xs font-mono">
-                      <div className="min-w-0">
-                        <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">AVG WT</span>
-                        <span className="font-extrabold text-emerald-600 truncate block font-mono">{partStat.avg}g</span>
-                      </div>
-                      <div className="min-w-0">
-                        <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">Uniformity</span>
-                        <span className="font-extrabold text-amber-600 truncate block font-mono">{partStat.sPct}%</span>
-                      </div>
-                      <div className="min-w-0">
-                        <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">CV %</span>
-                        <span className="font-extrabold text-sky-600 truncate block font-mono">{partStat.cv}%</span>
+                      <div className="grid grid-cols-3 gap-1 bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-center text-xs font-mono">
+                        <div className="min-w-0">
+                          <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">AVG WT</span>
+                          <span className="font-extrabold text-emerald-600 truncate block font-mono">{partStat.avg}g</span>
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">Uniformity</span>
+                          <span className="font-extrabold text-amber-600 truncate block font-mono">{partStat.sPct}%</span>
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">CV %</span>
+                          <span className="font-extrabold text-sky-600 truncate block font-mono">{partStat.cv}%</span>
+                        </div>
                       </div>
                     </div>
 
@@ -2383,7 +2446,7 @@ export default function App() {
                       onClick={() => {
                         navigateToLineSelect(activeShed.id, part.id, part.lines[0]?.id || 1);
                       }}
-                      className="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
+                      className="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs mt-2"
                     >
                       <span>Open Pen Lines ({part.lines.length})</span>
                       <ChevronRight className="w-4 h-4" />
@@ -2399,22 +2462,31 @@ export default function App() {
         {/* 4. LINE SELECTION SCREEN (LOOKS JUST LIKE PART SCREEN)    */}
         {/* ========================================================= */}
         {currentScreen === 'line_select' && activeShed && activePart && (
-          <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
-            {/* Header with Back button up to Parts Screen */}
-            <div className="flex items-center justify-between mb-3.5">
-              <button 
-                onClick={handleGoBack} 
-                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" /> Parts
-              </button>
+          <div className="flex-1 flex flex-col p-2 sm:p-4 animate-in slide-in-from-right duration-150">
+            {/* Header with Back button up to Parts Screen & Direct Home button */}
+            <div className="flex items-center justify-between mb-4 gap-2">
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={handleGoBack} 
+                  className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" /> Parts
+                </button>
+                <button 
+                  onClick={handleGoHome} 
+                  className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                  title="Return to Dashboard Home"
+                >
+                  <Home className="w-4 h-4 text-emerald-600" /> Home
+                </button>
+              </div>
 
-              <span className="text-xs font-bold text-sky-800 bg-sky-50 px-3 py-1 rounded-full border border-sky-200 truncate max-w-[210px]">
+              <span className="text-xs font-bold text-sky-800 bg-sky-50 px-3 py-1.5 rounded-full border border-sky-200 truncate max-w-[280px]">
                 {activeShed.name} › {activePart.name}
               </span>
             </div>
 
-            <div className="flex items-center justify-between px-1 mb-2.5">
+            <div className="flex items-center justify-between px-1 mb-3">
               <div>
                 <h2 className="text-base font-black text-slate-900">Lines in {activePart.name}</h2>
                 <p className="text-xs text-slate-500">Choose a line to record bird weights</p>
@@ -2428,23 +2500,23 @@ export default function App() {
             </div>
 
             {/* Part Mini Stats Summary */}
-            <div className="grid grid-cols-3 gap-1.5 bg-white p-3 rounded-2xl border border-slate-200 text-center text-xs mb-3 font-mono shadow-xs">
+            <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-white p-3.5 rounded-2xl border border-slate-200 text-center text-xs mb-4 font-mono shadow-xs">
               <div className="min-w-0">
                 <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Part Birds</span>
-                <span className="font-black text-slate-900 text-sm truncate block">{partStats.count}</span>
+                <span className="font-black text-slate-900 text-sm sm:text-base truncate block">{partStats.count}</span>
               </div>
               <div className="min-w-0">
                 <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Part Avg</span>
-                <span className="font-black text-emerald-600 text-sm truncate block font-mono">{partStats.avg}g</span>
+                <span className="font-black text-emerald-600 text-sm sm:text-base truncate block font-mono">{partStats.avg}g</span>
               </div>
               <div className="min-w-0">
                 <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Uniformity</span>
-                <span className="font-black text-amber-600 text-sm truncate block font-mono">{partStats.sPct}%</span>
+                <span className="font-black text-amber-600 text-sm sm:text-base truncate block font-mono">{partStats.sPct}%</span>
               </div>
             </div>
 
-            {/* Vertical Scrollable Line Cards */}
-            <div className="space-y-3 overflow-y-auto flex-1 pb-4">
+            {/* Responsive Multi-Column Line Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6 overflow-y-auto flex-1">
               {activePart.lines.map((line, lineIndex) => {
                 const lStats = calculateFlockStats(line.weights, activeStd, weekNum);
                 const hasWeights = (line.weights || []).length > 0;
@@ -2453,86 +2525,88 @@ export default function App() {
                 return (
                   <div
                     key={line.id}
-                    className="w-full bg-white p-4 rounded-2xl border border-slate-200 flex flex-col gap-3 shadow-xs min-w-0 max-w-full"
+                    className="w-full bg-white p-4 rounded-2xl border border-slate-200 flex flex-col justify-between gap-3 shadow-xs min-w-0 max-w-full"
                   >
-                    <div className="flex items-center justify-between gap-2 min-w-0">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200 text-sky-700 font-black flex items-center justify-center text-xs shrink-0 overflow-hidden">
-                          L{line.name.replace(/Line\s*/i, '').trim() || (lineIndex + 1)}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <h3 className="font-black text-base text-slate-900 truncate">{line.name}</h3>
-                            <span className={`text-[10px] font-black px-2 py-0.2 rounded-full border ${
-                              activeShed.type === 'Male'
-                                ? 'bg-blue-100 text-blue-900 border-blue-300'
-                                : 'bg-pink-100 text-pink-900 border-pink-300'
-                            }`}>
-                              {activeShed.name} ({activeShed.type === 'Male' ? '♂ Male' : '♀ Female'})
+                    <div>
+                      <div className="flex items-center justify-between gap-2 min-w-0 mb-2">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200 text-sky-700 font-black flex items-center justify-center text-xs shrink-0 overflow-hidden">
+                            L{line.name.replace(/Line\s*/i, '').trim() || (lineIndex + 1)}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <h3 className="font-black text-base text-slate-900 truncate">{line.name}</h3>
+                              <span className={`text-[10px] font-black px-2 py-0.2 rounded-full border ${
+                                activeShed.type === 'Male'
+                                  ? 'bg-blue-100 text-blue-900 border-blue-300'
+                                  : 'bg-pink-100 text-pink-900 border-pink-300'
+                              }`}>
+                                {activeShed.name} ({activeShed.type === 'Male' ? '♂ Male' : '♀ Female'})
+                              </span>
+                            </div>
+                            <span className="text-xs text-slate-500 block truncate">
+                              {line.weights.length} {line.weights.length === 1 ? 'Bird Weighed' : 'Birds Weighed'}
                             </span>
                           </div>
-                          <span className="text-xs text-slate-500 block truncate">
-                            {line.weights.length} {line.weights.length === 1 ? 'Bird Weighed' : 'Birds Weighed'}
-                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {/* Line Status / Grade Badge */}
+                          {!hasWeights ? (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                              🟡 Pending
+                            </span>
+                          ) : !isComplete ? (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-300">
+                              🟡 In Progress ({lStats.count}/10)
+                            </span>
+                          ) : lStats.status === 'EXCELLENT' ? (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                              🟢 EXCELLENT ({lStats.uniformity10Pct}%)
+                            </span>
+                          ) : lStats.status === 'ACCEPTABLE' ? (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
+                              🔵 ACCEPTABLE ({lStats.uniformity10Pct}%)
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
+                              🔴 POOR ({lStats.uniformity10Pct}%)
+                            </span>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteLine(line.id, e)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer shrink-0"
+                            title={`Delete ${line.name}`}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {/* Line Status / Grade Badge */}
-                        {!hasWeights ? (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                            🟡 Pending
-                          </span>
-                        ) : !isComplete ? (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-300">
-                            🟡 In Progress ({lStats.count}/10)
-                          </span>
-                        ) : lStats.status === 'EXCELLENT' ? (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
-                            🟢 EXCELLENT ({lStats.uniformity10Pct}%)
-                          </span>
-                        ) : lStats.status === 'ACCEPTABLE' ? (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
-                            🔵 ACCEPTABLE ({lStats.uniformity10Pct}%)
-                          </span>
-                        ) : (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
-                            🔴 POOR ({lStats.uniformity10Pct}%)
-                          </span>
-                        )}
-
-                        <button
-                          type="button"
-                          onClick={(e) => handleDeleteLine(line.id, e)}
-                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer shrink-0"
-                          title={`Delete ${line.name}`}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs font-mono min-w-0 max-w-full">
-                      <div className="min-w-0">
-                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">BIRDS</span>
-                        <div className="font-extrabold text-slate-900 truncate">{lStats.count}</div>
-                      </div>
-                      <div className="min-w-0">
-                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">AVG WT</span>
-                        <div className="font-extrabold text-emerald-600 truncate font-mono">
-                          {hasWeights ? `${lStats.avg}g` : '—'}
+                      <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs font-mono min-w-0 max-w-full">
+                        <div className="min-w-0">
+                          <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">BIRDS</span>
+                          <div className="font-extrabold text-slate-900 truncate">{lStats.count}</div>
                         </div>
-                      </div>
-                      <div className="min-w-0">
-                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">Uniformity (±10%)</span>
-                        <div className="font-extrabold text-amber-600 truncate font-mono">
-                          {hasWeights ? `${lStats.uniformity10Pct}%` : '—'}
+                        <div className="min-w-0">
+                          <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">AVG WT</span>
+                          <div className="font-extrabold text-emerald-600 truncate font-mono">
+                            {hasWeights ? `${lStats.avg}g` : '—'}
+                          </div>
                         </div>
-                      </div>
-                      <div className="min-w-0">
-                        <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">CV %</span>
-                        <div className="font-extrabold text-sky-600 truncate font-mono">
-                          {hasWeights ? `${lStats.cv}%` : '—'}
+                        <div className="min-w-0">
+                          <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">Uniformity (±10%)</span>
+                          <div className="font-extrabold text-amber-600 truncate font-mono">
+                            {hasWeights ? `${lStats.uniformity10Pct}%` : '—'}
+                          </div>
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">CV %</span>
+                          <div className="font-extrabold text-sky-600 truncate font-mono">
+                            {hasWeights ? `${lStats.cv}%` : '—'}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -2541,7 +2615,7 @@ export default function App() {
                       onClick={() => {
                         navigateToWeighPad(activeShed.id, activePart.id, line.id);
                       }}
-                      className="w-full max-w-full bg-sky-600 hover:bg-sky-500 active:scale-95 text-white py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs min-w-0"
+                      className="w-full max-w-full bg-sky-600 hover:bg-sky-500 active:scale-95 text-white py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs min-w-0 mt-2"
                     >
                       <span className="truncate">Enter Weights for {line.name}</span>
                       <ChevronRight className="w-4 h-4 shrink-0" />
@@ -2557,18 +2631,27 @@ export default function App() {
         {/* 5. WEIGHING PAD SCREEN (CLEAN, NO HORIZONTAL TAB OVERFLOW)*/}
         {/* ========================================================= */}
         {currentScreen === 'weigh_pad' && activeShed && activePart && activeLine && (
-          <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
-            {/* Header with Back Button (Weigh Pad -> Line Screen) & Breadcrumb */}
-            <div className="flex items-center justify-between mb-2.5">
-              <button 
-                onClick={handleGoBack} 
-                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer shrink-0"
-              >
-                <ArrowLeft className="w-4 h-4" /> Lines
-              </button>
+          <div className="flex-1 flex flex-col p-2 sm:p-4 animate-in slide-in-from-right duration-150">
+            {/* Header with Back Button (Weigh Pad -> Line Screen) & Direct Home button */}
+            <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={handleGoBack} 
+                  className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer shrink-0"
+                >
+                  <ArrowLeft className="w-4 h-4" /> Lines
+                </button>
+                <button 
+                  onClick={handleGoHome} 
+                  className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer shrink-0"
+                  title="Return to Dashboard Home"
+                >
+                  <Home className="w-4 h-4 text-emerald-600" /> Home
+                </button>
+              </div>
 
               {/* Breadcrumb Trail matching screenshot */}
-              <div className="flex items-center gap-1 text-[11px] font-bold bg-white px-2.5 py-1 rounded-xl border border-slate-200 shadow-xs truncate max-w-[210px]">
+              <div className="flex items-center gap-1 text-[11px] font-bold bg-white px-2.5 py-1 rounded-xl border border-slate-200 shadow-xs truncate max-w-[280px]">
                 <span className="text-emerald-700 font-extrabold">{activeShed.name}</span>
                 <span className="text-slate-300">›</span>
                 <span className="text-indigo-700 font-extrabold">{activePart.name}</span>
@@ -2611,193 +2694,201 @@ export default function App() {
               </div>
             </div>
 
-            {/* Real-Time Metric Strip for Current Line & Part */}
-            <div className="bg-white p-3 rounded-2xl border border-slate-200 grid grid-cols-4 gap-1 text-center mb-2 shadow-xs">
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Weighed</span>
-                <div className="text-base font-black text-slate-900">{lineStats.count}</div>
-                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count}</span>
-              </div>
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Avg Wt</span>
-                <div className="text-base font-black text-emerald-600 font-mono">
-                  {lineStats.count > 0 ? `${lineStats.avg}g` : '—'}
+            {/* Responsive 2-Column Grid on Laptop (lg:grid lg:grid-cols-12 lg:gap-5) */}
+            <div className="lg:grid lg:grid-cols-12 lg:gap-5 flex-1 items-start">
+              {/* Left Column on Laptop (lg:col-span-7): Metrics, Input, Chips & Actions */}
+              <div className="lg:col-span-7 flex flex-col space-y-2.5">
+                {/* Real-Time Metric Strip for Current Line & Part */}
+                <div className="bg-white p-3 rounded-2xl border border-slate-200 grid grid-cols-4 gap-1 text-center shadow-xs">
+                  <div className="min-w-0">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Weighed</span>
+                    <div className="text-base font-black text-slate-900">{lineStats.count}</div>
+                    <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count}</span>
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Avg Wt</span>
+                    <div className="text-base font-black text-emerald-600 font-mono">
+                      {lineStats.count > 0 ? `${lineStats.avg}g` : '—'}
+                    </div>
+                    <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.avg}g` : '—'}</span>
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Uniformity (±10%)</span>
+                    <div className="text-base font-black text-amber-600 font-mono">
+                      {lineStats.count > 0 ? `${lineStats.uniformity10Pct}%` : '—'}
+                    </div>
+                    <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.uniformity10Pct}%` : '—'}</span>
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">CV %</span>
+                    <div className="text-base font-black text-sky-600 font-mono">
+                      {lineStats.count > 0 ? `${lineStats.cv}%` : '—'}
+                    </div>
+                    <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.cv}%` : '—'}</span>
+                  </div>
                 </div>
-                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.avg}g` : '—'}</span>
-              </div>
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Uniformity (±10%)</span>
-                <div className="text-base font-black text-amber-600 font-mono">
-                  {lineStats.count > 0 ? `${lineStats.uniformity10Pct}%` : '—'}
+
+                {/* Live Line Status Indicator */}
+                <div className="flex items-center justify-between bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 text-xs">
+                  <span className="text-[11px] font-bold text-slate-600">
+                    {activeLine.name} Uniformity Status:
+                  </span>
+                  {lineStats.count === 0 ? (
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
+                      🟡 Pending (0 Birds)
+                    </span>
+                  ) : !lineStats.isComplete ? (
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                      🟡 In Progress ({lineStats.count}/10 birds)
+                    </span>
+                  ) : lineStats.status === 'EXCELLENT' ? (
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                      🟢 EXCELLENT ({lineStats.uniformity10Pct}%)
+                    </span>
+                  ) : lineStats.status === 'ACCEPTABLE' ? (
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
+                      🔵 ACCEPTABLE ({lineStats.uniformity10Pct}%)
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
+                      🔴 POOR ({lineStats.uniformity10Pct}%)
+                    </span>
+                  )}
                 </div>
-                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.uniformity10Pct}%` : '—'}</span>
-              </div>
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">CV %</span>
-                <div className="text-base font-black text-sky-600 font-mono">
-                  {lineStats.count > 0 ? `${lineStats.cv}%` : '—'}
-                </div>
-                <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.cv}%` : '—'}</span>
-              </div>
-            </div>
 
-            {/* Live Line Status Indicator */}
-            <div className="flex items-center justify-between bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 text-xs mb-2.5">
-              <span className="text-[11px] font-bold text-slate-600">
-                {activeLine.name} Uniformity Status:
-              </span>
-              {lineStats.count === 0 ? (
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
-                  🟡 Pending (0 Birds)
-                </span>
-              ) : !lineStats.isComplete ? (
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
-                  🟡 In Progress ({lineStats.count}/10 birds)
-                </span>
-              ) : lineStats.status === 'EXCELLENT' ? (
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
-                  🟢 EXCELLENT ({lineStats.uniformity10Pct}%)
-                </span>
-              ) : lineStats.status === 'ACCEPTABLE' ? (
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
-                  🔵 ACCEPTABLE ({lineStats.uniformity10Pct}%)
-                </span>
-              ) : (
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
-                  🔴 POOR ({lineStats.uniformity10Pct}%)
-                </span>
-              )}
-            </div>
-
-            {/* Manual Entry Form - Compact & Fast */}
-            <form onSubmit={e => { e.preventDefault(); handleAddWeight(); }} className="flex gap-2 mb-2.5">
-              <input
-                type="number"
-                placeholder={`Weight for ${activeLine.name}...`}
-                value={inputWeight}
-                onChange={e => setInputWeight(e.target.value)}
-                autoFocus
-                className="flex-1 min-w-0 bg-white border border-slate-300 rounded-xl px-3 py-2 text-base font-black text-slate-900 focus:outline-none focus:border-emerald-600 font-mono shadow-xs placeholder:text-slate-400"
-              />
-              <button
-                type="submit"
-                className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black px-5 rounded-xl text-xs shrink-0 shadow-xs cursor-pointer"
-              >
-                Save
-              </button>
-            </form>
-
-            {/* Quick-Tap Increment Chips */}
-            <div className="grid grid-cols-4 gap-1.5 mb-2.5">
-              {[1250, 1300, 1350, 1400, 1450, 1500, 1550, 1600].map(w => (
-                <button
-                  key={w}
-                  type="button"
-                  onClick={() => handleAddWeight(w)}
-                  className="bg-white hover:bg-slate-100 active:bg-slate-200 py-1.5 rounded-xl text-xs font-mono font-bold text-slate-800 border border-slate-200 shadow-xs cursor-pointer"
-                >
-                  +{w}
-                </button>
-              ))}
-            </div>
-
-            {/* Weighed Birds List with Live Grading Badges */}
-            <div className="flex-1 bg-white rounded-2xl border border-slate-200 p-3 overflow-y-auto max-h-[280px] shadow-xs">
-              <div className="flex justify-between items-center text-xs text-slate-500 pb-2 mb-2 border-b border-slate-100">
-                <span className="font-bold">{activeLine.name} Birds ({activeLine.weights.length})</span>
-                <span className="text-[11px] font-mono font-semibold text-slate-600">
-                  Target: {activeStd}g (±{activeBands.tolerance}g)
-                </span>
-              </div>
-
-              {activeLine.weights.length === 0 ? (
-                <div className="text-center py-8 text-xs text-slate-400">
-                  No birds recorded in {activeLine.name} yet. Tap chips or enter weights above.
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {activeLine.weights.map((w, idx) => {
-                    const grade = getBirdGrade(w, activeBands);
-                    const badgeClass = getBadgeStyle(grade);
-
-                    return (
-                      <div 
-                        key={idx} 
-                        className="flex items-center justify-between bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100 text-xs"
-                      >
-                        <span className="text-slate-400 font-mono text-[11px] w-6">#{idx + 1}</span>
-                        <span className="font-bold text-sm text-slate-900 font-mono">{w}g</span>
-                        <span className={`px-2 py-0.5 rounded-md text-[10px] border ${badgeClass}`}>
-                          {grade}
-                        </span>
-                        <button 
-                          onClick={() => handleDeleteWeight(idx)} 
-                          className="text-slate-400 hover:text-rose-600 p-1 rounded-lg cursor-pointer transition"
-                          title="Delete bird"
-                        >
-                          <Trash2 className="w-3.5 h-3.5"/>
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {activeLine.weights.length > 0 && (
-                <div className="pt-3 mt-3 border-t border-slate-100 text-center">
+                {/* Manual Entry Form - Compact & Fast */}
+                <form onSubmit={e => { e.preventDefault(); handleAddWeight(); }} className="flex gap-2">
+                  <input
+                    type="number"
+                    placeholder={`Weight for ${activeLine.name}...`}
+                    value={inputWeight}
+                    onChange={e => setInputWeight(e.target.value)}
+                    autoFocus
+                    className="flex-1 min-w-0 bg-white border border-slate-300 rounded-xl px-3 py-2 text-base font-black text-slate-900 focus:outline-none focus:border-emerald-600 font-mono shadow-xs placeholder:text-slate-400"
+                  />
                   <button
-                    onClick={handleClearLineWeights}
-                    className="text-[11px] font-bold text-rose-600 hover:text-rose-700 active:scale-95 transition"
+                    type="submit"
+                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black px-5 rounded-xl text-xs shrink-0 shadow-xs cursor-pointer"
                   >
-                    Clear All {activeLine.weights.length} Weights in {activeLine.name}
+                    Save
+                  </button>
+                </form>
+
+                {/* Quick-Tap Increment Chips */}
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[1250, 1300, 1350, 1400, 1450, 1500, 1550, 1600].map(w => (
+                    <button
+                      key={w}
+                      type="button"
+                      onClick={() => handleAddWeight(w)}
+                      className="bg-white hover:bg-slate-100 active:bg-slate-200 py-1.5 rounded-xl text-xs font-mono font-bold text-slate-800 border border-slate-200 shadow-xs cursor-pointer"
+                    >
+                      +{w}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Action Buttons: Save Draft (Supervisor & Incharge) & Go to Submit Screen */}
+                <div className="space-y-2 pt-1">
+                  {(currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') && (
+                    <button
+                      type="button"
+                      onClick={handleManualSaveDraft}
+                      disabled={isSavingDraft}
+                      className="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer disabled:opacity-50"
+                    >
+                      {isSavingDraft ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                          <span>Saving Draft to Storage...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-4 h-4 text-slate-950" />
+                          <span>Save Draft</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => navigateTo('submit_page')}
+                    className="w-full font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-between bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-white shadow-md active:scale-95 transition cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <UploadCloud className="w-4 h-4 text-emerald-400" />
+                      <span>Go to Dedicated Submit Screen</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        completionStats.isFarm100PercentWeighed
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                      }`}>
+                        {completionStats.progressPercent}% Weighed
+                      </span>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                    </div>
                   </button>
                 </div>
-              )}
-            </div>
+              </div>
 
-            {/* Action Buttons: Save Draft (Supervisor & Incharge) & Go to Submit Screen */}
-            <div className="mt-3 space-y-2">
-              {(currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') && (
-                <button
-                  type="button"
-                  onClick={handleManualSaveDraft}
-                  disabled={isSavingDraft}
-                  className="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer disabled:opacity-50"
-                >
-                  {isSavingDraft ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                      <span>Saving Draft to Storage...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Save className="w-4 h-4 text-slate-950" />
-                      <span>Save Draft</span>
-                    </>
-                  )}
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={() => navigateTo('submit_page')}
-                className="w-full font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-between bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-white shadow-md active:scale-95 transition cursor-pointer"
-              >
-                <div className="flex items-center gap-2">
-                  <UploadCloud className="w-4 h-4 text-emerald-400" />
-                  <span>Go to Dedicated Submit Screen</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                    completionStats.isFarm100PercentWeighed
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                  }`}>
-                    {completionStats.progressPercent}% Weighed
+              {/* Right Column on Laptop (lg:col-span-5): Weighed Birds List with Live Grading Badges */}
+              <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-3 shadow-xs mt-3 lg:mt-0 flex flex-col min-h-[320px] lg:min-h-[480px]">
+                <div className="flex justify-between items-center text-xs text-slate-500 pb-2 mb-2 border-b border-slate-100">
+                  <span className="font-bold text-slate-900">{activeLine.name} Birds ({activeLine.weights.length})</span>
+                  <span className="text-[11px] font-mono font-semibold text-slate-600">
+                    Target: {activeStd}g (±{activeBands.tolerance}g)
                   </span>
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
                 </div>
-              </button>
+
+                <div className="flex-1 overflow-y-auto max-h-[300px] lg:max-h-[420px] pr-1">
+                  {activeLine.weights.length === 0 ? (
+                    <div className="text-center py-12 text-xs text-slate-400">
+                      No birds recorded in {activeLine.name} yet. Tap chips or enter weights on the left.
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {activeLine.weights.map((w, idx) => {
+                        const grade = getBirdGrade(w, activeBands);
+                        const badgeClass = getBadgeStyle(grade);
+
+                        return (
+                          <div 
+                            key={idx} 
+                            className="flex items-center justify-between bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100 text-xs"
+                          >
+                            <span className="text-slate-400 font-mono text-[11px] w-6">#{idx + 1}</span>
+                            <span className="font-bold text-sm text-slate-900 font-mono">{w}g</span>
+                            <span className={`px-2 py-0.5 rounded-md text-[10px] border ${badgeClass}`}>
+                              {grade}
+                            </span>
+                            <button 
+                              onClick={() => handleDeleteWeight(idx)} 
+                              className="text-slate-400 hover:text-rose-600 p-1 rounded-lg cursor-pointer transition"
+                              title="Delete bird"
+                            >
+                              <Trash2 className="w-3.5 h-3.5"/>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {activeLine.weights.length > 0 && (
+                  <div className="pt-2.5 mt-2.5 border-t border-slate-100 text-center">
+                    <button
+                      onClick={handleClearLineWeights}
+                      className="text-[11px] font-bold text-rose-600 hover:text-rose-700 active:scale-95 transition cursor-pointer"
+                    >
+                      Clear All {activeLine.weights.length} Weights in {activeLine.name}
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -2805,85 +2896,177 @@ export default function App() {
         {/* ========================================================= */}
         {/* 6. CONSOLIDATED CONCLUSION REPORT                         */}
         {/* ========================================================= */}
+        {/* ========================================================= */}
+        {/* 6. CONSOLIDATED CONCLUSION REPORT (Compact & High-Density)*/}
+        {/* ========================================================= */}
         {currentScreen === 'conclusion' && (
-          <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
-            <div className="flex items-center justify-between mb-4">
+          <div className="flex-1 flex flex-col p-3 sm:p-4 max-w-5xl mx-auto w-full animate-in slide-in-from-right duration-150 space-y-3">
+            {/* Header Toolbar */}
+            <div className="flex items-center justify-between pb-2 border-b border-slate-200">
               <button 
-                onClick={handleGoBack} 
+                onClick={handleGoHome} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                title="Return to Dashboard Home"
               >
                 <ArrowLeft className="w-4 h-4"/> Home
               </button>
-              <div className="text-right">
-                <h2 className="text-xs font-black text-amber-700 uppercase tracking-wide bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 inline-block">
-                  Cons Conclusion
+              
+              <div className="text-center">
+                <h2 className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-wide">
+                  Consolidated Flock Conclusion (Cons)
                 </h2>
+                <p className="text-[10px] text-slate-500 font-medium">
+                  {farmName} • {ageWeek} • {season} Brood
+                </p>
+              </div>
+
+              <button 
+                onClick={handleDownloadExcel} 
+                className="bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-xl font-black text-xs text-white flex items-center gap-1.5 active:scale-95 shadow-xs cursor-pointer"
+                title="Download complete Excel workbook"
+              >
+                <Download className="w-3.5 h-3.5"/>
+                <span className="hidden sm:inline">Export Excel</span>
+              </button>
+            </div>
+
+            {/* Compact Flock Summary Matrix (Female vs Male) */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex items-center justify-between text-xs font-bold text-slate-700">
+                <span className="flex items-center gap-1.5">
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                  <span>Flock Executive Benchmark Comparison</span>
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">Official Suguna Standards</span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-100/75 text-[10px] uppercase font-bold text-slate-500 border-b border-slate-200">
+                    <tr>
+                      <th className="py-2 px-3">Metric</th>
+                      <th className="py-2 px-3 text-pink-700 font-black">♀ Female ({ageWeek}F)</th>
+                      <th className="py-2 px-3 text-blue-700 font-black">♂ Male ({ageWeek}M)</th>
+                      <th className="py-2 px-3 text-slate-700 font-black">Status / Evaluation</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    <tr className="hover:bg-slate-50/70 transition">
+                      <td className="py-2 px-3 font-semibold text-slate-600">Standard Target Weight</td>
+                      <td className="py-2 px-3 font-mono font-bold text-pink-600">{stdWeightFemale}g</td>
+                      <td className="py-2 px-3 font-mono font-bold text-blue-600">{stdWeightMale}g</td>
+                      <td className="py-2 px-3 text-[11px] text-slate-500">Benchmark Reference</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70 transition bg-emerald-50/20">
+                      <td className="py-2 px-3 font-semibold text-slate-800">Actual Average Body Weight</td>
+                      <td className="py-2 px-3 font-mono font-black text-emerald-600 text-sm">{consolidated.fStats.avg}g</td>
+                      <td className="py-2 px-3 font-mono font-black text-emerald-600 text-sm">{consolidated.mStats.avg}g</td>
+                      <td className="py-2 px-3 text-[11px] font-bold text-emerald-700">Field Weighed Act WT</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70 transition">
+                      <td className="py-2 px-3 font-semibold text-slate-600">Difference vs Target</td>
+                      <td className={`py-2 px-3 font-mono font-bold ${consolidated.fStats.diff >= 0 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                        {consolidated.fStats.diff > 0 ? `+${consolidated.fStats.diff}` : consolidated.fStats.diff}g
+                      </td>
+                      <td className={`py-2 px-3 font-mono font-bold ${consolidated.mStats.diff >= 0 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                        {consolidated.mStats.diff > 0 ? `+${consolidated.mStats.diff}` : consolidated.mStats.diff}g
+                      </td>
+                      <td className="py-2 px-3 text-[11px] text-slate-500">Variance from standard</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70 transition">
+                      <td className="py-2 px-3 font-semibold text-slate-600">Uniformity (S% ±10%)</td>
+                      <td className="py-2 px-3 font-mono font-black text-amber-600">{consolidated.fStats.sPct}%</td>
+                      <td className="py-2 px-3 font-mono font-black text-amber-600">{consolidated.mStats.sPct}%</td>
+                      <td className="py-2 px-3">
+                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                          consolidated.fStats.sPct >= 80 ? 'bg-emerald-100 text-emerald-800' :
+                          consolidated.fStats.sPct >= 70 ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {consolidated.fStats.sPct >= 80 ? 'EXCELLENT' : consolidated.fStats.sPct >= 70 ? 'ACCEPTABLE' : 'MODERATE'}
+                        </span>
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70 transition">
+                      <td className="py-2 px-3 font-semibold text-slate-600">CV % (F-Factor)</td>
+                      <td className="py-2 px-3 font-mono font-bold text-sky-600">{consolidated.fStats.cv}%</td>
+                      <td className="py-2 px-3 font-mono font-bold text-sky-600">{consolidated.mStats.cv}%</td>
+                      <td className="py-2 px-3 text-[11px] text-slate-500">Coefficient of variation</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70 transition">
+                      <td className="py-2 px-3 font-semibold text-slate-600">Weight Range (Min – Max)</td>
+                      <td className="py-2 px-3 font-mono text-slate-700">{consolidated.fStats.min}g – {consolidated.fStats.max}g</td>
+                      <td className="py-2 px-3 font-mono text-slate-700">{consolidated.mStats.min}g – {consolidated.mStats.max}g</td>
+                      <td className="py-2 px-3 text-[11px] text-slate-500">Min to max spread</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 mb-4 flex-1 overflow-y-auto">
-              {/* Female Overall Card */}
-              <div className="bg-white border border-slate-200 p-3.5 rounded-2xl shadow-xs">
-                <div className="flex justify-between items-center mb-2 pb-1.5 border-b border-slate-100">
-                  <span className="font-extrabold text-xs text-pink-700 flex items-center gap-1">
-                    ♀ Female Overall ({ageWeek}F)
-                  </span>
-                  <span className="text-[10px] text-slate-400 font-mono">Target: {stdWeightFemale}g</span>
-                </div>
-                <div className="grid grid-cols-3 gap-1.5 text-center text-xs mb-2 font-mono">
-                  <div className="bg-slate-50 p-2 rounded-xl">
-                    <span className="text-[9px] text-slate-400 block font-sans">ACT WT</span>
-                    <div className="font-bold text-emerald-600 text-sm">{consolidated.fStats.avg}g</div>
-                  </div>
-                  <div className="bg-slate-50 p-2 rounded-xl">
-                    <span className="text-[9px] text-slate-400 block font-sans">DIFF</span>
-                    <div className="font-bold text-slate-700 text-sm">{consolidated.fStats.diff}g</div>
-                  </div>
-                  <div className="bg-slate-50 p-2 rounded-xl">
-                    <span className="text-[9px] text-slate-400 block font-sans">Uniformity (S%)</span>
-                    <div className="font-bold text-amber-600 text-sm">{consolidated.fStats.sPct}%</div>
-                  </div>
-                </div>
-                <div className="flex justify-between text-[11px] text-slate-500 bg-slate-50 px-2.5 py-1.5 rounded-xl">
-                  <span>CV%: <strong className="text-sky-600 font-mono">{consolidated.fStats.cv}%</strong></span>
-                  <span>Range: <strong className="text-slate-800 font-mono">{consolidated.fStats.min}g - {consolidated.fStats.max}g</strong></span>
-                </div>
+            {/* Compact Shed-Wise Conclusion Breakdown Table */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex-1">
+              <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex items-center justify-between text-xs font-bold text-slate-700">
+                <span className="flex items-center gap-1.5">
+                  <Layers className="w-4 h-4 text-emerald-600" />
+                  <span>Shed-Wise Conclusion Breakdown ({consolidated.shedSummaries.length} Sheds)</span>
+                </span>
+                <span className="text-[10px] text-slate-500">Shed 1 to 10 Individual Results</span>
               </div>
 
-              {/* Male Overall Card */}
-              <div className="bg-white border border-slate-200 p-3.5 rounded-2xl shadow-xs">
-                <div className="flex justify-between items-center mb-2 pb-1.5 border-b border-slate-100">
-                  <span className="font-extrabold text-xs text-blue-700 flex items-center gap-1">
-                    ♂ Male Overall ({ageWeek}M)
-                  </span>
-                  <span className="text-[10px] text-slate-400 font-mono">Target: {stdWeightMale}g</span>
-                </div>
-                <div className="grid grid-cols-3 gap-1.5 text-center text-xs mb-2 font-mono">
-                  <div className="bg-slate-50 p-2 rounded-xl">
-                    <span className="text-[9px] text-slate-400 block font-sans">ACT WT</span>
-                    <div className="font-bold text-emerald-600 text-sm">{consolidated.mStats.avg}g</div>
-                  </div>
-                  <div className="bg-slate-50 p-2 rounded-xl">
-                    <span className="text-[9px] text-slate-400 block font-sans">DIFF</span>
-                    <div className="font-bold text-slate-700 text-sm">{consolidated.mStats.diff}g</div>
-                  </div>
-                  <div className="bg-slate-50 p-2 rounded-xl">
-                    <span className="text-[9px] text-slate-400 block font-sans">Uniformity (S%)</span>
-                    <div className="font-bold text-amber-600 text-sm">{consolidated.mStats.sPct}%</div>
-                  </div>
-                </div>
-                <div className="flex justify-between text-[11px] text-slate-500 bg-slate-50 px-2.5 py-1.5 rounded-xl">
-                  <span>CV%: <strong className="text-sky-600 font-mono">{consolidated.mStats.cv}%</strong></span>
-                  <span>Range: <strong className="text-slate-800 font-mono">{consolidated.mStats.min}g - {consolidated.mStats.max}g</strong></span>
-                </div>
+              <div className="overflow-x-auto max-h-60 overflow-y-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-100/75 text-[10px] uppercase font-bold text-slate-500 border-b border-slate-200 sticky top-0">
+                    <tr>
+                      <th className="py-2 px-3">Shed</th>
+                      <th className="py-2 px-3">Sex</th>
+                      <th className="py-2 px-3">Birds</th>
+                      <th className="py-2 px-3 text-emerald-700">Act Wt</th>
+                      <th className="py-2 px-3">Min</th>
+                      <th className="py-2 px-3">Max</th>
+                      <th className="py-2 px-3">CV %</th>
+                      <th className="py-2 px-3 text-amber-700">Unif (S%)</th>
+                      <th className="py-2 px-3 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    {consolidated.shedSummaries.map((s, idx) => (
+                      <tr key={s.id || idx} className="hover:bg-slate-50/70 transition">
+                        <td className="py-2 px-3 font-bold text-slate-800">{s.name}</td>
+                        <td className="py-2 px-3">
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                            s.type === 'Male' ? 'bg-blue-100 text-blue-800' : 'bg-pink-100 text-pink-800'
+                          }`}>
+                            {s.type === 'Male' ? '♂ Male' : '♀ Female'}
+                          </span>
+                        </td>
+                        <td className="py-2 px-3 font-mono">{s.stats.count > 0 ? `${s.stats.count}b` : '0b'}</td>
+                        <td className="py-2 px-3 font-mono font-bold text-emerald-600">{s.stats.count > 0 ? `${s.stats.avg}g` : '—'}</td>
+                        <td className="py-2 px-3 font-mono text-slate-500">{s.stats.count > 0 ? `${s.stats.min}g` : '—'}</td>
+                        <td className="py-2 px-3 font-mono text-slate-500">{s.stats.count > 0 ? `${s.stats.max}g` : '—'}</td>
+                        <td className="py-2 px-3 font-mono text-sky-600">{s.stats.count > 0 ? `${s.stats.cv}%` : '—'}</td>
+                        <td className="py-2 px-3 font-mono font-bold text-amber-600">{s.stats.count > 0 ? `${s.stats.sPct}%` : '—'}</td>
+                        <td className="py-2 px-3 text-center">
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
+                            s.stats.count === 0 ? 'bg-slate-100 text-slate-500' :
+                            s.stats.sPct >= 80 ? 'bg-emerald-100 text-emerald-800' :
+                            s.stats.sPct >= 70 ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {s.stats.count === 0 ? 'PENDING' : s.stats.sPct >= 80 ? 'EXCELLENT' : s.stats.sPct >= 70 ? 'ACCEPTABLE' : 'MODERATE'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
 
+            {/* Bottom Download Bar */}
             <button 
               onClick={handleDownloadExcel} 
-              className="w-full bg-emerald-600 hover:bg-emerald-700 py-3.5 rounded-xl font-black text-xs text-white flex items-center justify-center gap-2 active:scale-95 shadow-md shadow-emerald-600/20 cursor-pointer"
+              className="w-full bg-emerald-600 hover:bg-emerald-700 py-2.5 rounded-xl font-black text-xs text-white flex items-center justify-center gap-2 active:scale-95 shadow-md shadow-emerald-600/20 cursor-pointer"
             >
-              <Download className="w-4 h-4"/> Download Complete 13-Sheet Workbook
+              <Download className="w-4 h-4"/> Download Complete 13-Sheet Excel Workbook
             </button>
           </div>
         )}
@@ -2895,8 +3078,9 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={handleGoBack} 
+                onClick={handleGoHome} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                title="Return to Dashboard Home"
               >
                 <ArrowLeft className="w-4 h-4"/> Home
               </button>
@@ -2985,8 +3169,9 @@ export default function App() {
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={handleGoBack} 
+                onClick={handleGoHome} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                title="Return to Dashboard Home"
               >
                 <ArrowLeft className="w-4 h-4"/> Home
               </button>
@@ -3086,8 +3271,9 @@ export default function App() {
             {/* Top Bar */}
             <div className="flex items-center justify-between mb-3.5">
               <button 
-                onClick={handleGoBack} 
+                onClick={handleGoHome} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                title="Return to Dashboard Home"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
               </button>
@@ -3301,8 +3487,9 @@ export default function App() {
             {/* Top Bar */}
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={handleGoBack} 
+                onClick={handleGoHome} 
                 className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                title="Return to Dashboard Home"
               >
                 <ArrowLeft className="w-4 h-4" /> Home
               </button>

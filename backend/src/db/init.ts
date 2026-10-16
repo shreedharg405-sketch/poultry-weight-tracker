@@ -164,6 +164,17 @@ export async function syncDatabaseSchema(): Promise<{ success: boolean; message:
 
     console.log(`📊 [DB-INIT] Found ${inspection.existingTables.length} tables in PostgreSQL. Missing: ${inspection.missingTables.length}`);
 
+    // Ensure required schema columns (like Farm.isArchived and archivedAt) exist
+    try {
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false;
+        ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3);
+      `);
+      console.log('✅ [DB-INIT] Verified Farm.isArchived and Farm.archivedAt columns exist in PostgreSQL.');
+    } catch (colErr: any) {
+      console.warn('⚠️ [DB-INIT] Column migration notice:', colErr?.message || colErr);
+    }
+
     // If any required tables are missing, push the Prisma schema non-destructively
     if (inspection.missingTables.length > 0) {
       console.log(`📦 [DB-INIT] Missing required tables: ${inspection.missingTables.join(', ')}`);

@@ -153,8 +153,12 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
         </span>
       </div>
 
-      {/* Farm Profile Header */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 mb-3.5 shadow-xs">
+      {/* 2-Column Responsive Layout on Laptop (lg:grid lg:grid-cols-12 lg:gap-6) */}
+      <div className="lg:grid lg:grid-cols-12 lg:gap-6 items-start flex-1">
+        {/* Left Column on Laptop (lg:col-span-7): Farm Details, Alerts & Completion Audit */}
+        <div className="lg:col-span-7 space-y-3.5">
+          {/* Farm Profile Header */}
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
         <div className="flex items-start justify-between">
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
@@ -329,10 +333,13 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
             </div>
           </div>
         )}
-      </div>
+        </div>
+        </div>
 
-      {/* 2. SYNCHRONIZATION STATUS BADGE */}
-      <div className="bg-white p-3.5 rounded-2xl border border-slate-200 mb-4 shadow-xs">
+        {/* Right Column on Laptop (lg:col-span-5): Synchronization & Action Operations */}
+        <div className="lg:col-span-5 space-y-3.5 mt-3.5 lg:mt-0">
+          {/* 2. SYNCHRONIZATION STATUS BADGE */}
+          <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs">
         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
           Synchronization Status
         </span>
@@ -456,7 +463,9 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
           <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
           <span>Download Worksheet (13-Sheet Excel Workbook)</span>
         </button>
+        </div>
       </div>
+    </div>
     </div>
   );
 };

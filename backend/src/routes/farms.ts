@@ -15,10 +15,33 @@ import { memorySubmissions, memoryBirdWeights } from './submissions.js';
 
 export const farmRouter = Router();
 
+let columnsEnsured = false;
+export async function ensureFarmColumns(): Promise<void> {
+  if (!isPostgresConfigured() || columnsEnsured) return;
+  try {
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3);
+    `);
+    columnsEnsured = true;
+    console.log('✅ [DB] Ensured Farm columns (isArchived, archivedAt) exist.');
+  } catch (err: any) {
+    console.warn('⚠️ [DB] ensureFarmColumns notice:', err?.message || err);
+  }
+}
+
+farmRouter.use(async (_req, _res, next) => {
+  if (!columnsEnsured) {
+    await ensureFarmColumns();
+  }
+  next();
+});
+
 export async function checkDb(): Promise<boolean> {
   if (!isPostgresConfigured()) return false;
   try {
     await prisma.$queryRaw`SELECT 1`;
+    await ensureFarmColumns();
     return true;
   } catch (e: any) {
     console.warn('⚠️ [DB] PostgreSQL ping check failed:', e?.message || e);
@@ -333,6 +356,33 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
       return res.json(summaries);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL query failed on GET /farms:', err?.message || err);
+      if (err?.code === 'P2022' || String(err?.message).includes('isArchived')) {
+        try {
+          await ensureFarmColumns();
+          const retryFarms = await prisma.farm.findMany({
+            where: includeArchived ? {} : { isArchived: false },
+            orderBy: { updatedAt: 'desc' },
+            include: { _count: { select: { sheds: true, submissions: true } } },
+          });
+          return res.json(retryFarms.map(f => ({
+            id: f.id,
+            name: f.name,
+            flockDate: f.flockDate,
+            ageWeek: f.ageWeek,
+            season: f.season,
+            status: 'DRAFT',
+            submissionCount: f._count.submissions,
+            isArchived: f.isArchived,
+            archivedAt: f.archivedAt ? f.archivedAt.toISOString() : null,
+            assignedUserNames: [],
+            updatedAt: f.updatedAt,
+            createdAt: f.createdAt,
+            _count: { sheds: f._count.sheds, submissions: f._count.submissions },
+          })));
+        } catch (retryErr) {
+          console.error('Retry after column migration also failed:', retryErr);
+        }
+      }
       return res.status(503).json({
         error: 'Database error: Failed to retrieve farms from PostgreSQL database.',
         code: err?.code || 'DB_ERROR',
@@ -895,7 +945,7 @@ farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL update details error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to update farm details in PostgreSQL database.',
+        error: 'Not connected to server. Please try again.',
         details: err?.message,
       });
     }
@@ -1124,7 +1174,7 @@ farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete farm error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to process farm deletion in PostgreSQL database.',
+        error: 'Not connected to server. Please try again.',
         details: err?.message,
       });
     }
