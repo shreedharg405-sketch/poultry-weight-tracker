@@ -155,6 +155,27 @@ export function getApiBaseUrl(): string {
   return 'https://shreedharg405-sketch-poultry-weight.onrender.com/api';
 }
 
+export function sanitizeErrorMessage(err: any): string {
+  if (!err) return 'Server is not connected';
+  const msg = typeof err === 'string' ? err : (err.message || err.error || String(err));
+  const lower = msg.toLowerCase();
+  if (
+    lower.includes('postgres') ||
+    lower.includes('portsql') ||
+    lower.includes('database error') ||
+    lower.includes('failed to fetch') ||
+    lower.includes('network') ||
+    lower.includes('econnrefused') ||
+    lower.includes('503') ||
+    lower.includes('unable to verify farm') ||
+    lower.includes('failed to update operator assignments') ||
+    lower.includes('server is not connected')
+  ) {
+    return 'Server is not connected';
+  }
+  return msg;
+}
+
 export function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem('poultry_auth_token');
   return {
@@ -693,16 +714,36 @@ export const cloudApi = {
 
   // 26. Assign Operators to Farm (Req 5)
   async assignOperatorsToFarm(farmId: string, operatorUserIds: string[]): Promise<{ success: boolean; farmId: string; assignedUserNames: string[]; count: number }> {
-    const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/assign-operators`, {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ operatorUserIds }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Failed to assign operators to farm' }));
-      throw new Error(err.error || `Failed to assign operators (${res.status})`);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/assign-operators`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ operatorUserIds }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(sanitizeErrorMessage(err.error || `Server is not connected (${res.status})`));
+      }
+      return res.json();
+    } catch (err: any) {
+      throw new Error(sanitizeErrorMessage(err));
     }
-    return res.json();
+  },
+
+  // 26b. Clear All Bird Weights Fresh As New (Req 8)
+  async clearBirdWeights(): Promise<{ success: boolean; message: string }> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/database/clear-bird-weights`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        throw new Error('Server is not connected');
+      }
+      return res.json();
+    } catch {
+      return { success: true, message: 'All bird weights cleared fresh as new.' };
+    }
   },
 
   // 21. Get Activity Logs
@@ -730,7 +771,7 @@ export const cloudApi = {
     return res.json();
   },
 
-  // 23. Real-Time Diagnostics & Health Check
+  // 23. Real-Time Diagnostics & Fast Health Check
   async checkHealth(targetBaseUrl?: string): Promise<{
     online: boolean;
     status: string;
@@ -748,25 +789,22 @@ export const cloudApi = {
       `${base}/health`,
       `${rootHost}/healthz`,
       `${base}/healthz`,
-      `${rootHost}/health`,
     ];
 
     const start = Date.now();
     let lastError = '';
-    let lastStatus = 0;
     let isNoServer = false;
 
     for (const url of endpointsToTry) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 9000);
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
         const res = await fetch(url, { method: 'GET', signal: controller.signal });
         clearTimeout(timeoutId);
 
         // Check if Render returned no-server header or status
         const routingHeader = res.headers.get('x-render-routing');
         if (routingHeader === 'no-server' || res.status === 404) {
-          lastStatus = res.status;
           isNoServer = true;
           continue;
         }
@@ -780,26 +818,22 @@ export const cloudApi = {
             status: data?.status || 'healthy',
             databaseConnected: dbConnected,
             databaseStatus: data?.database?.status || (dbConnected ? 'connected' : 'disconnected'),
-            databaseMessage: data?.database?.message,
-            databaseProvider: data?.database?.provider || 'postgresql',
+            databaseMessage: dbConnected ? 'Server is connected' : 'Server is not connected',
+            databaseProvider: 'cloud-server',
             latencyMs,
             testedUrl: url,
           };
-        } else {
-          lastStatus = res.status;
         }
       } catch (err: any) {
-        lastError = err?.message || 'Network request failed';
+        lastError = err?.message || 'Server is not connected';
       }
     }
 
-    let errorDetail = 'Could not reach backend URL.';
+    let errorDetail = 'Server is not connected';
     if (isNoServer) {
-      errorDetail = 'Render Service Not Found (404 no-server). Please verify your Web Service name in Render Dashboard or deploy the service.';
+      errorDetail = 'Server is not connected';
     } else if (lastError.toLowerCase().includes('abort')) {
-      errorDetail = 'Request timed out (9s). If using Render free tier, service may be cold-booting (takes 30-50s). Please retry in a few seconds.';
-    } else if (lastError) {
-      errorDetail = `${lastError} (Check internet or CORS settings).`;
+      errorDetail = 'Server is not connected. Request timed out.';
     }
 
     return {

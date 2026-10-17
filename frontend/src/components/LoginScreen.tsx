@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, Lock, Eye, EyeOff, Loader2, AlertCircle, ShieldCheck, KeyRound } from 'lucide-react';
+import { User, Lock, Eye, EyeOff, Loader2, AlertCircle, ShieldCheck } from 'lucide-react';
 import { cloudApi, AppUser } from '../services/cloudSyncService';
 import roosterLogo from '../assets/rooster-logo.jpg';
 
@@ -49,12 +49,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onCanc
       return;
     }
     await executeLogin(trimmedUsername, password);
-  };
-
-  const handleQuickLogin = async (demoUser: string, demoPass: string) => {
-    setUsername(demoUser);
-    setPassword(demoPass);
-    await executeLogin(demoUser, demoPass);
   };
 
   return (
@@ -182,55 +176,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onCanc
             </button>
           )}
 
-          {/* Quick Demo Access Roster */}
-          <div className="mt-5 pt-4 border-t border-slate-800 text-center">
-            <div className="flex items-center justify-center gap-1.5 text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-2">
-              <KeyRound className="w-3 h-3 text-emerald-400" />
-              <span>Quick 1-Click Access</span>
-            </div>
-            <div className="grid grid-cols-2 gap-1.5 text-left">
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('admin', 'Admin@123')}
-                disabled={isLoading}
-                className="p-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl transition cursor-pointer"
-              >
-                <div className="text-[11px] font-black text-emerald-400">👑 Admin</div>
-                <div className="text-[10px] text-slate-400 font-mono">admin • Admin@123</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('manager', 'Manager@123')}
-                disabled={isLoading}
-                className="p-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl transition cursor-pointer"
-              >
-                <div className="text-[11px] font-black text-purple-400">👔 Manager</div>
-                <div className="text-[10px] text-slate-400 font-mono">manager • Manager@123</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('supervisor', 'Super@123')}
-                disabled={isLoading}
-                className="p-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl transition cursor-pointer"
-              >
-                <div className="text-[11px] font-black text-sky-400">📋 Supervisor</div>
-                <div className="text-[10px] text-slate-400 font-mono">supervisor • Super@123</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('incharge', 'Incharge@123')}
-                disabled={isLoading}
-                className="p-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl transition cursor-pointer"
-              >
-                <div className="text-[11px] font-black text-amber-400">🏢 In-Charge</div>
-                <div className="text-[10px] text-slate-400 font-mono">incharge • Incharge@123</div>
-              </button>
-            </div>
-          </div>
-
           {/* Operational Security Note */}
           <p className="mt-4 text-[10px] text-slate-500 text-center">
-            Secure Role-Based Routing • Powered by PostgreSQL
+            Secure Role-Based Authentication
           </p>
         </form>
       </div>

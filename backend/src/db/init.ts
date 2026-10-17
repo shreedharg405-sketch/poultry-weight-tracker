@@ -20,7 +20,13 @@ export const REQUIRED_TABLES = [
 
 export function isPostgresConfigured(): boolean {
   const dbUrl = process.env.DATABASE_URL;
-  return Boolean(dbUrl && dbUrl.trim() && !dbUrl.startsWith('file:') && !dbUrl.startsWith('sqlite:'));
+  return Boolean(
+    dbUrl && 
+    dbUrl.trim() && 
+    !dbUrl.startsWith('file:') && 
+    !dbUrl.startsWith('sqlite:') &&
+    !dbUrl.includes('localhost:5432/poultry_dev')
+  );
 }
 
 export function findSchemaPath(): string {
@@ -166,30 +172,31 @@ export async function syncDatabaseSchema(): Promise<{ success: boolean; message:
 
     // Ensure required schema columns (like Farm.isArchived and archivedAt) exist
     try {
-      await prisma.$executeRawUnsafe(`
-        ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false;
-        ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3);
-      `);
+      try {
+        await prisma.$executeRawUnsafe('ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
+        await prisma.$executeRawUnsafe('ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
+      } catch {
+        await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
+        await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
+      }
       console.log('✅ [DB-INIT] Verified Farm.isArchived and Farm.archivedAt columns exist in PostgreSQL.');
     } catch (colErr: any) {
       console.warn('⚠️ [DB-INIT] Column migration notice:', colErr?.message || colErr);
     }
 
-    // If any required tables are missing, push the Prisma schema non-destructively
+    // If tables are missing, run non-destructive prisma db push to synchronize complete schema
     if (inspection.missingTables.length > 0) {
-      console.log(`📦 [DB-INIT] Missing required tables: ${inspection.missingTables.join(', ')}`);
-      console.log('🚀 [DB-INIT] Executing non-destructive "prisma db push" to initialize schema...');
-
-      const schemaPath = findSchemaPath();
-      console.log(`📄 [DB-INIT] Using schema file at: ${schemaPath}`);
-
-      // Run non-destructive prisma db push (never resets, never drops tables)
-      const pushOutput = execSync(`npx prisma db push --schema="${schemaPath}" --skip-generate`, {
-        stdio: 'pipe',
-        env: process.env,
-      }).toString();
-
-      console.log('✅ [DB-INIT] Prisma schema push output:\n' + pushOutput);
+      try {
+        const schemaPath = findSchemaPath();
+        console.log(`📄 [DB-INIT] Synchronizing schema with: ${schemaPath}`);
+        const pushOutput = execSync(`npx prisma db push --schema="${schemaPath}" --skip-generate`, {
+          stdio: 'pipe',
+          env: process.env,
+        }).toString();
+        console.log('✅ [DB-INIT] Prisma schema push output:\n' + pushOutput);
+      } catch (pushErr: any) {
+        console.warn('⚠️ [DB-INIT] prisma db push notice:', pushErr?.message || pushErr);
+      }
 
       // Re-inspect database after push
       inspection = await inspectDatabase();

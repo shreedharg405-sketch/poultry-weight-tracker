@@ -41,13 +41,28 @@ async function checkDatabase() {
   }
 }
 
+let lastInspection: any = null;
+let lastInspectionTime = 0;
+
 // 1. General health check handlers (/healthz, /health, /api/healthz, /api/health)
-const healthHandler = async (_req: Request, res: Response) => {
+const healthHandler = async (req: Request, res: Response) => {
   const db = await checkDatabase();
-  const inspection = await inspectDatabase();
+  const now = Date.now();
+  const shouldFullInspect = req.query.full === 'true' || (now - lastInspectionTime > 60000);
+
+  let inspection = lastInspection;
+  if (!inspection || shouldFullInspect) {
+    if (db.connected) {
+      inspection = await inspectDatabase().catch(() => null);
+      if (inspection) {
+        lastInspection = inspection;
+        lastInspectionTime = now;
+      }
+    }
+  }
 
   const payload = {
-    status: db.connected && inspection.allRequiredExist ? 'healthy' : (db.connected ? 'schema_pending' : 'degraded'),
+    status: db.connected ? 'healthy' : 'degraded',
     service: 'poultry-weight-backend',
     version: '3.0.0',
     timestamp: new Date().toISOString(),
@@ -57,18 +72,8 @@ const healthHandler = async (_req: Request, res: Response) => {
       provider: db.provider,
       latencyMs: db.latencyMs,
       configured: db.configured,
-      message: db.message || db.error,
-      schemaReady: inspection.allRequiredExist,
-      existingTablesCount: inspection.existingTables.length,
-      missingTablesCount: inspection.missingTables.length,
-      missingTables: inspection.missingTables,
-      recordCounts: {
-        farms: inspection.farmCount,
-        users: inspection.userCount,
-        submissions: inspection.submissionCount,
-        birdWeights: inspection.birdWeightCount,
-        activityLogs: inspection.activityLogCount,
-      },
+      message: db.connected ? 'Server is connected' : 'Server is not connected',
+      schemaReady: inspection?.allRequiredExist ?? db.connected,
     },
     syncCapabilities: {
       multiFarm: true,

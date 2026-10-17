@@ -33,7 +33,7 @@ import {
   Scale,
   History
 } from 'lucide-react';
-import { FarmSummary, AppUser, UserRole, cloudApi, FullFarmData, DeleteImpactResult } from '../services/cloudSyncService';
+import { FarmSummary, AppUser, UserRole, cloudApi, FullFarmData, DeleteImpactResult, sanitizeErrorMessage } from '../services/cloudSyncService';
 import { formatDateTimeIST } from '../utils/dateFormatter';
 
 export interface ManagerAdminDashboardProps {
@@ -313,7 +313,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     );
   };
 
-  // Persist Operator Assignments to PostgreSQL Database (Req 5)
+  // Persist Operator Assignments to Server (Req 5 & 7)
   const handleSaveAssignments = async () => {
     if (!assigningFarmId) return;
     setIsSavingAssignments(true);
@@ -328,20 +328,32 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
         setAssigningFarmId(null);
       }, 700);
     } catch (err: any) {
-      setAssignError(err.message || 'Failed to save operator assignments to database');
+      setAssignError(sanitizeErrorMessage(err.message || 'Server is not connected'));
     } finally {
       setIsSavingAssignments(false);
     }
   };
 
-  // 1. Open Farm Details & Submissions Modal (Req 2)
+  // 1. Open Farm Details & Submissions Modal (Req 2 & 4)
   const handleOpenFarmDetails = async (farm: FarmSummary) => {
     setViewingFarm(farm);
     setIsLoadingFarmDetails(true);
     setViewingFarmDetails(null);
     try {
       const full = await cloudApi.getFarmDetails(farm.id);
-      setViewingFarmDetails(full);
+      let subs = full?.submissions || [];
+      try {
+        const extraSubs = await cloudApi.getSubmissions(farm.id);
+        if (Array.isArray(extraSubs) && extraSubs.length > 0) {
+          const map = new Map<string, any>();
+          subs.forEach((s: any) => map.set(s.id, s));
+          extraSubs.forEach((s: any) => map.set(s.id, { ...map.get(s.id), ...s }));
+          subs = Array.from(map.values()).sort((a, b) => 
+            new Date(b.submittedAt || b.createdAt || 0).getTime() - new Date(a.submittedAt || a.createdAt || 0).getTime()
+          );
+        }
+      } catch {}
+      setViewingFarmDetails({ ...full, submissions: subs });
     } catch (err: any) {
       console.warn('Could not load full farm details:', err);
     } finally {
@@ -1661,9 +1673,47 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
                             <div className="space-y-2.5">
                               {farmSheds.map((shed: any, idx: number) => {
-                                const shedParts = shed.parts || [];
-                                const shedLines = shedParts.flatMap((p: any) => p.lines || []);
-                                const shedWeights = shedLines.flatMap((l: any) => l.weights || []);
+                                let shedParts = shed.parts || [];
+                                let shedLines = shedParts.flatMap((p: any) => p.lines || []);
+                                let shedWeights = shedLines.flatMap((l: any) => l.weights || []);
+
+                                // Fallback to latest farm submission if line weights are not populated directly on template
+                                if (shedWeights.length === 0 && farmSubmissions && farmSubmissions.length > 0) {
+                                  for (const sub of farmSubmissions) {
+                                    if (sub.sheds && sub.sheds.length > 0) {
+                                      const matchedShed = sub.sheds.find((s: any) => 
+                                        (s.shedId && (s.shedId === shed.id || s.shedId === `shed-${idx + 1}`)) ||
+                                        (s.name && s.name.trim().toLowerCase() === (shed.name || '').trim().toLowerCase()) ||
+                                        s.order === idx + 1 ||
+                                        s.order === idx
+                                      );
+                                      if (matchedShed) {
+                                        const subParts = matchedShed.parts || [];
+                                        const subLines = subParts.flatMap((p: any) => p.lines || []);
+                                        const subWeights = subLines.flatMap((l: any) => l.weights || []);
+                                        if (subWeights.length > 0) {
+                                          shedWeights = subWeights;
+                                          if (shedLines.length === 0) {
+                                            shedLines = subLines;
+                                          } else {
+                                            shedLines = shedLines.map((l: any, lIdx: number) => {
+                                              const matchedLine = subLines.find((sl: any) =>
+                                                sl.lineId === l.id ||
+                                                sl.name?.trim().toLowerCase() === (l.name || '').trim().toLowerCase() ||
+                                                sl.order === lIdx
+                                              );
+                                              return (matchedLine && matchedLine.weights && matchedLine.weights.length > 0)
+                                                ? { ...l, weights: matchedLine.weights }
+                                                : l;
+                                            });
+                                          }
+                                          break;
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+
                                 const count = shedWeights.length;
                                 const avg = count > 0 ? Math.round((shedWeights.reduce((a: number, b: number) => a + b, 0) / count) * 10) / 10 : 0;
                                 const lower10 = avg * 0.9;

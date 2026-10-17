@@ -1,8 +1,8 @@
 import { prisma } from './db/prisma.js';
 import { hashPassword } from './services/authService.js';
 
-const defaultShedWeights = [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1850, 1950, 1985, 1990];
-const defaultMaleWeights = [2800, 3000, 3800, 2650, 2950, 2456, 3566, 2800, 3000, 3800];
+const defaultShedWeights: number[] = [];
+const defaultMaleWeights: number[] = [];
 
 export async function seedUsersIfEmpty(): Promise<void> {
   const userCount = await prisma.user.count();

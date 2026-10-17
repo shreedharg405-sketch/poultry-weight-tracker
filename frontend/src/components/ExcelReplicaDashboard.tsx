@@ -133,9 +133,9 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 1',
     type: 'Female',
     lines: [
-      { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1850, 1950, 1985, 1990, 1890, 2000, 2040, 1650, 1690, 1720, 1750, 1780, 1810, 1840, 1880] },
-      { id: 2, name: 'Line 2', weights: [1205, 1250, 1270, 1290, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1500, 1520, 1550, 1580, 1610, 1640, 1670, 1700, 1730, 1760, 1790] },
-      { id: 3, name: 'Line 3', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1500, 1500, 1510, 1540, 1580, 1620, 1660, 1700, 1740] }
+      { id: 1, name: 'Line 1', weights: [] },
+      { id: 2, name: 'Line 2', weights: [] },
+      { id: 3, name: 'Line 3', weights: [] }
     ]
   },
   {
@@ -143,7 +143,7 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 2',
     type: 'Female',
     lines: [
-      { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1470, 1470, 1500, 1500, 1510, 1540, 1600, 1650, 1700, 1750, 1790] }
+      { id: 1, name: 'Line 1', weights: [] }
     ]
   },
   {
@@ -151,7 +151,7 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 3',
     type: 'Female',
     lines: [
-      { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1470, 1470, 1500, 1500, 1510, 1540, 1600, 1650, 1700, 1750, 1790] }
+      { id: 1, name: 'Line 1', weights: [] }
     ]
   },
   {
@@ -159,7 +159,7 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 4',
     type: 'Female',
     lines: [
-      { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1470, 1470, 1500, 1500, 1510, 1540, 1600, 1650, 1700, 1750, 1790] }
+      { id: 1, name: 'Line 1', weights: [] }
     ]
   },
   {
@@ -167,7 +167,7 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 5',
     type: 'Female',
     lines: [
-      { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1470, 1470, 1500, 1500, 1510, 1540, 1600, 1650, 1700, 1750, 1790] }
+      { id: 1, name: 'Line 1', weights: [] }
     ]
   },
   {
@@ -175,7 +175,7 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 6',
     type: 'Female',
     lines: [
-      { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1470, 1470, 1500, 1500, 1510, 1540, 1600, 1650, 1700, 1750, 1790] }
+      { id: 1, name: 'Line 1', weights: [] }
     ]
   },
   {
@@ -183,7 +183,7 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 7',
     type: 'Female',
     lines: [
-      { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1470, 1470, 1500, 1500, 1510, 1540, 1600, 1650, 1700, 1750, 1790] }
+      { id: 1, name: 'Line 1', weights: [] }
     ]
   },
   {
@@ -191,7 +191,7 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 8 Male',
     type: 'Male',
     lines: [
-      { id: 1, name: 'Line 1', weights: [2800, 3000, 3800, 2650, 2950, 2456, 3566, 2800, 3000, 3800, 2650, 2950, 2456, 3566, 2800, 3000, 3800, 2900, 3100, 3200] }
+      { id: 1, name: 'Line 1', weights: [] }
     ]
   },
   {
@@ -199,7 +199,7 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 9',
     type: 'Female',
     lines: [
-      { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1470, 1470, 1500, 1500, 1510, 1540, 1600, 1650, 1700, 1750, 1790] }
+      { id: 1, name: 'Line 1', weights: [] }
     ]
   },
   {
@@ -207,7 +207,7 @@ const INITIAL_SHEDS_DATA: ShedData[] = [
     name: 'Shed 10',
     type: 'Female',
     lines: [
-      { id: 1, name: 'Line 1', weights: [1270, 1290, 1300, 1300, 1330, 1370, 1380, 1390, 1400, 1450, 1470, 1470, 1470, 1500, 1500, 1510, 1540, 1600, 1650, 1700, 1750, 1790] }
+      { id: 1, name: 'Line 1', weights: [] }
     ]
   }
 ];

@@ -19,7 +19,7 @@ import {
   Clock,
   Save
 } from 'lucide-react';
-import { FarmSummary, FarmAudit, FarmStatus } from '../services/cloudSyncService';
+import { FarmSummary, FarmAudit, FarmStatus, sanitizeErrorMessage } from '../services/cloudSyncService';
 import { formatDateTimeIST } from '../utils/dateFormatter';
 
 export interface IncompleteLineItem {
@@ -159,14 +159,14 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
         <div className="lg:col-span-7 space-y-3.5">
           {/* Farm Profile Header */}
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex items-start justify-between flex-wrap gap-2">
+          <div className="min-w-0">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
               Active Farm Unit
             </span>
-            <h1 className="text-base font-black text-slate-900 flex items-center gap-1.5 mt-0.5">
+            <h1 className="text-base font-black text-slate-900 flex items-center gap-1.5 mt-0.5 truncate">
               <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>{farm?.name || 'Farm Unit'}</span>
+              <span className="truncate">{farm?.name || 'Active Farm'}</span>
             </h1>
             <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-slate-600">
               <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-bold text-[10px] border border-slate-200">
@@ -249,7 +249,7 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
               </p>
               {uploadErrorMessage && (
                 <p className="text-[10px] text-rose-700 font-mono mt-1 bg-rose-100/50 p-1.5 rounded">
-                  {uploadErrorMessage}
+                  {sanitizeErrorMessage(uploadErrorMessage)}
                 </p>
               )}
             </div>

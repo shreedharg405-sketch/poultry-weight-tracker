@@ -117,19 +117,19 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
 
   return (
     <div className="flex-1 flex flex-col p-4 animate-in fade-in duration-150">
-      {/* Top Header: Session & Role Bar with Integrated Logout (Req 1) */}
-      <div className="flex items-center justify-between mb-4 px-1 gap-2">
-        <div className="flex items-center gap-2 min-w-0">
+      {/* Top Header: Session & Role Bar with Integrated Logout (Req 1 & 5) */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 mb-4 px-1">
+        <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0 w-full sm:w-auto">
           <div 
             onClick={onOpenAuth}
-            className="flex items-center gap-2.5 cursor-pointer hover:bg-slate-50 transition bg-white px-3 py-2 rounded-xl border border-slate-200 shadow-2xs min-w-0"
+            className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 transition bg-white px-2.5 py-1.5 rounded-xl border border-slate-200 shadow-2xs min-w-0 flex-1 sm:flex-initial"
             title="View User Profile & Farm Access Roles"
           >
             <div className="w-8 h-8 rounded-lg text-white flex items-center justify-center font-bold text-xs shadow-xs bg-emerald-600 shrink-0">
               {userDisplayName.charAt(0).toUpperCase()}
             </div>
-            <div className="min-w-0">
-              <span className="text-xs font-bold text-slate-900 block leading-tight truncate max-w-[140px]">
+            <div className="min-w-0 flex-1">
+              <span className="text-xs font-bold text-slate-900 block leading-tight truncate max-w-[120px] sm:max-w-[150px]">
                 {userDisplayName}
               </span>
               <span className="text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border bg-emerald-50 text-emerald-700 border-emerald-200">
@@ -151,31 +151,30 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
           </button>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
           <button
             type="button"
             onClick={onViewSubmissionsUpdate}
-            className="flex items-center gap-2 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 px-3 sm:px-4 py-2 rounded-xl active:scale-95 transition cursor-pointer shadow-2xs shrink-0"
+            className="flex items-center justify-center gap-2 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 px-3 sm:px-4 py-2 rounded-xl active:scale-95 transition cursor-pointer shadow-2xs w-full sm:w-auto"
           >
             <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse shrink-0" />
-            <span className="hidden sm:inline">Submissions Update</span>
-            <span className="sm:hidden">Submissions</span>
+            <span>Submissions History</span>
           </button>
         </div>
       </div>
 
       {/* Role Banner */}
-      <div className="bg-gradient-to-r from-emerald-900 to-slate-900 text-white p-4 sm:p-5 rounded-2xl border border-emerald-700/60 mb-5 shadow-md">
-        <div className="flex items-center justify-between">
-          <div>
+      <div className="bg-gradient-to-r from-emerald-900 to-slate-900 text-white p-3.5 sm:p-5 rounded-2xl border border-emerald-700/60 mb-4 shadow-md">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div className="min-w-0">
             <span className="text-[10px] sm:text-xs font-black uppercase tracking-wider text-emerald-300 block">
               Field Operations Workspace
             </span>
-            <h2 className="text-base sm:text-lg font-black text-white mt-0.5">
+            <h2 className="text-sm sm:text-base md:text-lg font-black text-white mt-0.5 truncate">
               {(userRole === 'In-Charge' || userRole === 'Incharge') ? 'In-Charge Operations Dashboard' : 'Supervisor Operations Dashboard'}
             </h2>
           </div>
-          <span className="text-xs font-mono font-bold text-emerald-200 bg-emerald-950/60 px-3 py-1 rounded-xl border border-emerald-600/40">
+          <span className="text-[11px] sm:text-xs font-mono font-bold text-emerald-200 bg-emerald-950/60 px-2.5 py-1 rounded-xl border border-emerald-600/40 shrink-0 self-start sm:self-auto">
             {formattedDateTime}
           </span>
         </div>
@@ -271,25 +270,25 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             </div>
 
             {/* Active Farm Quick Detail Card */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
-              <div className="flex items-start justify-between gap-2">
+            <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs">
+              <div className="flex items-start justify-between gap-2 flex-wrap">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h1 className="text-lg font-black text-slate-900 flex items-center gap-2 break-words">
+                    <h1 className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2 break-words">
                       <Building2 className="w-5 h-5 text-emerald-600 shrink-0" />
-                      <span>{activeFarm.name}</span>
+                      <span className="break-all">{activeFarm.name}</span>
                     </h1>
                     <button
                       type="button"
                       onClick={handleOpenRename}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition active:scale-95 cursor-pointer shadow-2xs"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition active:scale-95 cursor-pointer shadow-2xs shrink-0"
                       title="Edit Farm Name"
                     >
                       <Edit2 className="w-3.5 h-3.5" />
                       <span>Edit Name</span>
                     </button>
                   </div>
-                  <div className="flex items-center gap-2 mt-2.5 text-xs text-slate-500">
+                  <div className="flex items-center gap-2 mt-2.5 text-xs text-slate-500 flex-wrap">
                     <span className="bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg font-bold text-xs border border-slate-200">
                       {activeFarm.ageWeek}
                     </span>
@@ -304,17 +303,17 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               </div>
 
               {/* Progress Strip */}
-              <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs">
-                <span className="font-bold text-slate-600">
+              <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs flex-wrap gap-2">
+                <span className="font-bold text-slate-600 min-w-0 flex-1">
                   {farmStatus === 'DRAFT' ? (
-                    <span className="text-amber-600">
-                      🟡 DRAFT IN PROGRESS ({completionStats.completedLinesCount} of {completionStats.totalLinesCount} lines completed)
+                    <span className="text-amber-600 break-words">
+                      🟡 DRAFT ({completionStats.completedLinesCount} of {completionStats.totalLinesCount} lines)
                     </span>
                   ) : (
                     <span className="text-emerald-600">🟢 COMPLETED & SUBMITTED</span>
                   )}
                 </span>
-                <span className="font-mono font-bold text-slate-900 text-sm">
+                <span className="font-mono font-bold text-slate-900 text-sm shrink-0">
                   {completionStats.progressPercent}% Weighed
                 </span>
               </div>
@@ -330,41 +329,41 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             {/* 1. Enter Weights (Field Operator Weighing Pad) */}
             <button
               onClick={onStartWeighing}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] transition p-5 rounded-2xl flex items-center justify-between text-left shadow-md shadow-emerald-600/20 text-white group cursor-pointer"
+              className="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] transition p-4 sm:p-5 rounded-2xl flex items-center justify-between text-left shadow-md shadow-emerald-600/20 text-white group cursor-pointer"
             >
-              <div className="flex items-center gap-4">
-                <div className="p-3.5 bg-white/20 rounded-xl text-white">
-                  <Scale className="w-7 h-7" />
+              <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                <div className="p-3 bg-white/20 rounded-xl text-white shrink-0">
+                  <Scale className="w-6 h-6 sm:w-7 sm:h-7" />
                 </div>
-                <div>
-                  <h2 className="font-black text-base sm:text-lg text-white">Enter Bird Weights</h2>
-                  <p className="text-xs sm:text-sm text-emerald-100">Select Shed › Part › Line weighing cards</p>
+                <div className="min-w-0">
+                  <h2 className="font-black text-base sm:text-lg text-white truncate">Enter Bird Weights</h2>
+                  <p className="text-xs sm:text-sm text-emerald-100 truncate">Select Shed › Part › Line cards</p>
                 </div>
               </div>
-              <ChevronRight className="w-6 h-6 text-emerald-200 group-hover:translate-x-1 transition" />
+              <ChevronRight className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-200 group-hover:translate-x-1 transition shrink-0 ml-2" />
             </button>
 
             {/* 2. Dedicated Submit Farm Weighing Screen */}
             <button
               onClick={onOpenSubmitPage}
-              className={`w-full active:scale-[0.98] transition p-5 rounded-2xl flex items-center justify-between text-left border shadow-xs group cursor-pointer ${
+              className={`w-full active:scale-[0.98] transition p-4 sm:p-5 rounded-2xl flex items-center justify-between text-left border shadow-xs group cursor-pointer ${
                 completionStats.isFarm100PercentWeighed
                   ? 'bg-emerald-50 border-emerald-300 hover:bg-emerald-100/60 text-emerald-950'
                   : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-900'
               }`}
             >
-              <div className="flex items-center gap-4">
-                <div className={`p-3.5 rounded-xl ${
+              <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                <div className={`p-3 rounded-xl shrink-0 ${
                   completionStats.isFarm100PercentWeighed 
                     ? 'bg-emerald-600 text-white' 
                     : 'bg-amber-100 text-amber-700'
                 }`}>
-                  <UploadCloud className="w-7 h-7" />
+                  <UploadCloud className="w-6 h-6 sm:w-7 sm:h-7" />
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="font-black text-base text-slate-900">Dedicated Submit Screen</h2>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="font-black text-sm sm:text-base text-slate-900">Dedicated Submit Screen</h2>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ${
                       completionStats.isFarm100PercentWeighed
                         ? 'bg-emerald-200 text-emerald-900'
                         : 'bg-amber-200 text-amber-900'
@@ -372,12 +371,12 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                       {completionStats.isFarm100PercentWeighed ? 'Ready to Submit' : `${completionStats.incompleteLines.length} Pending`}
                     </span>
                   </div>
-                  <p className="text-xs text-slate-500 mt-0.5">
+                  <p className="text-xs text-slate-500 mt-0.5 truncate">
                     Verify 100% completion & finalize farm batch
                   </p>
                 </div>
               </div>
-              <ArrowRight className="w-6 h-6 text-slate-400 group-hover:translate-x-1 transition" />
+              <ArrowRight className="w-5 h-5 sm:w-6 sm:h-6 text-slate-400 group-hover:translate-x-1 transition shrink-0 ml-2" />
             </button>
 
             {/* 3. Submissions Update Feed */}

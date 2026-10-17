@@ -66,7 +66,8 @@ import {
   normalizeApiUrl, 
   offlineQueue, 
   AppUser, 
-  ActivityLogItem 
+  ActivityLogItem,
+  sanitizeErrorMessage
 } from './services/cloudSyncService';
 
 // Seasonal Target Benchmarks for all 23 Weeks
@@ -175,7 +176,25 @@ export default function App() {
   }, [isLiveClock]);
 
   // Farm Profile State
-  const [farmName, setFarmName] = useState('');
+  const [farmName, setFarmName] = useState<string>(() => {
+    const activeId = localStorage.getItem('poultry_active_farm_id') || '';
+    if (activeId) {
+      try {
+        const cached = localStorage.getItem('poultry_farms_list_v4') || localStorage.getItem('poultry_farms_list_v2');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          const found = Array.isArray(parsed) && parsed.find((f: any) => f.id === activeId || f.name?.toLowerCase() === activeId.toLowerCase());
+          if (found?.name) return found.name;
+        }
+        const localCached = localStorage.getItem(`poultry_farm_${activeId}`);
+        if (localCached) {
+          const parsed = JSON.parse(localCached);
+          if (parsed?.farmName) return parsed.farmName;
+        }
+      } catch {}
+    }
+    return '';
+  });
   const [date, setDate] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -561,6 +580,9 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3800);
   };
 
+  // Shed Gender Filter State (All / Female / Male) - Req 9
+  const [shedGenderFilter, setShedGenderFilter] = useState<'ALL' | 'FEMALE' | 'MALE'>('ALL');
+
   // Dynamic Sheds Hierarchy - Authoritative Data from Database / Cache, No Hardcoded Defaults
   const [sheds, setSheds] = useState<ShedData[]>(() => {
     const activeId = localStorage.getItem('poultry_active_farm_id');
@@ -800,6 +822,20 @@ export default function App() {
     setActiveFarmId(targetFarmId);
     localStorage.setItem('poultry_active_farm_id', targetFarmId);
     if (!silent) setSyncStatus('refreshing');
+
+    // Immediately resolve and set farm name from farmsList or localStorage
+    const knownFarm = farmsList.find(f => f.id === targetFarmId || f.name.toLowerCase() === targetFarmId.toLowerCase());
+    if (knownFarm?.name) {
+      setFarmName(knownFarm.name);
+    } else {
+      const localCached = localStorage.getItem(`poultry_farm_${targetFarmId}`);
+      if (localCached) {
+        try {
+          const parsed = JSON.parse(localCached);
+          if (parsed.farmName) setFarmName(parsed.farmName);
+        } catch {}
+      }
+    }
 
     // Restore local audit, draft status & pending status for target farm
     const localStatus = localStorage.getItem(`poultry_status_${targetFarmId}`) as FarmStatus | null;
@@ -1251,21 +1287,21 @@ export default function App() {
       if (result.online) {
         setCloudTestStatus('success');
         if (result.databaseConnected) {
-          showToast(`Connected! Render PostgreSQL is live (${result.latencyMs || 0}ms)`);
+          showToast(`Connected to server (${result.latencyMs || 0}ms)`);
         } else {
-          showToast(`Backend online, but DB is ${result.databaseStatus || 'disconnected'}`);
+          showToast('Server is not connected');
         }
       } else {
         setCloudTestStatus('failed');
-        showToast(result.error || 'Connection Failed');
+        showToast('Server is not connected');
       }
     } catch (err: any) {
       setCloudTestStatus('failed');
       setCloudTestResult({
         online: false,
-        error: err?.message || 'Could not reach backend URL'
+        error: 'Server is not connected'
       });
-      showToast('Could not reach backend URL');
+      showToast('Server is not connected');
     }
   };
 
@@ -1752,7 +1788,7 @@ export default function App() {
       setFarmStatus('UPLOAD_FAILED');
       localStorage.setItem(`poultry_status_${activeFarmId}`, 'UPLOAD_FAILED');
       setSyncStatus('offline');
-      const errorMsg = err?.message || 'Upload failed. Your draft is preserved locally. Please retry when the connection returns.';
+      const errorMsg = sanitizeErrorMessage(err?.message || 'Server is not connected');
       setUploadErrorMessage(errorMsg);
       showToast('Upload failed. Your draft is preserved locally. Please retry when the connection returns.');
     } finally {
@@ -2051,7 +2087,11 @@ export default function App() {
       {isExporting && <LoadingScreen message={exportMessage} />}
 
       <div className="flex justify-center bg-slate-100/70 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
-        <div className="w-full max-w-7xl mx-auto min-h-screen bg-slate-50 border-x border-slate-200/80 flex flex-col shadow-xl relative pb-8 transition-all duration-300 px-3 sm:px-6 lg:px-8">
+        <div className={`w-full min-h-screen bg-slate-50 flex flex-col relative pb-8 transition-all duration-300 overflow-x-hidden ${
+          (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge')
+            ? 'max-w-md mx-auto px-2 sm:px-3 shadow-2xl border-x border-slate-200'
+            : 'max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 border-x border-slate-200/80 shadow-xl'
+        }`}>
         
         {!isAuthenticated ? (
           <LoginScreen onLoginSuccess={handleLoginSuccess} />
@@ -2154,25 +2194,79 @@ export default function App() {
               </h2>
             </div>
 
-            {/* Active Farm Header with Rename Option for All Authorized Roles */}
-            <div className="flex items-center justify-between bg-white px-4 py-3 rounded-2xl border border-slate-200 shadow-2xs mb-4">
-              <div className="min-w-0">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Active Farm</span>
-                <span className="text-base font-black text-slate-900 truncate block">{farmName || 'Farm Unit'}</span>
+            {/* Active Farm Header with Rename Option & Shed Gender Filter directly below Edit Button (Req 9 & 10) */}
+            <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200 shadow-2xs mb-4">
+              <div className="flex items-start justify-between flex-wrap gap-2.5">
+                <div className="min-w-0 flex-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Active Farm</span>
+                  <span className="text-base sm:text-lg font-black text-slate-900 truncate block mt-0.5">
+                    {currentActiveFarmSummary?.name || farmName || (farmsList.find(f => f.id === activeFarmId)?.name) || 'Active Farm'}
+                  </span>
+                  <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-500">
+                    <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-bold text-[10px] border border-slate-200">
+                      {currentActiveFarmSummary?.ageWeek || ageWeek}
+                    </span>
+                    <span>{currentActiveFarmSummary?.season || season} Brood</span>
+                    <span>•</span>
+                    <span className="font-semibold text-slate-700">{sheds.length} Sheds</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col items-end gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditFarmNameInput(currentActiveFarmSummary?.name || farmName || '');
+                      setEditFarmNameError(null);
+                      setShowEditFarmModal(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200 text-xs font-bold transition active:scale-95 cursor-pointer shrink-0 shadow-2xs"
+                    title="Rename Farm"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span className="text-xs">Edit Name</span>
+                  </button>
+
+                  {/* Shed Gender Filter Bar - Placed Below Edit Name Button (Req 9) */}
+                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0 shadow-2xs">
+                    <button
+                      type="button"
+                      onClick={() => setShedGenderFilter('ALL')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer ${
+                        shedGenderFilter === 'ALL'
+                          ? 'bg-slate-900 text-white shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                      }`}
+                    >
+                      All ({sheds.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShedGenderFilter('FEMALE')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                        shedGenderFilter === 'FEMALE'
+                          ? 'bg-pink-600 text-white shadow-xs'
+                          : 'text-pink-700 hover:bg-pink-100'
+                      }`}
+                    >
+                      <span>♀ Female</span>
+                      <span>({sheds.filter(s => s.type !== 'Male').length})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShedGenderFilter('MALE')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                        shedGenderFilter === 'MALE'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-blue-700 hover:bg-blue-100'
+                      }`}
+                    >
+                      <span>♂ Male</span>
+                      <span>({sheds.filter(s => s.type === 'Male').length})</span>
+                    </button>
+                  </div>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditFarmNameInput(farmName);
-                  setEditFarmNameError(null);
-                  setShowEditFarmModal(true);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200 text-xs font-bold transition active:scale-95 cursor-pointer shrink-0"
-                title="Rename Farm"
-              >
-                <Edit3 className="w-3.5 h-3.5" />
-                <span className="text-xs">Edit Name</span>
-              </button>
             </div>
 
             <p className="text-xs text-slate-500 mb-3 px-1 font-medium">Choose a shed or toggle its Female / Male flock gender:</p>
@@ -2196,7 +2290,12 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                sheds.map(s => {
+                (shedGenderFilter === 'ALL'
+                  ? sheds
+                  : shedGenderFilter === 'FEMALE'
+                    ? sheds.filter(s => s.type !== 'Male')
+                    : sheds.filter(s => s.type === 'Male')
+                ).map(s => {
                   const sStd = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
                   const sStats = calculateFlockStats((s.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || [])), sStd, weekNum);
                   return (

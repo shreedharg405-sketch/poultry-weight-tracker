@@ -102,7 +102,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
           return res.status(200).json({
             success: true,
             status: existing.status,
-            message: 'Batch weighing already committed to PostgreSQL cloud database.',
+            message: 'Batch weighing already committed.',
             submission: existing,
             isIdempotentReplay: true,
           });
@@ -110,8 +110,8 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
       } catch (e: any) {
         console.error('❌ [DB] Idempotency check error:', e?.message || e);
         return res.status(503).json({
-          error: 'Database error: Unable to verify idempotency in PostgreSQL database.',
-          details: e?.message,
+          error: 'Server is not connected',
+          details: 'Server is not connected',
         });
       }
     } else {
@@ -120,7 +120,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
         return res.status(200).json({
           success: true,
           status: existingMem.status,
-          message: 'Batch weighing already committed to local memory store.',
+          message: 'Batch weighing already committed.',
           submission: existingMem,
           isIdempotentReplay: true,
         });
@@ -140,10 +140,10 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
         farmName = dbFarm.name;
       }
     } catch (e: any) {
-      console.error('❌ [DB] Farm existence check error in PostgreSQL:', e?.message || e);
+      console.error('❌ [DB] Farm existence check error:', e?.message || e);
       return res.status(503).json({
-        error: 'Database error: Unable to verify farm in PostgreSQL database.',
-        details: e?.message,
+        error: 'Server is not connected',
+        details: 'Server is not connected',
       });
     }
   } else {
@@ -330,22 +330,46 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
                 }
               });
 
-              // Save EVERY individual bird weight with sample sequence!
-              for (let wIdx = 0; wIdx < lineWeights.length; wIdx++) {
-                await tx.birdWeight.create({
-                  data: {
-                    submissionId: sub.id,
-                    submissionLineId: subLine.id,
-                    farmId,
-                    shedName: s.name,
-                    partName: p.name,
-                    lineName: l.name,
-                    sex: s.type || 'Female',
-                    sampleSequence: wIdx + 1,
-                    weightGrams: lineWeights[wIdx],
-                    createdAt: now,
-                  }
-                });
+              // Batch insert individual bird weights for high speed
+              if (lineWeights.length > 0) {
+                const birdRecords = lineWeights.map((w, wIdx) => ({
+                  submissionId: sub.id,
+                  submissionLineId: subLine.id,
+                  farmId,
+                  shedName: s.name,
+                  partName: p.name,
+                  lineName: l.name,
+                  sex: s.type || 'Female',
+                  sampleSequence: wIdx + 1,
+                  weightGrams: w,
+                  createdAt: now,
+                }));
+                await tx.birdWeight.createMany({ data: birdRecords });
+              }
+
+              // Update active line structure if exists
+              if (l.id) {
+                try {
+                  await tx.line.update({
+                    where: { id: String(l.id) },
+                    data: { weights: lineWeights }
+                  });
+                } catch {
+                  try {
+                    const foundLine = await tx.line.findFirst({
+                      where: {
+                        name: l.name,
+                        part: { name: p.name, shed: { farmId, name: s.name } }
+                      }
+                    });
+                    if (foundLine) {
+                      await tx.line.update({
+                        where: { id: foundLine.id },
+                        data: { weights: lineWeights }
+                      });
+                    }
+                  } catch {}
+                }
               }
             }
           }
@@ -382,7 +406,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
       return res.status(201).json({
         success: true,
         status: 'COMPLETED',
-        message: 'Batch weighing submitted and committed to PostgreSQL cloud database successfully.',
+        message: 'Batch weighing submitted and committed to cloud database successfully.',
         submission: createdSubmission,
         stats: {
           totalBirds,
@@ -477,8 +501,9 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
 
   memorySubmissions.unshift(memSubmission);
 
-  const memFarm = memoryFarms.find(f => f.id === farmId);
+  const memFarm = memoryFarms.find(f => f.id === farmId || f.name === farmName);
   if (memFarm) {
+    memFarm.sheds = sheds;
     memFarm.updatedAt = now;
     memFarm.status = 'COMPLETED';
     memFarm.progressPercentage = 100;
@@ -562,6 +587,17 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
           farm: {
             select: { name: true }
           },
+          sheds: {
+            orderBy: { order: 'asc' },
+            include: {
+              parts: {
+                orderBy: { order: 'asc' },
+                include: {
+                  lines: true
+                }
+              }
+            }
+          },
           _count: {
             select: {
               sheds: true,
@@ -573,10 +609,10 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
 
       return res.json(submissions);
     } catch (err: any) {
-      console.error('❌ [DB] PostgreSQL get /submissions error:', err?.message || err);
+      console.error('❌ [DB] Error in get /submissions:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to retrieve submissions from PostgreSQL database.',
-        details: err?.message,
+        error: 'Server is not connected',
+        details: 'Server is not connected',
       });
     }
   }
@@ -626,7 +662,7 @@ submissionRouter.get('/submissions/:id', requireAuth, async (req: AuthenticatedR
       });
 
       if (!submission) {
-        return res.status(404).json({ error: 'Submission not found in PostgreSQL database' });
+        return res.status(404).json({ error: 'Submission not found' });
       }
 
       if (!canUserAccessFarm(user, submission.farmId, submission.farm.name)) {
@@ -635,10 +671,10 @@ submissionRouter.get('/submissions/:id', requireAuth, async (req: AuthenticatedR
 
       return res.json(submission);
     } catch (err: any) {
-      console.error('❌ [DB] PostgreSQL get /submissions/:id error:', err?.message || err);
+      console.error('❌ [DB] Error in get /submissions/:id:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to retrieve submission details from PostgreSQL database.',
-        details: err?.message,
+        error: 'Server is not connected',
+        details: 'Server is not connected',
       });
     }
   }
@@ -670,7 +706,7 @@ submissionRouter.get('/submissions/:id/birds', requireAuth, async (req: Authenti
         select: { farmId: true }
       });
       if (!submission) {
-        return res.status(404).json({ error: 'Submission not found in PostgreSQL database' });
+        return res.status(404).json({ error: 'Submission not found' });
       }
       if (!canUserAccessFarm(user, submission.farmId)) {
         return res.status(403).json({ error: 'Access denied.' });
@@ -694,10 +730,10 @@ submissionRouter.get('/submissions/:id/birds', requireAuth, async (req: Authenti
 
       return res.json(birds);
     } catch (err: any) {
-      console.error('❌ [DB] PostgreSQL get /birds error:', err?.message || err);
+      console.error('❌ [DB] Error in get /birds:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to retrieve bird weights from PostgreSQL database.',
-        details: err?.message,
+        error: 'Server is not connected',
+        details: 'Server is not connected',
       });
     }
   }
@@ -738,10 +774,10 @@ submissionRouter.get('/farms/:farmId/submissions', requireAuth, async (req: Auth
       });
       return res.json(submissions);
     } catch (err: any) {
-      console.error('❌ [DB] PostgreSQL get farm submissions error:', err?.message || err);
+      console.error('❌ [DB] Error in get farm submissions:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to retrieve farm submissions from PostgreSQL database.',
-        details: err?.message,
+        error: 'Server is not connected',
+        details: 'Server is not connected',
       });
     }
   }
@@ -766,7 +802,7 @@ submissionRouter.put('/submissions/:id', requireAuth, async (req: AuthenticatedR
       });
 
       if (!existing) {
-        return res.status(404).json({ error: 'Submission not found in PostgreSQL database' });
+        return res.status(404).json({ error: 'Submission not found in database' });
       }
 
       if (!canUserAccessFarm(user, existing.farmId, existing.farm.name)) {
@@ -897,10 +933,10 @@ submissionRouter.put('/submissions/:id', requireAuth, async (req: AuthenticatedR
         submission: updated
       });
     } catch (err: any) {
-      console.error('❌ [DB] PostgreSQL update submission error:', err?.message || err);
+      console.error('❌ [DB] Error in update submission:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to update submission in PostgreSQL database.',
-        details: err?.message,
+        error: 'Server is not connected',
+        details: 'Server is not connected',
       });
     }
   }

@@ -16,23 +16,27 @@ import { memorySubmissions, memoryBirdWeights } from './submissions.js';
 export const farmRouter = Router();
 
 let columnsEnsured = false;
+let hasAttemptedColumnEnsure = false;
 export async function ensureFarmColumns(): Promise<void> {
-  if (!isPostgresConfigured() || columnsEnsured) return;
+  if (!isPostgresConfigured() || columnsEnsured || hasAttemptedColumnEnsure) return;
+  hasAttemptedColumnEnsure = true;
   try {
-    await prisma.$executeRawUnsafe(`
-      ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false;
-      ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3);
-    `);
+    try {
+      await prisma.$executeRawUnsafe('ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
+      await prisma.$executeRawUnsafe('ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
+    } catch {
+      await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
+      await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
+    }
     columnsEnsured = true;
-    console.log('✅ [DB] Ensured Farm columns (isArchived, archivedAt) exist.');
   } catch (err: any) {
-    console.warn('⚠️ [DB] ensureFarmColumns notice:', err?.message || err);
+    // Non-fatal, keep moving
   }
 }
 
-farmRouter.use(async (_req, _res, next) => {
-  if (!columnsEnsured) {
-    await ensureFarmColumns();
+farmRouter.use((_req, _res, next) => {
+  if (!columnsEnsured && !hasAttemptedColumnEnsure) {
+    ensureFarmColumns().catch(() => {});
   }
   next();
 });
@@ -258,36 +262,40 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
 
   if (isPostgresConfigured()) {
     try {
-      const [farms, users, submissions] = await Promise.all([
+      const [farms, users] = await Promise.all([
         prisma.farm.findMany({
           where: includeArchived ? {} : { isArchived: false },
           orderBy: { updatedAt: 'desc' },
           include: {
             _count: { select: { sheds: true, submissions: true } },
+            submissions: {
+              orderBy: { submittedAt: 'desc' },
+              take: 1,
+              select: {
+                id: true,
+                farmId: true,
+                status: true,
+                submittedAt: true,
+                submitterName: true,
+                submitterRole: true,
+                totalBirds: true,
+                femaleAvgWeight: true,
+                maleAvgWeight: true,
+                overallAvgWeight: true,
+              }
+            }
           },
         }),
         prisma.user.findMany({
+          where: {
+            role: { in: ['Supervisor', 'In-Charge', 'Incharge'] }
+          },
           select: {
             id: true,
             username: true,
             name: true,
             role: true,
             assignedFarms: true,
-          }
-        }),
-        prisma.submission.findMany({
-          orderBy: { submittedAt: 'desc' },
-          select: {
-            id: true,
-            farmId: true,
-            status: true,
-            submittedAt: true,
-            submitterName: true,
-            submitterRole: true,
-            totalBirds: true,
-            femaleAvgWeight: true,
-            maleAvgWeight: true,
-            overallAvgWeight: true,
           }
         })
       ]);
@@ -314,15 +322,14 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
         // Find assigned field operators for this farm - ONLY eligible field operators (Supervisor, In-Charge, Incharge)
         const assignedMap = new Map<string, string>();
         users
-          .filter(u => (u.role === 'Supervisor' || u.role === 'In-Charge' || u.role === 'Incharge') &&
-                       (u.assignedFarms || []).some(af => af === f.id || af === f.name))
+          .filter(u => (u.assignedFarms || []).some(af => af === f.id || af === f.name))
           .forEach(u => {
             assignedMap.set(u.id, `${u.name} (${u.role})`);
           });
         const assigned = Array.from(assignedMap.values());
 
-        // Find latest submission for this farm
-        const latestSub = submissions.find(s => s.farmId === f.id);
+        // Latest submission for this farm from eager load
+        const latestSub = f.submissions && f.submissions[0];
         const isCompleted = Boolean(latestSub && latestSub.status === 'COMPLETED');
 
         return {
@@ -355,9 +362,10 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
 
       return res.json(summaries);
     } catch (err: any) {
-      console.error('❌ [DB] PostgreSQL query failed on GET /farms:', err?.message || err);
+      console.error('❌ [DB] Query failed on GET /farms:', err?.message || err);
       if (err?.code === 'P2022' || String(err?.message).includes('isArchived')) {
         try {
+          columnsEnsured = false;
           await ensureFarmColumns();
           const retryFarms = await prisma.farm.findMany({
             where: includeArchived ? {} : { isArchived: false },
@@ -382,11 +390,47 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
         } catch (retryErr) {
           console.error('Retry after column migration also failed:', retryErr);
         }
+
+        // Resilient raw SQL query that does not require isArchived column
+        try {
+          const rawFarms: any[] = await prisma.$queryRawUnsafe(`
+            SELECT f.id, f.name, f."flockDate", f."ageWeek", f.season, f."updatedAt", f."createdAt",
+                   COUNT(DISTINCT s.id)::int as "shedsCount",
+                   COUNT(DISTINCT sub.id)::int as "submissionsCount"
+            FROM "Farm" f
+            LEFT JOIN "Shed" s ON s."farmId" = f.id
+            LEFT JOIN "Submission" sub ON sub."farmId" = f.id
+            GROUP BY f.id, f.name, f."flockDate", f."ageWeek", f.season, f."updatedAt", f."createdAt"
+            ORDER BY f."updatedAt" DESC
+          `);
+          return res.json(rawFarms.map(f => ({
+            id: f.id,
+            name: f.name,
+            flockDate: f.flockDate,
+            ageWeek: f.ageWeek,
+            season: f.season,
+            status: 'DRAFT',
+            submissionCount: f.submissionsCount || 0,
+            isArchived: false,
+            archivedAt: null,
+            assignedUserNames: [],
+            updatedAt: f.updatedAt,
+            createdAt: f.createdAt,
+            _count: { sheds: f.shedsCount || 0, submissions: f.submissionsCount || 0 },
+          })));
+        } catch (rawErr) {
+          console.error('Raw farm query fallback failed:', rawErr);
+        }
       }
+
+      if (memoryFarms && memoryFarms.length > 0) {
+        return res.json(memoryFarms);
+      }
+
       return res.status(503).json({
-        error: 'Database error: Failed to retrieve farms from PostgreSQL database.',
-        code: err?.code || 'DB_ERROR',
-        details: err?.message || 'Database query failed',
+        error: 'Server is not connected',
+        code: 'SERVER_DISCONNECTED',
+        details: 'Server is not connected',
       });
     }
   }
@@ -512,9 +556,13 @@ farmRouter.post('/farms/:farmId/assign-operators', async (req: Request, res: Res
       });
     } catch (err: any) {
       console.error('❌ [DB] Error in /assign-operators:', err?.message || err);
+      if (err?.code === 'P2022' || String(err?.message).includes('isArchived')) {
+        columnsEnsured = false;
+        await ensureFarmColumns();
+      }
       return res.status(503).json({
-        error: 'Database error: Failed to update operator assignments in PostgreSQL.',
-        details: err?.message
+        error: 'Server is not connected',
+        details: 'Server is not connected'
       });
     }
   }
@@ -545,6 +593,52 @@ farmRouter.post('/farms/:farmId/assign-operators', async (req: Request, res: Res
     count: updatedAssignedUserNames.length
   });
 });
+
+// --------------------------------------------------------------------------
+// Clear Bird Weights (Make database fresh as new) - Req 8
+// --------------------------------------------------------------------------
+const handleClearBirdWeights = async (req: Request, res: Response) => {
+  const farmId = req.body?.farmId;
+  try {
+    if (isPostgresConfigured()) {
+      if (farmId) {
+        await prisma.birdWeight.deleteMany({ where: { farmId } });
+        await prisma.$executeRawUnsafe(`
+          UPDATE "Line" SET weights = '{}' WHERE "partId" IN (
+            SELECT p.id FROM "Part" p JOIN "Shed" s ON s.id = p."shedId" WHERE s."farmId" = $1
+          )
+        `, farmId).catch(async () => {
+          await prisma.$executeRawUnsafe('UPDATE "Line" SET weights = \'{}\'');
+        });
+      } else {
+        await prisma.birdWeight.deleteMany({});
+        await prisma.$executeRawUnsafe('UPDATE "Line" SET weights = \'{}\'').catch(() => {});
+      }
+    }
+
+    // Clear in-memory weights
+    if (farmId) {
+      const memFarm = memoryFarms.find(f => f.id === farmId);
+      if (memFarm) {
+        memFarm.sheds.forEach(s => s.parts.forEach(p => p.lines.forEach(l => { l.weights = []; })));
+      }
+    } else {
+      memoryFarms.forEach(f => f.sheds.forEach(s => s.parts.forEach(p => p.lines.forEach(l => { l.weights = []; }))));
+    }
+
+    return res.json({
+      success: true,
+      message: 'All bird weights cleared successfully. Database is now fresh as new.',
+      clearedAt: new Date().toISOString()
+    });
+  } catch (err: any) {
+    console.error('Error clearing bird weights:', err);
+    return res.status(500).json({ error: 'Server is not connected' });
+  }
+};
+
+farmRouter.post('/farms/clear-bird-weights', handleClearBirdWeights);
+farmRouter.post('/database/clear-bird-weights', handleClearBirdWeights);
 
 // --------------------------------------------------------------------------
 // 2. POST /api/farms - Create new farm with dynamic sheds and sex split
@@ -635,7 +729,7 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create farm failed:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to create farm in PostgreSQL database.',
+        error: 'Server is not connected',
         code: err?.code || 'DB_ERROR',
         details: err?.message,
       });
@@ -699,19 +793,17 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
           },
           submissions: {
             orderBy: { submittedAt: 'desc' },
-            take: 20,
-            select: {
-              id: true,
-              farmId: true,
-              status: true,
-              submittedAt: true,
-              submitterName: true,
-              submitterRole: true,
-              totalBirds: true,
-              femaleAvgWeight: true,
-              maleAvgWeight: true,
-              overallAvgWeight: true,
-              uniformity: true,
+            take: 50,
+            include: {
+              sheds: {
+                include: {
+                  parts: {
+                    include: {
+                      lines: true
+                    }
+                  }
+                }
+              }
             }
           },
           _count: {
@@ -720,7 +812,7 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         },
       });
       if (!farm) {
-        return res.status(404).json({ error: 'Farm not found in PostgreSQL database' });
+        return res.status(404).json({ error: 'Farm not found' });
       }
 
       // Enforce assigned-farm visibility on direct API requests (Req 8)
@@ -754,23 +846,79 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         maleAvgWeight: latestSub.maleAvgWeight,
       } : undefined;
 
+      // Map latest submitted bird weights into sheds if base structural lines are empty
+      let mappedSheds = farm.sheds || [];
+      if (latestSub && latestSub.sheds && latestSub.sheds.length > 0) {
+        if (mappedSheds.length === 0) {
+          mappedSheds = latestSub.sheds as any;
+        } else {
+          mappedSheds = farm.sheds.map((s: any, sIdx: number) => {
+            const matchingSubShed = latestSub.sheds.find((ss: any) => 
+              (ss.shedId && ss.shedId === s.id) || 
+              (ss.name && s.name && ss.name.trim().toLowerCase() === s.name.trim().toLowerCase()) ||
+              ss.order === sIdx ||
+              ss.order === sIdx + 1 ||
+              (s.order !== undefined && ss.order === s.order)
+            );
+            if (matchingSubShed && matchingSubShed.parts && matchingSubShed.parts.length > 0) {
+              return {
+                ...s,
+                type: matchingSubShed.type || s.type,
+                parts: s.parts.map((p: any, pIdx: number) => {
+                  const matchingPart = matchingSubShed.parts.find((sp: any) => 
+                    (sp.partId && sp.partId === p.id) || 
+                    (sp.name && p.name && sp.name.trim().toLowerCase() === p.name.trim().toLowerCase()) ||
+                    sp.order === pIdx ||
+                    sp.order === pIdx + 1 ||
+                    (p.order !== undefined && sp.order === p.order)
+                  );
+                  if (matchingPart && matchingPart.lines && matchingPart.lines.length > 0) {
+                    return {
+                      ...p,
+                      lines: p.lines.map((l: any, lIdx: number) => {
+                        const matchingLine = matchingPart.lines.find((sl: any) => 
+                          (sl.lineId && sl.lineId === l.id) || 
+                          (sl.name && l.name && sl.name.trim().toLowerCase() === l.name.trim().toLowerCase()) ||
+                          lIdx === 0
+                        );
+                        return matchingLine && Array.isArray(matchingLine.weights) && matchingLine.weights.length > 0
+                          ? { ...l, weights: matchingLine.weights }
+                          : l;
+                      })
+                    };
+                  }
+                  return p;
+                })
+              };
+            }
+            return s;
+          });
+        }
+      }
+
       return res.json({
         ...farm,
+        sheds: mappedSheds,
         status: isCompleted ? 'COMPLETED' : 'DRAFT',
-        submissionCount: farm._count.submissions,
+        submissionCount: farm.submissions ? farm.submissions.length : (farm._count?.submissions || 0),
+        submissions: farm.submissions || [],
         audit,
       });
     } catch (err: any) {
-      console.error('❌ [DB] PostgreSQL get /farms/:id error:', err?.message || err);
+      console.error('❌ [DB] Error in get /farms/:id:', err?.message || err);
+      if (err?.code === 'P2022' || String(err?.message).includes('isArchived')) {
+        columnsEnsured = false;
+        await ensureFarmColumns();
+      }
       return res.status(503).json({
-        error: 'Database error: Failed to retrieve farm from PostgreSQL database.',
-        code: err?.code || 'DB_ERROR',
-        details: err?.message,
+        error: 'Server is not connected',
+        code: 'SERVER_DISCONNECTED',
+        details: 'Server is not connected',
       });
     }
   }
 
-  const memFarm = memoryFarms.find(f => f.id === farmId);
+  const memFarm = memoryFarms.find(f => f.id === farmId || f.name?.trim().toLowerCase() === farmId.trim().toLowerCase());
   if (!memFarm) {
     return res.status(404).json({ error: 'Farm not found' });
   }
@@ -791,7 +939,7 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
     }
   }
 
-  const farmSubs = memorySubmissions.filter(s => s.farmId === farmId);
+  const farmSubs = memorySubmissions.filter(s => s.farmId === farmId || (memFarm.name && s.farmName?.trim().toLowerCase() === memFarm.name.trim().toLowerCase()));
   const latestMemSub = farmSubs[0];
   const isCompleted = Boolean(latestMemSub && latestMemSub.status === 'COMPLETED');
   const audit = latestMemSub ? {
@@ -806,14 +954,98 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
     maleAvgWeight: latestMemSub.maleAvgWeight,
   } : memFarm.audit;
 
+  let mappedMemSheds = memFarm.sheds || [];
+  if (latestMemSub && latestMemSub.sheds && latestMemSub.sheds.length > 0) {
+    if (mappedMemSheds.length === 0) {
+      mappedMemSheds = latestMemSub.sheds;
+    } else {
+      mappedMemSheds = memFarm.sheds.map((s, sIdx) => {
+        const matchingSubShed = latestMemSub.sheds.find((ss: any) => 
+          ss.id === s.id || 
+          ss.name?.trim().toLowerCase() === s.name?.trim().toLowerCase() ||
+          ss.order === sIdx
+        );
+        if (matchingSubShed && matchingSubShed.parts) {
+          return {
+            ...s,
+            type: matchingSubShed.type || s.type,
+            parts: s.parts.map((p, pIdx) => {
+              const matchingPart = matchingSubShed.parts.find((sp: any) => 
+                sp.id === p.id || 
+                sp.name?.trim().toLowerCase() === p.name?.trim().toLowerCase() ||
+                sp.order === pIdx
+              );
+              if (matchingPart && matchingPart.lines) {
+                return {
+                  ...p,
+                  lines: p.lines.map((l, lIdx) => {
+                    const matchingLine = matchingPart.lines.find((sl: any) => 
+                      sl.id === l.id || 
+                      sl.name?.trim().toLowerCase() === l.name?.trim().toLowerCase() ||
+                      sl.order === lIdx
+                    );
+                    return matchingLine && matchingLine.weights && matchingLine.weights.length > 0
+                      ? { ...l, weights: matchingLine.weights }
+                      : l;
+                  })
+                };
+              }
+              return p;
+            })
+          };
+        }
+        return s;
+      });
+    }
+  }
+
   return res.json({
     ...memFarm,
+    sheds: mappedMemSheds,
     status: isCompleted ? 'COMPLETED' : (memFarm.status || 'DRAFT'),
-    submissions: farmSubs.slice(0, 20),
+    submissions: farmSubs,
     submissionCount: farmSubs.length,
-    _count: { sheds: memFarm.sheds.length, submissions: farmSubs.length },
+    _count: { sheds: mappedMemSheds.length, submissions: farmSubs.length },
     audit,
   });
+});
+
+// --------------------------------------------------------------------------
+// 3.B POST /api/database/clear-bird-weights - Reset bird weights fresh as new (Req 8)
+// --------------------------------------------------------------------------
+farmRouter.post('/database/clear-bird-weights', async (req: Request, res: Response) => {
+  try {
+    if (isPostgresConfigured()) {
+      await prisma.birdWeight.deleteMany({});
+      await prisma.submissionLine.deleteMany({});
+      await prisma.submissionPart.deleteMany({});
+      await prisma.submissionShed.deleteMany({});
+      await prisma.submission.deleteMany({});
+      try {
+        await prisma.$executeRawUnsafe('UPDATE "Line" SET "weights" = ARRAY[]::float8[]');
+      } catch {}
+    }
+
+    // Also clear memory store
+    memoryBirdWeights.length = 0;
+    memorySubmissions.length = 0;
+    memoryFarms.forEach(f => {
+      f.status = 'DRAFT';
+      f.audit = undefined;
+      f.sheds.forEach(s => {
+        s.parts.forEach(p => {
+          p.lines.forEach(l => {
+            l.weights = [];
+          });
+        });
+      });
+    });
+
+    return res.json({ success: true, message: 'All bird weights cleared fresh as new.' });
+  } catch (err: any) {
+    console.error('Error clearing bird weights:', err?.message || err);
+    return res.status(503).json({ error: 'Server is not connected' });
+  }
 });
 
 // --------------------------------------------------------------------------
@@ -850,7 +1082,7 @@ farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
         }
       });
       if (!existing) {
-        return res.status(404).json({ error: 'Farm not found in PostgreSQL database.' });
+        return res.status(404).json({ error: 'Farm not found in database.' });
       }
 
       // Check permissions:
@@ -1112,7 +1344,7 @@ farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
         }
       });
       if (!farm) {
-        return res.status(404).json({ error: 'Farm not found in PostgreSQL database.' });
+        return res.status(404).json({ error: 'Farm not found in database.' });
       }
 
       const birdWeightCount = await prisma.birdWeight.count({ where: { farmId } });
@@ -1305,7 +1537,7 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create shed error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to add shed in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1345,11 +1577,11 @@ farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
         await touchFarm(shed.farmId);
         return res.json({ success: true });
       }
-      return res.status(404).json({ error: 'Shed not found in PostgreSQL database' });
+      return res.status(404).json({ error: 'Shed not found in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete shed error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to delete shed from PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1414,7 +1646,7 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL update shed error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to update shed in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1465,7 +1697,7 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create part error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to create part in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1505,11 +1737,11 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
         await touchFarm(part.shed.farmId);
         return res.json({ success: true });
       }
-      return res.status(404).json({ error: 'Part not found in PostgreSQL database' });
+      return res.status(404).json({ error: 'Part not found in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete part error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to delete part from PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1546,7 +1778,7 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL rename part error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to rename part in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1589,7 +1821,7 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create line error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to create line in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1630,11 +1862,11 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
         await touchFarm(line.part.shed.farmId);
         return res.json({ success: true });
       }
-      return res.status(404).json({ error: 'Line not found in PostgreSQL database' });
+      return res.status(404).json({ error: 'Line not found in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete line error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to delete line from PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1675,7 +1907,7 @@ farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => 
         include: { part: { include: { shed: { include: { farm: true } } } } },
       });
       if (!line) {
-        return res.status(404).json({ error: 'Line not found in PostgreSQL database' });
+        return res.status(404).json({ error: 'Line not found in database' });
       }
 
       const updated = await prisma.line.update({
@@ -1711,7 +1943,7 @@ farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => 
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL add weight error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to record bird weight in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1780,11 +2012,11 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
         await touchFarm(line.part.shed.farmId);
         return res.json(updated);
       }
-      return res.status(404).json({ error: 'Line or weight index not found in PostgreSQL database' });
+      return res.status(404).json({ error: 'Line or weight index not found in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete weight error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to delete weight from PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1824,11 +2056,11 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
         await touchFarm(line.part.shed.farmId);
         return res.json(updated);
       }
-      return res.status(404).json({ error: 'Line not found in PostgreSQL database' });
+      return res.status(404).json({ error: 'Line not found in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL clear line error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to clear line in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -1944,7 +2176,7 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL full sync error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to synchronize farm hierarchy to PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -2039,7 +2271,7 @@ farmRouter.post('/auth/login', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL login query failed:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to authenticate against PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -2163,7 +2395,7 @@ farmRouter.get('/auth/users', async (_req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL get users error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to retrieve user accounts from PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -2231,7 +2463,7 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create user error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to create user account in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -2300,7 +2532,7 @@ farmRouter.put('/auth/users/:id', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL update user error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to update user account in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -2348,11 +2580,11 @@ farmRouter.post('/auth/users/:id/reset-password', async (req: Request, res: Resp
         where: { id },
         data: { password: hashed },
       });
-      return res.json({ success: true, message: 'Password reset successfully in PostgreSQL database' });
+      return res.json({ success: true, message: 'Password reset successfully in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL reset password error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to reset password in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -2387,7 +2619,7 @@ farmRouter.delete('/auth/users/:id', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete user error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to delete user account from PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
@@ -2458,7 +2690,7 @@ farmRouter.get('/logs', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL get /logs query failed:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to retrieve activity logs from PostgreSQL database.',
+        error: 'Server is not connected',
         code: err?.code || 'DB_ERROR',
         details: err?.message || 'Database query failed',
       });
@@ -2536,7 +2768,7 @@ farmRouter.post('/logs', async (req: Request, res: Response) => {
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create /logs error:', err?.message || err);
       return res.status(503).json({
-        error: 'Database error: Failed to record activity log in PostgreSQL database.',
+        error: 'Server is not connected',
         details: err?.message,
       });
     }
