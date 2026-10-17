@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Building2, 
   Users, 
@@ -31,7 +31,8 @@ import {
   Layers,
   AlertTriangle,
   Scale,
-  History
+  History,
+  Search
 } from 'lucide-react';
 import { FarmSummary, AppUser, UserRole, cloudApi, FullFarmData, DeleteImpactResult, sanitizeErrorMessage } from '../services/cloudSyncService';
 import { formatDateTimeIST } from '../utils/dateFormatter';
@@ -162,6 +163,17 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   const [isSavingAssignments, setIsSavingAssignments] = useState(false);
   const [assignError, setAssignError] = useState<string | null>(null);
   const [assignSuccess, setAssignSuccess] = useState<string | null>(null);
+  const [operatorSearchQuery, setOperatorSearchQuery] = useState('');
+
+  const filteredOperators = useMemo(() => {
+    const q = operatorSearchQuery.trim().toLowerCase();
+    if (!q) return eligibleOperators;
+    return eligibleOperators.filter(u => 
+      (u.name && u.name.toLowerCase().includes(q)) ||
+      (u.username && u.username.toLowerCase().includes(q)) ||
+      (u.role && u.role.toLowerCase().includes(q))
+    );
+  }, [eligibleOperators, operatorSearchQuery]);
 
   // User Account Management State (Admin Only)
   const [showUserMgmtModal, setShowUserMgmtModal] = useState(false);
@@ -279,6 +291,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     setIsLoadingOperators(true);
     setAssignError(null);
     setAssignSuccess(null);
+    setOperatorSearchQuery('');
 
     try {
       const users = await cloudApi.getUsers();
@@ -995,15 +1008,36 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               </div>
             )}
 
-            {/* Eligible Operators Checklist */}
+            {/* Eligible Operators Checklist with Fast Search */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Eligible Field Operators ({eligibleOperators.length})
+                  Eligible Field Operators ({filteredOperators.length} of {eligibleOperators.length})
                 </label>
                 <span className="text-[10px] font-mono text-sky-400 font-bold">
                   {selectedOperatorIds.length} Assigned
                 </span>
+              </div>
+
+              {/* Fast Search Input */}
+              <div className="relative mb-2.5">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search operator by name, username, or role..."
+                  value={operatorSearchQuery}
+                  onChange={e => setOperatorSearchQuery(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-8 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 transition"
+                />
+                {operatorSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setOperatorSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
 
               {isLoadingOperators ? (
@@ -1018,9 +1052,16 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                     Create Supervisor or In-Charge accounts under User Management to assign them to this farm.
                   </p>
                 </div>
+              ) : filteredOperators.length === 0 ? (
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-center text-xs text-slate-400">
+                  <p className="font-semibold text-slate-300">No matching operators found</p>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    No field operators match "{operatorSearchQuery}". Try another search term.
+                  </p>
+                </div>
               ) : (
                 <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-                  {eligibleOperators.map((operator) => {
+                  {filteredOperators.map((operator) => {
                     const isSelected = selectedOperatorIds.includes(operator.id);
                     return (
                       <div 

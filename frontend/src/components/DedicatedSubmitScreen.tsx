@@ -417,15 +417,16 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
         )}
 
         {/* SUBMIT & UPLOAD BUTTON */}
+        {/* SUBMIT & UPLOAD BUTTON (Disabled once finalized) */}
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={!completionStats.isFarm100PercentWeighed || isSubmittingBatch}
-          className={`w-full font-black py-3.5 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-            !completionStats.isFarm100PercentWeighed
-              ? 'bg-amber-600/90 text-white shadow-amber-600/20'
-              : farmStatus === 'COMPLETED'
-                ? 'bg-emerald-700 hover:bg-emerald-600 text-white shadow-emerald-700/20'
+          disabled={farmStatus === 'COMPLETED' || !completionStats.isFarm100PercentWeighed || isSubmittingBatch}
+          className={`w-full font-black py-3.5 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
+            farmStatus === 'COMPLETED'
+              ? 'bg-emerald-900/80 text-emerald-200 border border-emerald-600/50 cursor-default shadow-xs'
+              : !completionStats.isFarm100PercentWeighed
+                ? 'bg-amber-600/90 text-white shadow-amber-600/20'
                 : 'bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white shadow-emerald-600/25'
           }`}
         >
@@ -434,22 +435,22 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
               <Loader2 className="w-4 h-4 animate-spin" />
               <span>Uploading Batch to Cloud Database...</span>
             </>
+          ) : farmStatus === 'COMPLETED' ? (
+            <>
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>Batch Finalized & Committed to Cloud</span>
+            </>
           ) : !completionStats.isFarm100PercentWeighed ? (
             <>
               <Lock className="w-4 h-4 text-amber-200" />
               <span>
-                Submit & Upload (Locked - {completionStats.incompleteLines.length} Pending Lines)
+                Submit & Upload (Locked - {completionStats.incompleteLines.length} Incomplete Lines)
               </span>
-            </>
-          ) : farmStatus === 'COMPLETED' ? (
-            <>
-              <Check className="w-4 h-4" />
-              <span>Submit & Upload Again (Update Batch)</span>
             </>
           ) : (
             <>
               <UploadCloud className="w-4 h-4" />
-              <span>Submit & Upload</span>
+              <span>Submit & Upload Batch</span>
             </>
           )}
         </button>

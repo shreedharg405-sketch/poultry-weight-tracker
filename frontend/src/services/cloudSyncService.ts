@@ -203,6 +203,7 @@ export const cloudApi = {
     season?: string;
     shedCount?: number;
     defaultSexSplit?: string;
+    sheds?: Array<{ name: string; type: 'Male' | 'Female' }>;
   }): Promise<FullFarmData> {
     const res = await fetch(`${getApiBaseUrl()}/farms`, {
       method: 'POST',
@@ -244,7 +245,10 @@ export const cloudApi = {
 
   // 5. Delete or Archive farm (Admin only)
   async deleteFarm(farmId: string, options?: { mode?: 'archive' | 'permanent'; confirmFarmName?: string }): Promise<{ success: boolean; archived?: boolean; permanentlyDeleted?: boolean; message: string }> {
-    const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}`, {
+    const mode = options?.mode || 'archive';
+    const confirmName = options?.confirmFarmName || '';
+    const query = `?mode=${encodeURIComponent(mode)}&confirmFarmName=${encodeURIComponent(confirmName)}`;
+    const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}${query}`, {
       method: 'DELETE',
       headers: getAuthHeaders(),
       body: JSON.stringify(options || { mode: 'archive' }),
@@ -254,6 +258,20 @@ export const cloudApi = {
       throw new Error(data.error || `Failed to delete/archive farm (${res.status})`);
     }
     return data;
+  },
+
+  // 5a. Safe Archive Farm directly via POST (Admin only)
+  async archiveFarm(farmId: string): Promise<{ success: boolean; archived?: boolean; message: string }> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/archive`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) return data;
+    } catch {}
+    // Fallback to standard delete with mode=archive
+    return this.deleteFarm(farmId, { mode: 'archive' });
   },
 
   // 5b. Get Farm Delete Impact (Admin only)

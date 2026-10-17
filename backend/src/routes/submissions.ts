@@ -165,7 +165,28 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
     });
   }
 
-  // 3. Completeness & Hierarchy Validation
+  // 3. Completeness & Hierarchy Validation: Query real configured sheds for this farm
+  let configuredSheds: any[] = [];
+  if (isPostgresConfigured()) {
+    try {
+      configuredSheds = await prisma.shed.findMany({
+        where: { farmId },
+        include: {
+          parts: {
+            include: { lines: true },
+            orderBy: { order: 'asc' }
+          }
+        },
+        orderBy: { order: 'asc' }
+      });
+    } catch (e: any) {
+      console.warn('Could not query configured sheds for completeness check:', e);
+    }
+  } else {
+    const mem = memoryFarms.find(f => f.id === farmId);
+    configuredSheds = (mem as any)?.sheds || [];
+  }
+
   if (!Array.isArray(sheds) || sheds.length === 0) {
     return res.status(400).json({
       error: 'Submission blocked: At least one shed is required.',
@@ -178,11 +199,56 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
   const femaleWeights: number[] = [];
   const maleWeights: number[] = [];
 
+  // If the farm has configured sheds in database, ensure EVERY configured shed is present and complete
+  if (configuredSheds.length > 0) {
+    for (const confShed of configuredSheds) {
+      const submittedShed = sheds.find((s: any) => 
+        (s.id && s.id === confShed.id) || 
+        (s.name && confShed.name && s.name.trim().toLowerCase() === confShed.name.trim().toLowerCase())
+      );
+
+      if (!submittedShed) {
+        pendingLines.push({
+          shedName: confShed.name,
+          partName: 'All Parts',
+          lineName: 'All Lines',
+          path: `${confShed.name} has not been weighed yet`
+        });
+        continue;
+      }
+
+      const confParts = Array.isArray(confShed.parts) ? confShed.parts : [];
+      if (confParts.length === 0) {
+        // If DB shed had 0 parts, verify submitted shed provided at least 1 part with lines
+        const subParts = Array.isArray(submittedShed.parts) ? submittedShed.parts : [];
+        if (subParts.length === 0) {
+          pendingLines.push({
+            shedName: confShed.name,
+            partName: 'Part A',
+            lineName: 'Line 1',
+            path: `${confShed.name} has no parts or lines configured`
+          });
+        }
+      }
+    }
+  }
+
+  // Validate all lines in submitted sheds for >= 10 birds and valid gender
   for (const shed of sheds) {
     const shedName = shed.name || 'Shed';
     const isMale = shed.type === 'Male';
-    const parts = Array.isArray(shed.parts) ? shed.parts : [];
+    const isFemale = shed.type === 'Female';
 
+    if (!isMale && !isFemale) {
+      pendingLines.push({
+        shedName,
+        partName: 'Configuration',
+        lineName: 'Gender',
+        path: `${shedName} requires a valid Female or Male selection`
+      });
+    }
+
+    const parts = Array.isArray(shed.parts) ? shed.parts : [];
     if (parts.length === 0) {
       pendingLines.push({
         shedName,
@@ -211,12 +277,13 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
         const lineName = line.name || 'Line';
         const weights = Array.isArray(line.weights) ? line.weights : [];
 
-        if (weights.length === 0) {
+        // Poultry standard: A line must have at least 10 valid bird weights to be complete
+        if (weights.length < 10) {
           pendingLines.push({
             shedName,
             partName,
             lineName,
-            path: `${shedName} › ${partName} › ${lineName}`
+            path: `${shedName} › ${partName} › ${lineName} (has ${weights.length} of 10 required birds)`
           });
         } else {
           for (const w of weights) {
@@ -238,10 +305,10 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
     }
   }
 
-  // If any required line is empty, block submission immediately!
+  // If any required line is incomplete, block submission immediately!
   if (pendingLines.length > 0) {
     return res.status(400).json({
-      error: `Submission blocked: All required sheds, parts, and lines must have at least one recorded bird weight. (${pendingLines.length} pending line(s))`,
+      error: `Submission blocked: All configured sheds and lines must be completed with at least 10 bird weights. (${pendingLines.length} incomplete line(s))`,
       pendingLines,
       pendingCount: pendingLines.length,
     });

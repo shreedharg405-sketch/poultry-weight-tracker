@@ -240,7 +240,7 @@ export default function App() {
   const [lastServerUpdatedAt, setLastServerUpdatedAt] = useState<string>('');
   const [isRefreshingCloud, setIsRefreshingCloud] = useState<boolean>(false);
 
-  // New Farm Modal State with dynamic shed count & sex split
+  // New Farm Modal State with customizable sheds & direct gender assignment
   const [showNewFarmModal, setShowNewFarmModal] = useState<boolean>(false);
   const [newFarmName, setNewFarmName] = useState<string>('');
   const [newFarmFlockDate, setNewFarmFlockDate] = useState<string>(() => {
@@ -249,8 +249,12 @@ export default function App() {
   });
   const [newFarmAgeWeek, setNewFarmAgeWeek] = useState<string>('W18');
   const [newFarmSeason, setNewFarmSeason] = useState<'Summer' | 'Winter'>('Summer');
-  const [newFarmShedCount, setNewFarmShedCount] = useState<number>(2);
-  const [newFarmSexSplit, setNewFarmSexSplit] = useState<'last_male' | 'all_female' | 'all_male'>('last_male');
+  const [newFarmConfiguredSheds, setNewFarmConfiguredSheds] = useState<Array<{ id: string; name: string; type: 'Female' | 'Male' }>>([
+    { id: '1', name: 'Shed 1', type: 'Female' },
+    { id: '2', name: 'Shed 2', type: 'Female' },
+    { id: '3', name: 'Shed 3', type: 'Female' },
+    { id: '4', name: 'Shed 4', type: 'Male' },
+  ]);
   const [isCreatingFarm, setIsCreatingFarm] = useState<boolean>(false);
 
   // Farm Audit, Draft Status & Batch Submission State
@@ -524,17 +528,31 @@ export default function App() {
 
 
 
-  const handleLogout = async () => {
-    try {
-      await cloudApi.logout();
-    } catch {}
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  const handleLogout = () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+
+    // 1. Revoke server session asynchronously in background without blocking UI
+    cloudApi.logout().catch(() => {});
+
+    // 2. Clear client session credentials immediately (leaving drafts intact)
     localStorage.removeItem('poultry_auth_token');
     localStorage.removeItem('poultry_current_user');
     setCurrentUser(null);
     setIsAuthenticated(false);
     setIsSwitchingUser(false);
+
+    // 3. Navigate immediately to login page (#auth)
+    setCurrentScreen('auth');
+    try {
+      window.location.hash = '#auth';
+      window.history.replaceState(null, '', '#auth');
+    } catch {}
+
     showToast('Logged out successfully.');
-    setCurrentScreen('home');
+    setIsLoggingOut(false);
   };
 
   const fetchLatestLogs = async () => {
@@ -817,6 +835,103 @@ export default function App() {
     window.history.go(-2);
   };
 
+// Helper to safely merge cloud response sheds with local unsaved draft weights and gender
+function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: ShedData[], farmId?: string): ShedData[] {
+  if (!Array.isArray(serverSheds)) return localSheds || [];
+
+  let draftSheds: ShedData[] | null = null;
+  if (farmId) {
+    try {
+      const draftStr = localStorage.getItem(`poultry_draft_${farmId}`);
+      if (draftStr) {
+        const parsed = JSON.parse(draftStr);
+        if (Array.isArray(parsed?.sheds)) draftSheds = parsed.sheds;
+      }
+    } catch {}
+  }
+
+  const effectiveLocal = (localSheds && localSheds.length > 0) ? localSheds : (draftSheds || []);
+  if (effectiveLocal.length === 0) return serverSheds;
+
+  const merged = serverSheds.map(serverShed => {
+    const localShed = effectiveLocal.find(ls => 
+      ls.id === serverShed.id || 
+      (ls.name && serverShed.name && ls.name.trim().toLowerCase() === serverShed.name.trim().toLowerCase())
+    );
+
+    if (!localShed) return serverShed;
+
+    // Preserve local user-selected gender
+    const type = localShed.type || serverShed.type || 'Female';
+
+    const serverParts = Array.isArray(serverShed.parts) ? serverShed.parts : [];
+    const localParts = Array.isArray(localShed.parts) ? localShed.parts : [];
+
+    if (serverParts.length === 0 && localParts.length > 0) {
+      return { ...localShed, type };
+    }
+
+    const mergedParts = serverParts.map(serverPart => {
+      const localPart = localParts.find(lp => 
+        lp.id === serverPart.id || 
+        (lp.name && serverPart.name && lp.name.trim().toLowerCase() === serverPart.name.trim().toLowerCase())
+      );
+
+      if (!localPart) return serverPart;
+
+      const serverLines = Array.isArray(serverPart.lines) ? serverPart.lines : [];
+      const localLines = Array.isArray(localPart.lines) ? localPart.lines : [];
+
+      if (serverLines.length === 0 && localLines.length > 0) {
+        return localPart;
+      }
+
+      const mergedLines = serverLines.map(serverLine => {
+        const localLine = localLines.find(ll => 
+          String(ll.id) === String(serverLine.id) || 
+          (ll.name && serverLine.name && ll.name.trim().toLowerCase() === serverLine.name.trim().toLowerCase())
+        );
+
+        if (!localLine) return serverLine;
+
+        const localWeights = Array.isArray(localLine.weights) ? localLine.weights : [];
+        const serverWeights = Array.isArray(serverLine.weights) ? serverLine.weights : [];
+        const weights = localWeights.length > 0 ? localWeights : serverWeights;
+
+        return {
+          ...serverLine,
+          weights,
+        };
+      });
+
+      const extraLocalLines = localLines.filter(ll => 
+        !serverLines.some(sl => String(sl.id) === String(ll.id) || (sl.name && ll.name && sl.name.trim().toLowerCase() === ll.name.trim().toLowerCase()))
+      );
+
+      return {
+        ...serverPart,
+        lines: [...mergedLines, ...extraLocalLines]
+      };
+    });
+
+    const extraLocalParts = localParts.filter(lp => 
+      !serverParts.some(sp => sp.id === lp.id || (sp.name && lp.name && sp.name.trim().toLowerCase() === lp.name.trim().toLowerCase()))
+    );
+
+    return {
+      ...serverShed,
+      type,
+      parts: [...mergedParts, ...extraLocalParts]
+    };
+  });
+
+  const extraLocalSheds = effectiveLocal.filter(ls => 
+    !serverSheds.some(ss => ss.id === ls.id || (ss.name && ls.name && ss.name.trim().toLowerCase() === ls.name.trim().toLowerCase()))
+  );
+
+  return [...merged, ...extraLocalSheds];
+}
+
   // Switch Active Farm
   const switchFarm = useCallback(async (targetFarmId: string, silent = false) => {
     setActiveFarmId(targetFarmId);
@@ -835,6 +950,24 @@ export default function App() {
           if (parsed.farmName) setFarmName(parsed.farmName);
         } catch {}
       }
+    }
+
+    // Immediately restore local draft if available so user never sees empty screen
+    const localDraft = localStorage.getItem(`poultry_draft_${targetFarmId}`);
+    if (localDraft) {
+      try {
+        const parsed = JSON.parse(localDraft);
+        if (Array.isArray(parsed?.sheds) && parsed.sheds.length > 0) {
+          setSheds(parsed.sheds);
+          if (parsed.sheds[0]) {
+            setSelectedShedId(parsed.sheds[0].id);
+            if (parsed.sheds[0].parts?.[0]) {
+              setSelectedPartId(parsed.sheds[0].parts[0].id);
+              if (parsed.sheds[0].parts[0].lines?.[0]) setSelectedLineId(parsed.sheds[0].parts[0].lines[0].id);
+            }
+          }
+        }
+      } catch {}
     }
 
     // Restore local audit, draft status & pending status for target farm
@@ -870,23 +1003,19 @@ export default function App() {
           localStorage.setItem(`poultry_audit_${targetFarmId}`, JSON.stringify(data.audit));
         }
         if (Array.isArray(data.sheds)) {
-          setSheds(data.sheds);
-          if (data.sheds.length > 0) {
-            setSelectedShedId(data.sheds[0].id);
-            const firstPart = data.sheds[0].parts?.[0];
-            if (firstPart) {
-              setSelectedPartId(firstPart.id);
-              if (firstPart.lines?.[0]) setSelectedLineId(firstPart.lines[0].id);
-              else setSelectedLineId('');
-            } else {
-              setSelectedPartId('');
-              setSelectedLineId('');
+          setSheds(prev => {
+            const merged = mergeServerShedsWithLocalDraft(data.sheds, prev, targetFarmId);
+            if (merged.length > 0 && (!selectedShedId || !merged.some(s => s.id === selectedShedId))) {
+              setSelectedShedId(merged[0].id);
+              const firstPart = merged[0].parts?.[0];
+              if (firstPart) {
+                setSelectedPartId(firstPart.id);
+                if (firstPart.lines?.[0]) setSelectedLineId(firstPart.lines[0].id);
+                else setSelectedLineId('');
+              }
             }
-          } else {
-            setSelectedShedId('');
-            setSelectedPartId('');
-            setSelectedLineId('');
-          }
+            return merged;
+          });
         }
         setLastServerUpdatedAt(data.updatedAt);
         setLastUpdatedString(formatLastUpdated(data.updatedAt));
@@ -903,7 +1032,7 @@ export default function App() {
         try {
           const parsed = JSON.parse(localCached);
           if (Array.isArray(parsed.sheds)) {
-            setSheds(parsed.sheds);
+            setSheds(prev => mergeServerShedsWithLocalDraft(parsed.sheds, prev, targetFarmId));
             if (parsed.sheds.length > 0) {
               setSelectedShedId(parsed.sheds[0].id);
               const firstPart = parsed.sheds[0].parts?.[0];
@@ -981,8 +1110,60 @@ export default function App() {
         `poultry_farm_${activeFarmId}`,
         JSON.stringify({ sheds, farmName, date, ageWeek, season })
       );
+      // Persist active draft whenever unsubmitted
+      if (farmStatus !== 'COMPLETED') {
+        localStorage.setItem(
+          `poultry_draft_${activeFarmId}`,
+          JSON.stringify({ sheds, updatedAt: Date.now() })
+        );
+      }
     }
-  }, [sheds, farmName, date, ageWeek, season, activeFarmId]);
+  }, [sheds, farmName, date, ageWeek, season, activeFarmId, farmStatus]);
+
+  // Debounced Cloud Auto-Sync for active farm draft (Serialized, non-blocking)
+  const autosaveTimerRef = useRef<any>(null);
+  const autosaveSeqRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!activeFarmId || sheds.length === 0 || farmStatus === 'COMPLETED') return;
+
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+    }
+
+    setSyncStatus('saving');
+    const seq = ++autosaveSeqRef.current;
+
+    autosaveTimerRef.current = setTimeout(async () => {
+      try {
+        await cloudApi.syncFullFarm(activeFarmId, {
+          sheds,
+          name: farmName,
+          flockDate: date,
+          ageWeek,
+          season,
+          status: 'DRAFT',
+          progressPercentage: completionStats.progressPercent
+        });
+        if (autosaveSeqRef.current === seq) {
+          setSyncStatus('synced');
+          setLastUpdatedString('Draft saved just now');
+        }
+      } catch (err) {
+        if (autosaveSeqRef.current === seq) {
+          // Preserve locally, no intrusive error alerts
+          setSyncStatus('offline');
+          setLastUpdatedString('Draft saved locally (offline)');
+        }
+      }
+    }, 1500);
+
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+      }
+    };
+  }, [sheds, activeFarmId, farmStatus, farmName, date, ageWeek, season]);
 
   // Real-Time Auto-Refresh / Background Cloud Polling (Every 15s)
   useEffect(() => {
@@ -1006,7 +1187,7 @@ export default function App() {
             if (currentRemote.updatedAt !== lastServerUpdatedAt) {
               const full = await cloudApi.getFarmDetails(activeFarmId);
               if (full && full.sheds) {
-                setSheds(full.sheds);
+                setSheds(prev => mergeServerShedsWithLocalDraft(full.sheds, prev, activeFarmId));
                 setFarmName(full.name);
                 setDate(full.flockDate);
                 setAgeWeek(full.ageWeek);
@@ -1053,7 +1234,7 @@ export default function App() {
       }
       const full = await cloudApi.getFarmDetails(activeFarmId);
       if (full && full.sheds) {
-        setSheds(full.sheds);
+        setSheds(prev => mergeServerShedsWithLocalDraft(full.sheds, prev, activeFarmId));
         setFarmName(full.name);
         setDate(full.flockDate);
         setAgeWeek(full.ageWeek);
@@ -1071,26 +1252,44 @@ export default function App() {
     }
   };
 
-  // Create New Farm Handler with Dynamic Shed Count & Sex Split
+  // Create New Farm Handler with Configurable Sheds & Direct Gender Assignment
   const handleCreateFarm = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newFarmName.trim()) {
       showToast('Please enter a farm name');
       return;
     }
+
+    if (newFarmConfiguredSheds.length > 0) {
+      if (newFarmConfiguredSheds.some(s => !s.name.trim())) {
+        showToast('Every configured shed must have a name');
+        return;
+      }
+      const shedNames = newFarmConfiguredSheds.map(s => s.name.trim().toLowerCase());
+      if (new Set(shedNames).size !== shedNames.length) {
+        showToast('Each shed must have a unique name within the farm');
+        return;
+      }
+    }
+
     setIsCreatingFarm(true);
     try {
+      const shedsPayload = newFarmConfiguredSheds.map(s => ({
+        name: s.name.trim(),
+        type: s.type,
+      }));
+
       const created = await cloudApi.createFarm({
         name: newFarmName.trim(),
         flockDate: newFarmFlockDate,
         ageWeek: newFarmAgeWeek,
         season: newFarmSeason,
-        shedCount: newFarmShedCount,
-        defaultSexSplit: newFarmSexSplit
+        shedCount: shedsPayload.length,
+        sheds: shedsPayload,
       });
 
       if (created) {
-        const shedCount = Array.isArray(created.sheds) ? created.sheds.length : (created._count?.sheds ?? newFarmShedCount);
+        const shedCount = Array.isArray(created.sheds) ? created.sheds.length : (created._count?.sheds ?? shedsPayload.length);
         const newSummary: FarmSummary = {
           id: created.id,
           name: created.name,
@@ -1140,6 +1339,12 @@ export default function App() {
         setSyncStatus('synced');
         setShowNewFarmModal(false);
         setNewFarmName('');
+        setNewFarmConfiguredSheds([
+          { id: '1', name: 'Shed 1', type: 'Female' },
+          { id: '2', name: 'Shed 2', type: 'Female' },
+          { id: '3', name: 'Shed 3', type: 'Female' },
+          { id: '4', name: 'Shed 4', type: 'Male' },
+        ]);
         setIsPendingSubmission(true);
         setFarmAudit(null);
         localStorage.setItem(`poultry_pending_submission_${created.id}`, 'true');
@@ -1254,7 +1459,7 @@ export default function App() {
         try {
           const full = await cloudApi.getFarmDetails(activeFarmId);
           if (full && full.sheds) {
-            setSheds(full.sheds);
+            setSheds(prev => mergeServerShedsWithLocalDraft(full.sheds, prev, activeFarmId));
             setLastServerUpdatedAt(full.updatedAt);
           }
         } catch {}
@@ -1407,10 +1612,41 @@ export default function App() {
     }> = [];
 
     (sheds || []).forEach(shed => {
-      (shed.parts || []).forEach(part => {
-        (part.lines || []).forEach(line => {
+      const parts = shed.parts || [];
+      if (parts.length === 0) {
+        totalLines++;
+        incomplete.push({
+          shedId: shed.id,
+          shedName: shed.name,
+          partId: '',
+          partName: 'Part A',
+          lineId: '',
+          lineName: 'Line 1',
+          path: `${shed.name} (no parts or lines configured yet)`
+        });
+        return;
+      }
+
+      parts.forEach(part => {
+        const lines = part.lines || [];
+        if (lines.length === 0) {
           totalLines++;
-          if (line.weights && line.weights.length > 0) {
+          incomplete.push({
+            shedId: shed.id,
+            shedName: shed.name,
+            partId: part.id,
+            partName: part.name,
+            lineId: '',
+            lineName: 'Line 1',
+            path: `${shed.name} › ${part.name} (no lines configured yet)`
+          });
+          return;
+        }
+
+        lines.forEach(line => {
+          totalLines++;
+          const weights = line.weights || [];
+          if (weights.length >= 10) {
             completedLines++;
           } else {
             incomplete.push({
@@ -1420,7 +1656,7 @@ export default function App() {
               partName: part.name,
               lineId: line.id,
               lineName: line.name,
-              path: `${shed.name} › ${part.name} › ${line.name}`
+              path: `${shed.name} › ${part.name} › ${line.name} (${weights.length}/10 birds weighed)`
             });
           }
         });
@@ -1439,9 +1675,34 @@ export default function App() {
 
   // Jump directly to an unweighed line from the Incomplete Warning Modal
   const jumpToIncompleteLine = (shedId: string, partId: string, lineId: number | string) => {
+    const targetShed = sheds.find(s => s.id === shedId);
+    let targetPartId = partId;
+    let targetLineId = lineId;
+
+    if (targetShed && (!targetShed.parts || targetShed.parts.length === 0)) {
+      const newPartId = `part-${Date.now()}`;
+      const newLineId = `line-${Date.now()}`;
+      const newPart: ShedPart = {
+        id: newPartId,
+        name: 'Part A',
+        lines: [{ id: newLineId, name: 'Line 1', weights: [] }]
+      };
+      setSheds(prev => prev.map(s => s.id === shedId ? { ...s, parts: [newPart] } : s));
+      targetPartId = newPartId;
+      targetLineId = newLineId;
+    } else if (targetShed && targetShed.parts?.[0] && (!targetShed.parts[0].lines || targetShed.parts[0].lines.length === 0)) {
+      const newLineId = `line-${Date.now()}`;
+      setSheds(prev => prev.map(s => s.id === shedId ? {
+        ...s,
+        parts: s.parts.map((p, idx) => idx === 0 ? { ...p, lines: [{ id: newLineId, name: 'Line 1', weights: [] }] } : p)
+      } : s));
+      targetPartId = targetShed.parts[0].id;
+      targetLineId = newLineId;
+    }
+
     setSelectedShedId(shedId);
-    setSelectedPartId(partId);
-    setSelectedLineId(lineId);
+    setSelectedPartId(targetPartId);
+    setSelectedLineId(targetLineId);
     setShowIncompleteAlertModal(false);
     navigateTo('weigh_pad');
   };
@@ -1634,20 +1895,9 @@ export default function App() {
   const handleCompleteFarmSubmission = async () => {
     if (isSubmittingBatch) return;
 
-    // 1. Full Farm Completion Check: Block submission if any line has 0 weights
-    const incompleteLines: string[] = [];
-    sheds.forEach(shed => {
-      shed.parts.forEach(part => {
-        part.lines.forEach(line => {
-          if (!line.weights || line.weights.length === 0) {
-            incompleteLines.push(`${shed.name} › ${part.name} › ${line.name}`);
-          }
-        });
-      });
-    });
-
-    if (incompleteLines.length > 0) {
-      showToast(`Cannot submit yet! All lines must be completely weighed. Pending lines: [${incompleteLines.join(', ')}]. Complete all lines to submit.`);
+    // 1. Full Farm Completion Check: Block submission if any line has < 10 weights
+    if (!completionStats.isFarm100PercentWeighed || completionStats.incompleteLines.length > 0) {
+      showToast(`Cannot submit yet! All lines across all configured sheds must be completed with at least 10 birds. (${completionStats.incompleteLines.length} line(s) incomplete).`);
       setShowIncompleteAlertModal(true);
       return;
     }
@@ -1711,7 +1961,7 @@ export default function App() {
         }
       });
 
-      // 6. Confirmed success from backend: NOW mark COMPLETED
+      // 6. Confirmed success from backend: NOW mark COMPLETED and clear local draft
       const submitterName = response.submission?.submitterName || userDisplayName;
       const submitterRole = response.submission?.submitterRole || userRole;
 
@@ -1733,8 +1983,9 @@ export default function App() {
 
       setFarmStatus('COMPLETED');
       localStorage.setItem(`poultry_status_${activeFarmId}`, 'COMPLETED');
-      // Clear batch idempotency key so future batches get a fresh key
+      // Clear batch idempotency key & draft only after confirmed commit
       localStorage.removeItem(`poultry_idempotency_${activeFarmId}`);
+      localStorage.removeItem(`poultry_draft_${activeFarmId}`);
       setFarmAudit(updatedAudit);
       setIsPendingSubmission(false);
       localStorage.setItem(`poultry_audit_${activeFarmId}`, JSON.stringify(updatedAudit));
@@ -2111,8 +2362,17 @@ export default function App() {
                 switchFarm(farmId);
               }}
               onOpenConclusion={(farmId) => {
-                switchFarm(farmId);
+                setActiveFarmId(farmId);
+                localStorage.setItem('poultry_active_farm_id', farmId);
+                const targetFarm = farmsList.find(f => f.id === farmId);
+                if (targetFarm) {
+                  setFarmName(targetFarm.name);
+                  if (targetFarm.flockDate) setDate(targetFarm.flockDate);
+                  if (targetFarm.ageWeek) setAgeWeek(targetFarm.ageWeek);
+                  if (targetFarm.season) setSeason(targetFarm.season as any);
+                }
                 navigateTo('conclusion');
+                switchFarm(farmId, true);
               }}
               onAssignUser={handleAssignUserToFarm}
               onViewSubmissionsUpdate={() => navigateTo('history')}
@@ -2194,15 +2454,15 @@ export default function App() {
               </h2>
             </div>
 
-            {/* Active Farm Header with Rename Option & Shed Gender Filter directly below Edit Button (Req 9 & 10) */}
+            {/* Active Farm Header with Rename Option & Dedicated Shed Gender Filter Row (Req 9) */}
             <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200 shadow-2xs mb-4">
-              <div className="flex items-start justify-between flex-wrap gap-2.5">
+              <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Active Farm</span>
                   <span className="text-base sm:text-lg font-black text-slate-900 truncate block mt-0.5">
                     {currentActiveFarmSummary?.name || farmName || (farmsList.find(f => f.id === activeFarmId)?.name) || 'Active Farm'}
                   </span>
-                  <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-500">
+                  <div className="flex items-center gap-2 mt-1 text-xs text-slate-500 flex-wrap">
                     <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-bold text-[10px] border border-slate-200">
                       {currentActiveFarmSummary?.ageWeek || ageWeek}
                     </span>
@@ -2212,59 +2472,60 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex flex-col items-end gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditFarmNameInput(currentActiveFarmSummary?.name || farmName || '');
+                    setEditFarmNameError(null);
+                    setShowEditFarmModal(true);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200 text-xs font-bold transition active:scale-95 cursor-pointer shrink-0 shadow-2xs"
+                  title="Rename Farm"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span className="text-xs">Edit Name</span>
+                </button>
+              </div>
+
+              {/* Dedicated Full-Width Shed Gender Filter Bar - Placed Below Header on touchscreens & laptops (Req 9) */}
+              <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2">
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Filter Sheds:</span>
+                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-2xs">
                   <button
                     type="button"
-                    onClick={() => {
-                      setEditFarmNameInput(currentActiveFarmSummary?.name || farmName || '');
-                      setEditFarmNameError(null);
-                      setShowEditFarmModal(true);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200 text-xs font-bold transition active:scale-95 cursor-pointer shrink-0 shadow-2xs"
-                    title="Rename Farm"
+                    onClick={() => setShedGenderFilter('ALL')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer ${
+                      shedGenderFilter === 'ALL'
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                    }`}
                   >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span className="text-xs">Edit Name</span>
+                    All ({sheds.length})
                   </button>
-
-                  {/* Shed Gender Filter Bar - Placed Below Edit Name Button (Req 9) */}
-                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0 shadow-2xs">
-                    <button
-                      type="button"
-                      onClick={() => setShedGenderFilter('ALL')}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer ${
-                        shedGenderFilter === 'ALL'
-                          ? 'bg-slate-900 text-white shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                      }`}
-                    >
-                      All ({sheds.length})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShedGenderFilter('FEMALE')}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
-                        shedGenderFilter === 'FEMALE'
-                          ? 'bg-pink-600 text-white shadow-xs'
-                          : 'text-pink-700 hover:bg-pink-100'
-                      }`}
-                    >
-                      <span>♀ Female</span>
-                      <span>({sheds.filter(s => s.type !== 'Male').length})</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShedGenderFilter('MALE')}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
-                        shedGenderFilter === 'MALE'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-blue-700 hover:bg-blue-100'
-                      }`}
-                    >
-                      <span>♂ Male</span>
-                      <span>({sheds.filter(s => s.type === 'Male').length})</span>
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShedGenderFilter('FEMALE')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                      shedGenderFilter === 'FEMALE'
+                        ? 'bg-pink-600 text-white shadow-xs'
+                        : 'text-pink-700 hover:bg-pink-100'
+                    }`}
+                  >
+                    <span>♀ Female</span>
+                    <span>({sheds.filter(s => s.type !== 'Male').length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShedGenderFilter('MALE')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                      shedGenderFilter === 'MALE'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-blue-700 hover:bg-blue-100'
+                    }`}
+                  >
+                    <span>♂ Male</span>
+                    <span>({sheds.filter(s => s.type === 'Male').length})</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -2304,21 +2565,30 @@ export default function App() {
                       className="w-full bg-white hover:bg-slate-50/70 p-4 rounded-2xl border border-slate-200 flex flex-col justify-between gap-3 shadow-xs transition"
                     >
                       <div>
-                        <div className="flex items-center justify-between gap-2 mb-2">
-                          <div 
-                            className="flex items-center gap-2 cursor-pointer min-w-0"
-                            onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
-                          >
-                            <span className="font-black text-base text-slate-900 hover:text-emerald-600 transition truncate">
-                              {s.name}
-                            </span>
-                          </div>
+                        {/* Shed Name Row with full width */}
+                        <div 
+                          className="flex items-center justify-between gap-2 mb-2 cursor-pointer"
+                          onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
+                        >
+                          <span className="font-black text-base text-slate-900 hover:text-emerald-600 transition truncate">
+                            {s.name}
+                          </span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 ${
+                            s.type === 'Male'
+                              ? 'bg-blue-50 text-blue-700 border-blue-200'
+                              : 'bg-pink-50 text-pink-700 border-pink-200'
+                          }`}>
+                            {s.type === 'Male' ? '♂ Male' : '♀ Female'}
+                          </span>
+                        </div>
 
-                          {/* Interactive High-Contrast Shed-Wise Female/Male Selection */}
-                          <div 
-                            className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0" 
-                            onClick={e => e.stopPropagation()}
-                          >
+                        {/* Interactive High-Contrast Shed-Wise Female/Male Selection on its own row */}
+                        <div 
+                          className="flex items-center justify-between gap-2 p-1.5 bg-slate-50 rounded-xl border border-slate-200/80 mb-2" 
+                          onClick={e => e.stopPropagation()}
+                        >
+                          <span className="text-[11px] font-bold text-slate-500 pl-1">Flock Gender:</span>
+                          <div className="flex items-center gap-1">
                             <button
                               type="button"
                               onClick={(e) => {
@@ -3945,8 +4215,8 @@ export default function App() {
         {/* MODAL: CREATE NEW FARM (Part 1 & 4)                       */}
         {/* ========================================================= */}
         {showNewFarmModal && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
-            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto p-4 sm:p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150 custom-scrollbar">
               <div className="flex justify-between items-center pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2.5">
                   <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl border border-emerald-200">
@@ -3954,7 +4224,7 @@ export default function App() {
                   </div>
                   <div>
                     <h3 className="font-black text-base text-slate-900">Add New Farm</h3>
-                    <p className="text-[11px] text-slate-500">Multi-Farm Cloud Synchronization</p>
+                    <p className="text-[11px] text-slate-500">Configure Farm Unit & Individual Shed Genders</p>
                   </div>
                 </div>
                 <button
@@ -4022,46 +4292,118 @@ export default function App() {
                   </select>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
-                      Number of Sheds (0-50) *
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={50}
-                      value={newFarmShedCount}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value, 10);
-                        setNewFarmShedCount(isNaN(val) ? 0 : Math.max(0, Math.min(50, val)));
+                {/* Configurable Shed Setup Section */}
+                <div className="space-y-2.5 border-t border-slate-100 pt-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="text-[11px] font-black text-slate-800 uppercase tracking-wider block">
+                        Configured Sheds ({newFarmConfiguredSheds.length})
+                      </label>
+                      <span className="text-[10px] text-slate-500">Configure name and gender (Male/Female) for each shed</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextNum = newFarmConfiguredSheds.length + 1;
+                        setNewFarmConfiguredSheds(prev => [
+                          ...prev,
+                          { id: String(Date.now()), name: `Shed-${nextNum}`, type: 'Female' }
+                        ]);
                       }}
-                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-bold text-slate-600 uppercase block mb-1">
-                      Default Shed Sex Split
-                    </label>
-                    <select
-                      value={newFarmSexSplit}
-                      disabled={newFarmShedCount === 0}
-                      onChange={(e) => setNewFarmSexSplit(e.target.value as any)}
-                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition disabled:opacity-50"
+                      className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold flex items-center gap-1 transition cursor-pointer active:scale-95"
                     >
-                      <option value="last_male">Sheds 1–{Math.max(1, newFarmShedCount - 1)} ♀, Shed {newFarmShedCount} ♂</option>
-                      <option value="all_female">All Female Sheds ♀</option>
-                      <option value="all_male">All Male Sheds ♂</option>
-                    </select>
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add Shed</span>
+                    </button>
                   </div>
+
+                  {newFarmConfiguredSheds.length === 0 ? (
+                    <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-500">
+                      No sheds configured yet. Click <span className="font-bold text-emerald-700">"+ Add Shed"</span> to add sheds now, or create the farm without sheds to add them later.
+                    </div>
+                  ) : (
+                    <div className="max-h-52 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                      {newFarmConfiguredSheds.map((shed, idx) => (
+                        <div
+                          key={shed.id}
+                          className="p-2.5 bg-slate-50 hover:bg-slate-100/70 border border-slate-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 transition"
+                        >
+                          <div className="flex items-center gap-2 flex-1">
+                            <span className="text-[10px] font-black text-slate-400 w-5 text-center">#{idx + 1}</span>
+                            <input
+                              type="text"
+                              required
+                              placeholder="e.g. Shed-1"
+                              value={shed.name}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setNewFarmConfiguredSheds(prev => prev.map(s => s.id === shed.id ? { ...s, name: val } : s));
+                              }}
+                              className="bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 flex-1 focus:outline-none focus:border-emerald-600 transition"
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                            {/* Gender selector pills */}
+                            <div className="flex items-center bg-white border border-slate-300 rounded-lg p-0.5 shadow-2xs">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewFarmConfiguredSheds(prev => prev.map(s => s.id === shed.id ? { ...s, type: 'Female' } : s));
+                                }}
+                                className={`px-2 py-1 rounded-md text-[11px] font-black transition cursor-pointer ${
+                                  shed.type === 'Female'
+                                    ? 'bg-rose-500 text-white shadow-xs'
+                                    : 'text-slate-600 hover:text-slate-900'
+                                }`}
+                              >
+                                Female ♀
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewFarmConfiguredSheds(prev => prev.map(s => s.id === shed.id ? { ...s, type: 'Male' } : s));
+                                }}
+                                className={`px-2 py-1 rounded-md text-[11px] font-black transition cursor-pointer ${
+                                  shed.type === 'Male'
+                                    ? 'bg-blue-600 text-white shadow-xs'
+                                    : 'text-slate-600 hover:text-slate-900'
+                                }`}
+                              >
+                                Male ♂
+                              </button>
+                            </div>
+
+                            {/* Direct requirement display: Shed-1 → Male */}
+                            <span className={`text-[11px] font-black px-2 py-1 rounded-lg border hidden md:inline-flex ${
+                              shed.type === 'Male' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-rose-50 text-rose-700 border-rose-200'
+                            }`}>
+                              {shed.name.trim() || `Shed-${idx + 1}`} → {shed.type === 'Male' ? 'Male ♂' : 'Female ♀'}
+                            </span>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNewFarmConfiguredSheds(prev => prev.filter(s => s.id !== shed.id));
+                              }}
+                              className="p-1 text-slate-400 hover:text-rose-600 rounded-md transition cursor-pointer"
+                              title="Remove shed"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="bg-emerald-50/70 p-3 rounded-xl border border-emerald-200 text-[11px] text-emerald-800 flex items-start gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                   <span>
-                    {newFarmShedCount === 0 
+                    {newFarmConfiguredSheds.length === 0 
                       ? 'Will create farm with 0 sheds. You can add sheds anytime.' 
-                      : `Will create ${newFarmShedCount} shed${newFarmShedCount === 1 ? '' : 's'}. Each shed can be assigned Female or Male individually.`
+                      : `Will create ${newFarmConfiguredSheds.length} shed${newFarmConfiguredSheds.length === 1 ? '' : 's'} (${newFarmConfiguredSheds.filter(s => s.type === 'Female').length} Female ♀, ${newFarmConfiguredSheds.filter(s => s.type === 'Male').length} Male ♂). Atomic database transaction guarantees complete setup.`
                     }
                   </span>
                 </div>
