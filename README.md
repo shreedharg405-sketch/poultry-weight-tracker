@@ -1,4 +1,4 @@
-# AVISYNC: Full-Stack Poultry Bodyweight, Uniformity & Shed-Wise Management System
+#Full-Stack Poultry Bodyweight, Uniformity & Shed-Wise Management System
 
 An enterprise-grade cloud system digitizing manual breeder and broiler growth charts, faithfully reproducing **Suguna Foods recording sheets, seasonal standard benchmarks (Weeks 1 to 23), and multi-pen shed aggregation algorithms**.
 
