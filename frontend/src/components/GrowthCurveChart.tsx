@@ -45,7 +45,7 @@ export const GrowthCurveChart: React.FC<GrowthCurveChartProps> = ({ season, sex,
       <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 gap-2">
         <div>
           <h3 className="text-base font-bold text-white flex items-center gap-2">
-            <span>Standard Growth Trajectory vs Actual (Weeks 1 - 23)</span>
+            <span>Standard Growth Trajectory vs Actual (Weeks 1 - 24)</span>
             <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-semibold border border-emerald-500/20">
               {sex === 'FEMALE' ? 'Female (F)' : 'Male (M)'} Standard
             </span>

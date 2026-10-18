@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   Building2, 
   Calendar, 
@@ -12,9 +12,11 @@ import {
   TrendingDown,
   CheckCircle2,
   AlertTriangle,
+  AlertCircle,
   ArrowRight
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { downloadExcelFile, sanitizeFileName } from '../utils/fileDownloader';
 
 // F-Factor lookup table matching standard poultry bodyweight calculation
 export const F_FACTOR_LOOKUP: Record<number, number> = {
@@ -59,7 +61,7 @@ export const getFFactor = (n: number): number => {
   return 5.02;
 };
 
-// Suguna Seasonal Standard Benchmarks (Weeks 1 to 23)
+// Suguna Seasonal Standard Benchmarks (Weeks 1 to 24)
 export const SEASONAL_STANDARDS: Record<'Winter' | 'Summer', Record<number, { stdF: number; stdM: number }>> = {
   Winter: {
     1: { stdF: 140, stdM: 140 },
@@ -84,7 +86,8 @@ export const SEASONAL_STANDARDS: Record<'Winter' | 'Summer', Record<number, { st
     20: { stdF: 2235, stdM: 2890 },
     21: { stdF: 2415, stdM: 3050 },
     22: { stdF: 2585, stdM: 3200 },
-    23: { stdF: 2745, stdM: 3340 }
+    23: { stdF: 2745, stdM: 3340 },
+    24: { stdF: 2900, stdM: 3470 }
   },
   Summer: {
     1: { stdF: 140, stdM: 140 },
@@ -109,7 +112,8 @@ export const SEASONAL_STANDARDS: Record<'Winter' | 'Summer', Record<number, { st
     20: { stdF: 2370, stdM: 2890 },
     21: { stdF: 2550, stdM: 3050 },
     22: { stdF: 2720, stdM: 3200 },
-    23: { stdF: 2880, stdM: 3340 }
+    23: { stdF: 2880, stdM: 3340 },
+    24: { stdF: 3030, stdM: 3470 }
   }
 };
 
@@ -228,6 +232,15 @@ export const ExcelReplicaDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('Cons');
   const [selectedLineId, setSelectedLineId] = useState<number>(1);
   const [inputWeight, setInputWeight] = useState<string>('');
+  const [inputWeightError, setInputWeightError] = useState<string | null>(null);
+  const [isSubmittingWeight, setIsSubmittingWeight] = useState<boolean>(false);
+  const isSubmittingWeightRef = useRef<boolean>(false);
+
+  // Strict Manual Entry: Reset input when changing tab or line
+  useEffect(() => {
+    setInputWeight('');
+    setInputWeightError(null);
+  }, [activeTab, selectedLineId]);
 
   // Sheds State
   const [sheds, setSheds] = useState<ShedData[]>(INITIAL_SHEDS_DATA);
@@ -261,25 +274,53 @@ export const ExcelReplicaDashboard: React.FC = () => {
   const currentShed = sheds.find((s) => s.id === activeTab);
   const currentStd = currentShed?.type === 'Male' ? stdWeightMale : stdWeightFemale;
 
-  // Add weight to selected line
+  // Add weight to selected line with strict validation & duplicate tap prevention
   const handleAddWeight = (e: React.FormEvent) => {
     e.preventDefault();
-    const val = parseFloat(inputWeight);
-    if (!val || isNaN(val) || !currentShed) return;
+    if (isSubmittingWeightRef.current) return;
+    isSubmittingWeightRef.current = true;
+    setIsSubmittingWeight(true);
 
-    setSheds((prev) =>
-      prev.map((s) => {
-        if (s.id !== currentShed.id) return s;
-        return {
-          ...s,
-          lines: s.lines.map((line) => {
-            if (line.id !== selectedLineId) return line;
-            return { ...line, weights: [...line.weights, val] };
-          })
-        };
-      })
-    );
-    setInputWeight('');
+    try {
+      const raw = inputWeight.trim();
+      if (!raw) {
+        setInputWeightError('Weight is required. Please enter a valid bird weight.');
+        return;
+      }
+      if (!/^\d+(\.\d+)?$/.test(raw)) {
+        setInputWeightError(raw.startsWith('-') ? 'Weight cannot be negative.' : 'Please enter a valid numeric weight.');
+        return;
+      }
+      const val = parseFloat(raw);
+      if (isNaN(val) || val <= 0) {
+        setInputWeightError('Weight must be greater than zero.');
+        return;
+      }
+      if (!currentShed) {
+        setInputWeightError('No shed selected.');
+        return;
+      }
+
+      setSheds((prev) =>
+        prev.map((s) => {
+          if (s.id !== currentShed.id) return s;
+          return {
+            ...s,
+            lines: s.lines.map((line) => {
+              if (line.id !== selectedLineId) return line;
+              return { ...line, weights: [...line.weights, val] };
+            })
+          };
+        })
+      );
+      setInputWeight('');
+      setInputWeightError(null);
+    } finally {
+      setTimeout(() => {
+        isSubmittingWeightRef.current = false;
+        setIsSubmittingWeight(false);
+      }, 250);
+    }
   };
 
   // Delete weight
@@ -434,7 +475,12 @@ export const ExcelReplicaDashboard: React.FC = () => {
         max: stats.max,
         unif: stats.unif,
         cv: stats.cv,
-        count: stats.count
+        count: stats.count,
+        mb: stats.mb,
+        b: stats.b,
+        s: stats.s,
+        a: stats.a,
+        ma: stats.ma
       };
     });
 
@@ -442,7 +488,7 @@ export const ExcelReplicaDashboard: React.FC = () => {
   }, [sheds, stdWeightFemale, stdWeightMale]);
 
   // Export exact Multi-Tab Excel Workbook (.xlsx)
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const wb = XLSX.utils.book_new();
 
     // 1. Build "Cons" Sheet
@@ -528,9 +574,17 @@ export const ExcelReplicaDashboard: React.FC = () => {
       XLSX.utils.book_append_sheet(wb, wsShed, shed.name.substring(0, 31));
     });
 
-    const fileName = `${farmName.replace(/\s+/g, '_')}_B_Weight_${date}.xlsx`;
-    XLSX.writeFile(wb, fileName);
+    const safeFarm = (farmName || 'Poultry_Flock_Report').trim();
+    const cleanName = sanitizeFileName(`${safeFarm}_B_Weight_${date}.xlsx`);
+    try {
+      XLSX.writeFile(wb, cleanName);
+    } catch (e) {
+      console.warn('XLSX.writeFile fallback to downloadExcelFile:', e);
+      const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      await downloadExcelFile(buffer, cleanName);
+    }
   };
+
 
   return (
     <div className="space-y-6">
@@ -595,7 +649,7 @@ export const ExcelReplicaDashboard: React.FC = () => {
                 onChange={(e) => setFemaleAgeWeek(Number(e.target.value))}
                 className="bg-transparent text-white font-bold focus:outline-none cursor-pointer"
               >
-                {Array.from({ length: 23 }, (_, i) => i + 1).map((w) => (
+                {Array.from({ length: 24 }, (_, i) => i + 1).map((w) => (
                   <option key={w} value={w} className="bg-slate-900 text-white">
                     W{w}F ({SEASONAL_STANDARDS[season][w]?.stdF}g)
                   </option>
@@ -610,7 +664,7 @@ export const ExcelReplicaDashboard: React.FC = () => {
                 onChange={(e) => setMaleAgeWeek(Number(e.target.value))}
                 className="bg-transparent text-white font-bold focus:outline-none cursor-pointer"
               >
-                {Array.from({ length: 23 }, (_, i) => i + 1).map((w) => (
+                {Array.from({ length: 24 }, (_, i) => i + 1).map((w) => (
                   <option key={w} value={w} className="bg-slate-900 text-white">
                     M{w} ({SEASONAL_STANDARDS[season][w]?.stdM}g)
                   </option>
@@ -868,7 +922,11 @@ export const ExcelReplicaDashboard: React.FC = () => {
                     <th className="py-3.5 px-4 font-bold">Min</th>
                     <th className="py-3.5 px-4 font-bold">Max</th>
                     <th className="py-3.5 px-4 font-bold">CV %</th>
-                    <th className="py-3.5 px-4 font-bold text-amber-400">Uniformity (S%)</th>
+                    <th className="py-3.5 px-4 font-bold text-rose-400">MB % (&lt; STD-2Δ)</th>
+                    <th className="py-3.5 px-4 font-bold text-amber-400">B % (STD-2Δ to -Δ)</th>
+                    <th className="py-3.5 px-4 font-bold text-emerald-400">S % (Ideal ±Δ)</th>
+                    <th className="py-3.5 px-4 font-bold text-sky-400">A % (STD+Δ to +2Δ)</th>
+                    <th className="py-3.5 px-4 font-bold text-purple-400">MA % (&gt; STD+2Δ)</th>
                     <th className="py-3.5 px-4 font-bold text-center">Action</th>
                   </tr>
                 </thead>
@@ -901,8 +959,20 @@ export const ExcelReplicaDashboard: React.FC = () => {
                       <td className="py-3 px-4 font-mono">
                         {s.count > 0 ? `${s.cv}%` : '-'}
                       </td>
-                      <td className="py-3 px-4 font-bold font-mono text-amber-400 text-sm">
-                        {s.count > 0 ? `${s.unif}%` : '-'}
+                      <td className="py-3 px-4 font-bold font-mono text-rose-400">
+                        {s.count > 0 ? `${s.mb}%` : '-'}
+                      </td>
+                      <td className="py-3 px-4 font-bold font-mono text-amber-400">
+                        {s.count > 0 ? `${s.b}%` : '-'}
+                      </td>
+                      <td className="py-3 px-4 font-bold font-mono text-emerald-400 text-sm">
+                        {s.count > 0 ? `${s.s}%` : '-'}
+                      </td>
+                      <td className="py-3 px-4 font-bold font-mono text-sky-400">
+                        {s.count > 0 ? `${s.a}%` : '-'}
+                      </td>
+                      <td className="py-3 px-4 font-bold font-mono text-purple-400">
+                        {s.count > 0 ? `${s.ma}%` : '-'}
                       </td>
                       <td className="py-3 px-4 text-center">
                         <button
@@ -1034,40 +1104,39 @@ export const ExcelReplicaDashboard: React.FC = () => {
             </button>
           </div>
 
-          {/* Input Form & Quick Keypad */}
-          <div className="bg-slate-900 border border-slate-800 p-3 rounded-2xl flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shadow-lg">
+          {/* Input Form & Manual Keypad */}
+          <div className="bg-slate-900 border border-slate-800 p-3 rounded-2xl flex flex-col gap-2 shadow-lg">
             <form onSubmit={handleAddWeight} className="flex-1 flex items-center gap-2">
               <input
                 type="number"
-                step="1"
+                step="any"
+                inputMode="decimal"
                 placeholder={`Enter bird weight (g) for ${currentShed.lines.find((l) => l.id === selectedLineId)?.name || 'selected line'}...`}
                 value={inputWeight}
-                onChange={(e) => setInputWeight(e.target.value)}
+                onChange={(e) => {
+                  setInputWeight(e.target.value);
+                  if (inputWeightError) setInputWeightError(null);
+                }}
                 autoFocus
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-base font-bold text-white focus:outline-none focus:border-emerald-500 font-mono"
+                className={`flex-1 bg-slate-950 border ${
+                  inputWeightError ? 'border-rose-500 focus:border-rose-400' : 'border-slate-800 focus:border-emerald-500'
+                } rounded-xl px-4 py-2.5 text-base font-bold text-white focus:outline-none font-mono`}
               />
               <button
                 type="submit"
-                className="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition active:scale-95 shadow-md shadow-emerald-950 shrink-0"
+                disabled={isSubmittingWeight}
+                className="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition active:scale-95 shadow-md shadow-emerald-950 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
-                <span>Save Bird</span>
+                <span>{isSubmittingWeight ? 'Saving...' : 'Save Bird'}</span>
               </button>
             </form>
-
-            {/* Quick Increment Shortcuts */}
-            <div className="flex items-center gap-1.5 overflow-x-auto text-xs font-mono font-bold no-scrollbar">
-              {[currentStd - 100, currentStd, currentStd + 100].map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => setInputWeight(preset.toString())}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1.5 rounded-lg border border-slate-700 text-xs shrink-0"
-                >
-                  {preset}g
-                </button>
-              ))}
-            </div>
+            {inputWeightError && (
+              <div className="flex items-center gap-1.5 text-rose-400 text-xs font-bold px-1 animate-in fade-in duration-150">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+                <span>{inputWeightError}</span>
+              </div>
+            )}
           </div>
 
           {/* Line Matrix Table (Side-by-side lines like in Shed 1 Excel sheet) */}

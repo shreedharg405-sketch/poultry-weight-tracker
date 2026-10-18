@@ -70,7 +70,7 @@ export const GrowthChart: React.FC<GrowthChartProps> = ({
             </span>
           </div>
           <h3 className="text-base font-bold text-white flex items-center gap-2">
-            <span>Flock & Shed Growth Curve (Weeks 1 – 23)</span>
+            <span>Flock & Shed Growth Curve (Weeks 1 – 24)</span>
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
             Suguna Foods benchmark target curve with ±10% growth envelop vs Actual Weighed Weights

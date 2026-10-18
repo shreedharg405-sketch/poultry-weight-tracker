@@ -1,6 +1,13 @@
 import { Flock, WeighingRecord, TallyItem, Shed, Pen, ShedSummaryData, ShedComparisonItem } from '../types';
+import { getApiBaseUrl } from './cloudSyncService';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const getBaseUrl = (): string => {
+  try {
+    return getApiBaseUrl();
+  } catch {
+    return import.meta.env.VITE_API_URL || 'https://shreedharg405-sketch-poultry-weight.onrender.com/api';
+  }
+};
 
 const STORAGE_KEYS = {
   SHEDS: 'suguna_sheds_v2',
@@ -13,7 +20,7 @@ export const api = {
   // Shed Endpoints
   async getSheds(): Promise<Shed[]> {
     try {
-      const res = await fetch(`${API_BASE}/sheds`);
+      const res = await fetch(`${getBaseUrl()}/sheds`);
       if (res.ok) {
         const data = await res.json();
         localStorage.setItem(STORAGE_KEYS.SHEDS, JSON.stringify(data));
@@ -42,7 +49,7 @@ export const api = {
 
   async getShedSummary(shedId: string, week: number = 12): Promise<{ shed: Shed; summary: ShedSummaryData }> {
     try {
-      const res = await fetch(`${API_BASE}/sheds/${shedId}/summary?week=${week}`);
+      const res = await fetch(`${getBaseUrl()}/sheds/${shedId}/summary?week=${week}`);
       if (res.ok) {
         const data = await res.json();
         return data;
@@ -82,7 +89,7 @@ export const api = {
 
   async compareAllSheds(week: number = 12): Promise<ShedComparisonItem[]> {
     try {
-      const res = await fetch(`${API_BASE}/sheds/compare?week=${week}`);
+      const res = await fetch(`${getBaseUrl()}/sheds/compare?week=${week}`);
       if (res.ok) {
         const data = await res.json();
         return data.comparisons || [];
@@ -95,7 +102,7 @@ export const api = {
 
   async createShed(data: { farmId?: string; shedName: string; season: string; hatchDate?: string }): Promise<Shed> {
     try {
-      const res = await fetch(`${API_BASE}/sheds`, {
+      const res = await fetch(`${getBaseUrl()}/sheds`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -117,7 +124,7 @@ export const api = {
 
   async createPen(shedId: string, data: { penNumber: string; sex: string; breed: string; liveBirdCount: number }): Promise<Pen> {
     try {
-      const res = await fetch(`${API_BASE}/sheds/${shedId}/pens`, {
+      const res = await fetch(`${getBaseUrl()}/sheds/${shedId}/pens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -141,7 +148,7 @@ export const api = {
   // Flocks & Pens
   async getFlocks(): Promise<Flock[]> {
     try {
-      const res = await fetch(`${API_BASE}/flocks`);
+      const res = await fetch(`${getBaseUrl()}/flocks`);
       if (res.ok) {
         const data = await res.json();
         localStorage.setItem(STORAGE_KEYS.FLOCKS, JSON.stringify(data));
@@ -173,7 +180,7 @@ export const api = {
 
   async createFlock(flockData: Omit<Flock, 'id' | 'createdAt' | 'updatedAt'>): Promise<Flock> {
     try {
-      const res = await fetch(`${API_BASE}/flocks`, {
+      const res = await fetch(`${getBaseUrl()}/flocks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(flockData),
@@ -193,7 +200,7 @@ export const api = {
 
   async getWeighingsForFlock(penId: string): Promise<WeighingRecord[]> {
     try {
-      const res = await fetch(`${API_BASE}/weighings/flock/${penId}`);
+      const res = await fetch(`${getBaseUrl()}/weighings/flock/${penId}`);
       if (res.ok) {
         return await res.json();
       }
@@ -214,11 +221,11 @@ export const api = {
     notes?: string;
   }): Promise<WeighingRecord> {
     try {
-      const res = await fetch(`${API_BASE}/weighing/pen-entry`, {
+      const res = await fetch(`${getBaseUrl()}/weighing/pen-entry`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      }).catch(() => fetch(`${API_BASE}/weighings`, {
+      }).catch(() => fetch(`${getBaseUrl()}/weighings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -267,8 +274,8 @@ export const api = {
   async getBenchmark(season: string, gender: string, week?: number) {
     try {
       const url = week
-        ? `${API_BASE}/benchmarks?season=${season}&gender=${gender}&week=${week}`
-        : `${API_BASE}/benchmarks?season=${season}&gender=${gender}`;
+        ? `${getBaseUrl()}/benchmarks?season=${season}&gender=${gender}&week=${week}`
+        : `${getBaseUrl()}/benchmarks?season=${season}&gender=${gender}`;
       const res = await fetch(url);
       if (res.ok) return await res.json();
     } catch (err) {
@@ -278,10 +285,18 @@ export const api = {
   },
 
   getExportShedCsvUrl(shedId: string, week: number): string {
-    return `${API_BASE}/export/shed/${shedId}/week/${week}/csv`;
+    return `${getBaseUrl()}/export/shed/${shedId}/week/${week}/csv`;
   },
 
   getExportCsvUrl(weighingId: string): string {
-    return `${API_BASE}/export/weighing/${weighingId}/csv`;
+    return `${getBaseUrl()}/export/weighing/${weighingId}/csv`;
+  },
+
+  getExportShedExcelUrl(shedId: string, week: number): string {
+    return `${getBaseUrl()}/export/shed/${shedId}/week/${week}/excel`;
+  },
+
+  getExportExcelUrl(): string {
+    return `${getBaseUrl()}/export/excel`;
   }
 };

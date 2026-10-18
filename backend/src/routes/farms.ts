@@ -15,6 +15,22 @@ import { memorySubmissions, memoryBirdWeights } from './submissions.js';
 
 export const farmRouter = Router();
 
+function sendSafe503(res: Response, message = 'Server is not connected') {
+  return res.status(503).json({
+    status: 503,
+    message: 'Server is not connected. Please try again later.',
+    error: message,
+  });
+}
+
+function sendSafe500(res: Response, message = 'An unexpected error occurred. Please try again later.') {
+  return res.status(500).json({
+    status: 500,
+    message,
+    error: message,
+  });
+}
+
 let columnsEnsured = false;
 let hasAttemptedColumnEnsure = false;
 export async function ensureFarmColumns(): Promise<void> {
@@ -24,9 +40,15 @@ export async function ensureFarmColumns(): Promise<void> {
     try {
       await prisma.$executeRawUnsafe('ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
       await prisma.$executeRawUnsafe('ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
+      await prisma.$executeRawUnsafe('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "employeeCode" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "phone" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "requiresPasswordChange" BOOLEAN NOT NULL DEFAULT false');
     } catch {
       await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
       await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
+      await prisma.$executeRawUnsafe('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "employeeCode" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "phone" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "requiresPasswordChange" BOOLEAN NOT NULL DEFAULT false');
     }
     columnsEnsured = true;
   } catch (err: any) {
@@ -92,6 +114,8 @@ export interface MemFarm {
   updatedAt: Date;
   createdAt: Date;
   sheds: MemShed[];
+  assignedOperators?: string[];
+  assignedUserNames?: string[];
 }
 
 export interface MemUser {
@@ -101,10 +125,13 @@ export interface MemUser {
   email?: string;
   password: string;
   role: 'Admin' | 'Manager' | 'Supervisor' | 'In-Charge' | string;
-  status: 'ACTIVE' | 'INACTIVE';
+  status: 'ACTIVE' | 'INACTIVE' | 'DEACTIVATED' | 'DELETED' | string;
   assignedFarms: string[];
   createdAt: Date;
   updatedAt?: Date;
+  employeeCode?: string;
+  phone?: string;
+  requiresPasswordChange?: boolean;
 }
 
 export interface MemActivityLog {
@@ -151,22 +178,28 @@ export const memoryUsers: MemUser[] = [
   {
     id: 'u-supervisor-1',
     username: 'supervisor',
+    employeeCode: 'EMP0001',
+    phone: '9876543210',
     name: 'Suresh Kumar',
     email: 'suresh@farm.local',
     password: hashPassword('Super@123'),
     role: 'Supervisor',
     status: 'ACTIVE',
+    requiresPasswordChange: false,
     assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'],
     createdAt: new Date(),
   },
   {
     id: 'u-incharge-1',
     username: 'incharge',
+    employeeCode: 'EMP0002',
+    phone: '9845012345',
     name: 'Ramesh Patel',
     email: 'ramesh@farm.local',
     password: hashPassword('Incharge@123'),
     role: 'In-Charge',
     status: 'ACTIVE',
+    requiresPasswordChange: false,
     assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'],
     createdAt: new Date(),
   },
@@ -663,9 +696,28 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
   const farmSeason = season || 'Summer';
   const farmId = crypto.randomUUID();
 
-  const rawCount = shedCount !== undefined && shedCount !== null && shedCount !== '' ? Number(shedCount) : 0;
-  const count = isNaN(rawCount) || rawCount < 0 ? 0 : Math.min(50, rawCount);
-  const sexSplit = defaultSexSplit || 'last_male';
+  let count = 0;
+  if (shedCount !== undefined && shedCount !== null && shedCount !== '') {
+    const rawNum = Number(shedCount);
+    if (isNaN(rawNum) || !Number.isInteger(rawNum) || rawNum < 1 || rawNum > 40) {
+      return res.status(400).json({ error: 'Number of sheds must be a whole number between 1 and 40.' });
+    }
+    count = rawNum;
+  }
+
+  const rawSheds = req.body.sheds;
+  if (Array.isArray(rawSheds)) {
+    if (rawSheds.length < 1 || rawSheds.length > 40) {
+      return res.status(400).json({ error: 'Number of sheds must be between 1 and 40.' });
+    }
+    if (count === 0) {
+      count = rawSheds.length;
+    }
+  }
+
+  if (count < 1 || count > 40) {
+    return res.status(400).json({ error: 'Number of sheds must be a whole number between 1 and 40.' });
+  }
 
   if (isPostgresConfigured()) {
     try {
@@ -677,7 +729,6 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
         return res.status(400).json({ error: `A farm named "${trimmedName}" already exists.` });
       }
 
-      const rawSheds = req.body.sheds;
       const customSheds: Array<{ name: string; type: 'Male' | 'Female' }> = [];
       if (Array.isArray(rawSheds) && rawSheds.length > 0) {
         const seenNames = new Set<string>();
@@ -696,63 +747,39 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
             type: item.type === 'Male' ? 'Male' : 'Female',
           });
         }
+      } else {
+        for (let i = 1; i <= count; i++) {
+          customSheds.push({
+            name: `Shed ${i}`,
+            type: 'Female',
+          });
+        }
       }
 
-      const shedsData = customSheds.length > 0
-        ? customSheds.map((s, idx) => ({
-            id: crypto.randomUUID(),
-            name: s.name,
-            type: s.type,
-            order: idx + 1,
-            parts: {
-              create: [
-                {
-                  id: crypto.randomUUID(),
-                  name: 'Part A',
-                  order: 1,
-                  lines: {
-                    create: [
-                      {
-                        id: crypto.randomUUID(),
-                        name: 'Line 1',
-                        weights: [],
-                      }
-                    ]
+      const shedsData = customSheds.map((s, idx) => ({
+        id: crypto.randomUUID(),
+        name: s.name,
+        type: s.type,
+        order: idx + 1,
+        parts: {
+          create: [
+            {
+              id: crypto.randomUUID(),
+              name: 'Part A',
+              order: 1,
+              lines: {
+                create: [
+                  {
+                    id: crypto.randomUUID(),
+                    name: 'Line 1',
+                    weights: [],
                   }
-                }
-              ]
+                ]
+              }
             }
-          }))
-        : (count > 0
-            ? Array.from({ length: count }, (_, idx) => {
-                const i = idx + 1;
-                const isMale = sexSplit === 'all_male' ? true : (sexSplit === 'all_female' ? false : (count > 1 ? i === count : false));
-                return {
-                  id: crypto.randomUUID(),
-                  name: isMale ? `Shed ${i} Male` : `Shed ${i}`,
-                  type: (isMale ? 'Male' : 'Female') as 'Male' | 'Female',
-                  order: i,
-                  parts: {
-                    create: [
-                      {
-                        id: crypto.randomUUID(),
-                        name: 'Part A',
-                        order: 1,
-                        lines: {
-                          create: [
-                            {
-                              id: crypto.randomUUID(),
-                              name: 'Line 1',
-                              weights: [],
-                            }
-                          ]
-                        }
-                      }
-                    ]
-                  }
-                };
-              })
-            : []);
+          ]
+        }
+      }));
 
       const newFarm = await prisma.farm.create({
         data: {
@@ -795,11 +822,7 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
       return res.status(201).json(newFarm);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create farm failed:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        code: err?.code || 'DB_ERROR',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -840,13 +863,12 @@ farmRouter.post('/farms', async (req: Request, res: Response) => {
     });
   } else {
     for (let i = 1; i <= count; i++) {
-      const isMale = sexSplit === 'all_male' ? true : (sexSplit === 'all_female' ? false : (count > 1 ? i === count : false));
       const shedId = `shed-${farmId}-${i}`;
       fallbackSheds.push({
         id: shedId,
         farmId,
-        name: isMale ? `Shed ${i} Male` : `Shed ${i}`,
-        type: isMale ? 'Male' : 'Female',
+        name: `Shed ${i}`,
+        type: 'Female',
         order: i,
         parts: [
           {
@@ -944,7 +966,15 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         }
       }
 
-      const latestSub = farm.submissions && farm.submissions[0];
+      const queryWeek = (req.query.week || req.query.flockAge) as string | undefined;
+      const targetWeek = queryWeek ? queryWeek.trim().toUpperCase() : undefined;
+
+      // Match submission specifically for the requested recording week, or default to latest
+      const matchedSub = targetWeek
+        ? farm.submissions?.find((s: any) => s.flockAge?.trim().toUpperCase() === targetWeek)
+        : farm.submissions?.[0];
+
+      const latestSub = matchedSub || null;
       const isCompleted = Boolean(latestSub && latestSub.status === 'COMPLETED');
       const audit = latestSub ? {
         status: isCompleted ? 'COMPLETED' : 'DRAFT',
@@ -958,7 +988,7 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         maleAvgWeight: latestSub.maleAvgWeight,
       } : undefined;
 
-      // Map latest submitted bird weights into sheds if base structural lines are empty
+      // Map submitted bird weights into sheds if matching week submission exists
       let mappedSheds = farm.sheds || [];
       if (latestSub && latestSub.sheds && latestSub.sheds.length > 0) {
         if (mappedSheds.length === 0) {
@@ -1009,10 +1039,24 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
             return s;
           });
         }
+      } else if (targetWeek) {
+        // Requested a specific recording week that has not been submitted yet:
+        // Return clean structural sheds with empty weights
+        mappedSheds = (farm.sheds || []).map((s: any) => ({
+          ...s,
+          parts: (s.parts || []).map((p: any) => ({
+            ...p,
+            lines: (p.lines || []).map((l: any) => ({
+              ...l,
+              weights: []
+            }))
+          }))
+        }));
       }
 
       return res.json({
         ...farm,
+        ageWeek: targetWeek || farm.ageWeek,
         sheds: mappedSheds,
         status: isCompleted ? 'COMPLETED' : 'DRAFT',
         submissionCount: farm.submissions ? farm.submissions.length : (farm._count?.submissions || 0),
@@ -1054,8 +1098,14 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
     }
   }
 
+  const queryWeekMem = (req.query.week || req.query.flockAge) as string | undefined;
+  const targetWeekMem = queryWeekMem ? queryWeekMem.trim().toUpperCase() : undefined;
+
   const farmSubs = memorySubmissions.filter(s => s.farmId === farmId || (memFarm.name && s.farmName?.trim().toLowerCase() === memFarm.name.trim().toLowerCase()));
-  const latestMemSub = farmSubs[0];
+  const matchedMemSub = targetWeekMem
+    ? farmSubs.find(s => s.flockAge?.trim().toUpperCase() === targetWeekMem)
+    : farmSubs[0];
+  const latestMemSub = matchedMemSub || null;
   const isCompleted = Boolean(latestMemSub && latestMemSub.status === 'COMPLETED');
   const audit = latestMemSub ? {
     status: isCompleted ? 'COMPLETED' : 'DRAFT',
@@ -1112,10 +1162,22 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         return s;
       });
     }
+  } else if (targetWeekMem) {
+    mappedMemSheds = (memFarm.sheds || []).map((s: any) => ({
+      ...s,
+      parts: (s.parts || []).map((p: any) => ({
+        ...p,
+        lines: (p.lines || []).map((l: any) => ({
+          ...l,
+          weights: []
+        }))
+      }))
+    }));
   }
 
   return res.json({
     ...memFarm,
+    ageWeek: targetWeekMem || memFarm.ageWeek,
     sheds: mappedMemSheds,
     status: isCompleted ? 'COMPLETED' : (memFarm.status || 'DRAFT'),
     submissions: farmSubs,
@@ -1291,10 +1353,7 @@ farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL update details error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Not connected to server. Please try again.',
-        details: err?.message,
-      });
+      return sendSafe503(res, 'Not connected to server. Please try again.');
     }
   }
 
@@ -1395,7 +1454,7 @@ farmRouter.get('/farms/:id/delete-impact', async (req: Request, res: Response) =
       });
     } catch (err: any) {
       console.error('❌ [DB] Delete impact inspection error:', err?.message || err);
-      return res.status(500).json({ error: 'Failed to inspect farm deletion impact', details: err?.message });
+      return sendSafe500(res, 'Failed to inspect farm deletion impact');
     }
   }
 
@@ -1520,10 +1579,7 @@ farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
       }
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete farm error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Not connected to server. Please try again.',
-        details: err?.message,
-      });
+      return sendSafe503(res, 'Not connected to server. Please try again.');
     }
   }
 
@@ -1613,7 +1669,7 @@ farmRouter.post('/farms/:id/archive', async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       console.error('❌ [DB] Error archiving farm:', err?.message || err);
-      return res.status(503).json({ error: 'Not connected to server. Please try again.', details: err?.message });
+      return sendSafe503(res, 'Not connected to server. Please try again.');
     }
   }
 
@@ -1658,7 +1714,7 @@ farmRouter.post('/farms/:id/restore', async (req: Request, res: Response) => {
         farm: restored,
       });
     } catch (err: any) {
-      return res.status(500).json({ error: 'Failed to restore farm', details: err?.message });
+      return sendSafe500(res, 'Failed to restore farm');
     }
   }
 
@@ -1716,10 +1772,7 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
       return res.status(201).json(newShed);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create shed error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -1760,10 +1813,7 @@ farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Shed not found in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete shed error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -1825,10 +1875,7 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
       return res.json(updated);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL update shed error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -1853,19 +1900,109 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 // 9. POST /api/parts - Add part to shed
 // --------------------------------------------------------------------------
+// Helper validation functions for Parts A-D and Lines 1-16
+const ALLOWED_PART_LETTERS = ['A', 'B', 'C', 'D'];
+
+function validatePartLetter(name: string): { letter?: string; error?: string } {
+  const clean = (name || '').trim();
+  if (!clean) return { error: 'Part name is required.' };
+  const withoutPart = clean.replace(/^part\s*[:\-]?\s*/i, '').trim();
+  const candidate = (withoutPart || clean).toUpperCase();
+  const letterMatch = candidate.match(/^[A-Z]/);
+  if (!letterMatch) {
+    return { error: 'Only Parts A, B, C, and D are allowed. Part E or higher is prohibited.' };
+  }
+  const letter = letterMatch[0];
+  if (!ALLOWED_PART_LETTERS.includes(letter)) {
+    return { error: `Only Parts A, B, C, and D are allowed. Part ${letter} is prohibited.` };
+  }
+  return { letter };
+}
+
+function validateLineNumber(name?: string, existingLines: { name: string }[] = []): { error?: string; num?: number; name?: string } {
+  const existingNums = new Set(
+    existingLines
+      .map(l => {
+        const m = l.name.match(/\d+/);
+        return m ? parseInt(m[0], 10) : null;
+      })
+      .filter((n): n is number => n !== null && n >= 1 && n <= 16)
+  );
+
+  if (existingLines.length >= 16) {
+    return { error: 'Maximum limit reached: A part can have at most 16 lines (Line 1 to Line 16).' };
+  }
+
+  if (name && name.trim()) {
+    const match = name.match(/\d+/);
+    if (!match) {
+      return { error: 'Line identifier must be between Line 1 and Line 16.' };
+    }
+    const num = parseInt(match[0], 10);
+    if (num < 1 || num > 16) {
+      return { error: 'Line identifier must be between Line 1 and Line 16. Line 17 or higher is prohibited.' };
+    }
+    if (existingNums.has(num)) {
+      return { error: `Line ${num} already exists in this part.` };
+    }
+    return { num, name: `Line ${num}` };
+  }
+
+  // Pick lowest available line number 1..16
+  for (let i = 1; i <= 16; i++) {
+    if (!existingNums.has(i)) {
+      return { num: i, name: `Line ${i}` };
+    }
+  }
+
+  return { error: 'Maximum limit reached: A part can have at most 16 lines (Line 1 to Line 16).' };
+}
+
+// --------------------------------------------------------------------------
+// 9. POST /api/parts - Add part to shed (Enforcing Parts A–D, max 4)
+// --------------------------------------------------------------------------
 farmRouter.post('/parts', async (req: Request, res: Response) => {
   const { shedId, name, order } = req.body;
   if (!shedId || !name) return res.status(400).json({ error: 'shedId and name required' });
+
+  const authUser = await getAuthUserFromRequest(req);
+  const partVal = validatePartLetter(name);
+  if (partVal.error || !partVal.letter) {
+    return res.status(400).json({ error: partVal.error || 'Only Parts A, B, C, and D are allowed. Part E or higher is prohibited.' });
+  }
+  const formattedPartName = `Part ${partVal.letter}`;
   const partId = crypto.randomUUID();
 
   if (isPostgresConfigured()) {
     try {
+      const shed = await prisma.shed.findUnique({
+        where: { id: shedId },
+        include: { farm: true, parts: true },
+      });
+      if (!shed) return res.status(404).json({ error: 'Shed not found' });
+
+      // Check if Supervisor/Incharge attempting to edit completed submission
+      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+        if ((shed.farm as any).status === 'COMPLETED') {
+          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+        }
+      }
+
+      if (shed.parts.length >= 4) {
+        return res.status(400).json({ error: 'Maximum limit reached: A shed can have at most 4 parts (Parts A–D).' });
+      }
+
+      const duplicate = shed.parts.some(p => p.name.trim().toLowerCase() === formattedPartName.toLowerCase());
+      if (duplicate) {
+        return res.status(400).json({ error: `${formattedPartName} already exists in this shed.` });
+      }
+
       const newPart = await prisma.part.create({
         data: {
           id: partId,
           shedId,
-          name: name.trim(),
-          order: order || 1,
+          name: formattedPartName,
+          order: order || shed.parts.length + 1,
           lines: {
             create: [{ name: 'Line 1', weights: [] }],
           },
@@ -1876,20 +2013,32 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
       return res.status(201).json(newPart);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create part error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
   for (const farm of memoryFarms) {
     const s = farm.sheds.find(shed => shed.id === shedId);
     if (s) {
+      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+        if (farm.status === 'COMPLETED') {
+          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+        }
+      }
+
+      if (s.parts.length >= 4) {
+        return res.status(400).json({ error: 'Maximum limit reached: A shed can have at most 4 parts (Parts A–D).' });
+      }
+
+      const duplicate = s.parts.some(p => p.name.trim().toLowerCase() === formattedPartName.toLowerCase());
+      if (duplicate) {
+        return res.status(400).json({ error: `${formattedPartName} already exists in this shed.` });
+      }
+
       const newMemPart: MemPart = {
         id: partId,
         shedId,
-        name: name.trim(),
+        name: formattedPartName,
         order: order || s.parts.length + 1,
         lines: [{ id: `line-${Date.now()}`, partId, name: 'Line 1', weights: [] }],
       };
@@ -1906,24 +2055,34 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
   const partId = req.params.partId;
+  const authUser = await getAuthUserFromRequest(req);
+
   if (isPostgresConfigured()) {
     try {
       const part = await prisma.part.findUnique({
         where: { id: partId },
-        include: { shed: true },
+        include: { shed: { include: { farm: true, parts: true } } },
       });
-      if (part) {
-        await prisma.part.delete({ where: { id: partId } });
-        await touchFarm(part.shed.farmId);
-        return res.json({ success: true });
+      if (!part) {
+        return res.status(404).json({ error: 'Part not found in database' });
       }
-      return res.status(404).json({ error: 'Part not found in database' });
+
+      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+        if ((part.shed.farm as any).status === 'COMPLETED') {
+          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+        }
+      }
+
+      if (part.shed.parts.length <= 1) {
+        return res.status(400).json({ error: 'Cannot delete part: A shed must have at least 1 part.' });
+      }
+
+      await prisma.part.delete({ where: { id: partId } });
+      await touchFarm(part.shed.farmId);
+      return res.json({ success: true });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete part error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -1931,6 +2090,16 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
     for (const shed of farm.sheds) {
       const pIdx = shed.parts.findIndex(p => p.id === partId);
       if (pIdx !== -1) {
+        if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+          if (farm.status === 'COMPLETED') {
+            return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+          }
+        }
+
+        if (shed.parts.length <= 1) {
+          return res.status(400).json({ error: 'Cannot delete part: A shed must have at least 1 part.' });
+        }
+
         shed.parts.splice(pIdx, 1);
         farm.updatedAt = new Date();
         return res.json({ success: true });
@@ -1941,26 +2110,48 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 11. PUT /api/parts/:partId - Rename part
+// 11. PUT /api/parts/:partId - Rename part (Enforcing Parts A–D)
 // --------------------------------------------------------------------------
 farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
   const partId = req.params.partId;
   const { name } = req.body;
+  const authUser = await getAuthUserFromRequest(req);
+
+  const partVal = validatePartLetter(name);
+  if (partVal.error || !partVal.letter) {
+    return res.status(400).json({ error: partVal.error || 'Only Parts A, B, C, and D are allowed. Part E or higher is prohibited.' });
+  }
+  const formattedPartName = `Part ${partVal.letter}`;
+
   if (isPostgresConfigured()) {
     try {
+      const part = await prisma.part.findUnique({
+        where: { id: partId },
+        include: { shed: { include: { farm: true, parts: true } } },
+      });
+      if (!part) return res.status(404).json({ error: 'Part not found' });
+
+      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+        if ((part.shed.farm as any).status === 'COMPLETED') {
+          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+        }
+      }
+
+      const duplicate = part.shed.parts.some(p => p.id !== partId && p.name.trim().toLowerCase() === formattedPartName.toLowerCase());
+      if (duplicate) {
+        return res.status(400).json({ error: `${formattedPartName} already exists in this shed.` });
+      }
+
       const updated = await prisma.part.update({
         where: { id: partId },
-        data: { name: name?.trim() },
+        data: { name: formattedPartName },
         include: { shed: true },
       });
       await touchFarm(updated.shed.farmId);
       return res.json(updated);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL rename part error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -1968,7 +2159,18 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
     for (const shed of farm.sheds) {
       const p = shed.parts.find(part => part.id === partId);
       if (p) {
-        p.name = name?.trim() || p.name;
+        if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+          if (farm.status === 'COMPLETED') {
+            return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+          }
+        }
+
+        const duplicate = shed.parts.some(other => other.id !== partId && other.name.trim().toLowerCase() === formattedPartName.toLowerCase());
+        if (duplicate) {
+          return res.status(400).json({ error: `${formattedPartName} already exists in this shed.` });
+        }
+
+        p.name = formattedPartName;
         farm.updatedAt = new Date();
         return res.json(p);
       }
@@ -1978,20 +2180,39 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 12. POST /api/lines - Add line to part
+// 12. POST /api/lines - Add line to part (Enforcing Lines 1–16, max 16)
 // --------------------------------------------------------------------------
 farmRouter.post('/lines', async (req: Request, res: Response) => {
   const { partId, name } = req.body;
   if (!partId) return res.status(400).json({ error: 'partId required' });
+  const authUser = await getAuthUserFromRequest(req);
   const lineId = crypto.randomUUID();
 
   if (isPostgresConfigured()) {
     try {
+      const part = await prisma.part.findUnique({
+        where: { id: partId },
+        include: { shed: { include: { farm: true } }, lines: true },
+      });
+      if (!part) return res.status(404).json({ error: 'Part not found' });
+
+      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+        if ((part.shed.farm as any).status === 'COMPLETED') {
+          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+        }
+      }
+
+      const lineValidation = validateLineNumber(name, part.lines);
+      if (lineValidation.error) {
+        return res.status(400).json({ error: lineValidation.error });
+      }
+      const lineName = lineValidation.name || 'Line 1';
+
       const newLine = await prisma.line.create({
         data: {
           id: lineId,
           partId,
-          name: name?.trim() || 'Line',
+          name: lineName,
           weights: [],
         },
         include: { part: { include: { shed: true } } },
@@ -2000,10 +2221,7 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
       return res.status(201).json(newLine);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create line error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -2011,10 +2229,22 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
     for (const shed of farm.sheds) {
       const p = shed.parts.find(part => part.id === partId);
       if (p) {
+        if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+          if (farm.status === 'COMPLETED') {
+            return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+          }
+        }
+
+        const lineValidation = validateLineNumber(name, p.lines);
+        if (lineValidation.error) {
+          return res.status(400).json({ error: lineValidation.error });
+        }
+        const lineName = lineValidation.name || 'Line 1';
+
         const newLine: MemLine = {
           id: lineId,
           partId,
-          name: name?.trim() || `Line ${p.lines.length + 1}`,
+          name: lineName,
           weights: [],
         };
         p.lines.push(newLine);
@@ -2031,24 +2261,34 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
   const lineId = req.params.lineId;
+  const authUser = await getAuthUserFromRequest(req);
+
   if (isPostgresConfigured()) {
     try {
       const line = await prisma.line.findUnique({
         where: { id: lineId },
-        include: { part: { include: { shed: true } } },
+        include: { part: { include: { shed: { include: { farm: true } }, lines: true } } },
       });
-      if (line) {
-        await prisma.line.delete({ where: { id: lineId } });
-        await touchFarm(line.part.shed.farmId);
-        return res.json({ success: true });
+      if (!line) {
+        return res.status(404).json({ error: 'Line not found in database' });
       }
-      return res.status(404).json({ error: 'Line not found in database' });
+
+      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+        if ((line.part.shed.farm as any).status === 'COMPLETED') {
+          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+        }
+      }
+
+      if (line.part.lines.length <= 1) {
+        return res.status(400).json({ error: 'Cannot delete line: A part must have at least 1 pen line.' });
+      }
+
+      await prisma.line.delete({ where: { id: lineId } });
+      await touchFarm(line.part.shed.farmId);
+      return res.json({ success: true });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete line error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -2057,6 +2297,16 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
       for (const part of shed.parts) {
         const lIdx = part.lines.findIndex(l => String(l.id) === String(lineId));
         if (lIdx !== -1) {
+          if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
+            if (farm.status === 'COMPLETED') {
+              return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+            }
+          }
+
+          if (part.lines.length <= 1) {
+            return res.status(400).json({ error: 'Cannot delete line: A part must have at least 1 pen line.' });
+          }
+
           part.lines.splice(lIdx, 1);
           farm.updatedAt = new Date();
           return res.json({ success: true });
@@ -2122,10 +2372,7 @@ farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => 
       return res.json(updated);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL add weight error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -2195,10 +2442,7 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
       return res.status(404).json({ error: 'Line or weight index not found in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete weight error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -2239,10 +2483,7 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Line not found in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL clear line error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -2291,42 +2532,109 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
       });
 
       if (Array.isArray(sheds)) {
-        await prisma.shed.deleteMany({ where: { farmId } });
+        // Query existing sheds with parts and lines to safely update without dropping data
+        const existingSheds = await prisma.shed.findMany({
+          where: { farmId },
+          include: { parts: { include: { lines: true } } },
+        });
 
         for (let sIdx = 0; sIdx < sheds.length; sIdx++) {
           const s = sheds[sIdx];
-          const shed = await prisma.shed.create({
-            data: {
-              id: s.id || crypto.randomUUID(),
-              farmId,
-              name: s.name,
-              type: s.type || 'Female',
-              order: sIdx + 1,
-            },
-          });
+          const existingShed = existingSheds.find(es =>
+            (s.id && es.id === s.id) ||
+            (s.name && es.name && es.name.trim().toLowerCase() === s.name.trim().toLowerCase())
+          );
+
+          let shedId = existingShed?.id || s.id || crypto.randomUUID();
+          if (existingShed) {
+            await prisma.shed.update({
+              where: { id: existingShed.id },
+              data: {
+                name: s.name,
+                type: s.type || existingShed.type || 'Female',
+                order: sIdx + 1,
+              },
+            });
+          } else {
+            const createdShed = await prisma.shed.create({
+              data: {
+                id: shedId,
+                farmId,
+                name: s.name,
+                type: s.type || 'Female',
+                order: sIdx + 1,
+              },
+            });
+            shedId = createdShed.id;
+          }
 
           if (Array.isArray(s.parts)) {
+            const existingParts = existingShed?.parts || [];
             for (let pIdx = 0; pIdx < s.parts.length; pIdx++) {
               const p = s.parts[pIdx];
-              const part = await prisma.part.create({
-                data: {
-                  id: p.id || crypto.randomUUID(),
-                  shedId: shed.id,
-                  name: p.name,
-                  order: pIdx + 1,
-                },
-              });
+              const existingPart = existingParts.find(ep =>
+                (p.id && ep.id === p.id) ||
+                (p.name && ep.name && ep.name.trim().toLowerCase() === p.name.trim().toLowerCase())
+              );
+
+              let partId = existingPart?.id || p.id || crypto.randomUUID();
+              if (existingPart) {
+                await prisma.part.update({
+                  where: { id: existingPart.id },
+                  data: {
+                    name: p.name,
+                    order: pIdx + 1,
+                  },
+                });
+              } else {
+                const createdPart = await prisma.part.create({
+                  data: {
+                    id: partId,
+                    shedId,
+                    name: p.name,
+                    order: pIdx + 1,
+                  },
+                });
+                partId = createdPart.id;
+              }
 
               if (Array.isArray(p.lines)) {
+                const existingLines = existingPart?.lines || [];
                 for (const l of p.lines) {
-                  await prisma.line.create({
-                    data: {
-                      id: String(l.id || crypto.randomUUID()),
-                      partId: part.id,
-                      name: l.name,
-                      weights: l.weights || [],
-                    },
-                  });
+                  const existingLine = existingLines.find(el =>
+                    (l.id && String(el.id) === String(l.id)) ||
+                    (l.name && el.name && el.name.trim().toLowerCase() === l.name.trim().toLowerCase())
+                  );
+
+                  // If incoming line has weights, update them.
+                  // If incoming line was explicitly cleared or deleted to empty (clearedAt is present), clear weights to [].
+                  // If incoming weights are empty and line was NOT cleared, preserve existing weights (unweighed line safety).
+                  const incomingWeights = Array.isArray(l.weights) && l.weights.length > 0 ? l.weights : [];
+                  const isExplicitClear = Boolean((l as any).clearedAt || (l as any).isCleared);
+                  if (existingLine) {
+                    let finalWeights = existingLine.weights;
+                    if (incomingWeights.length > 0) {
+                      finalWeights = incomingWeights;
+                    } else if (isExplicitClear) {
+                      finalWeights = [];
+                    }
+                    await prisma.line.update({
+                      where: { id: existingLine.id },
+                      data: {
+                        name: l.name,
+                        weights: finalWeights,
+                      },
+                    });
+                  } else {
+                    await prisma.line.create({
+                      data: {
+                        id: String(l.id || crypto.randomUUID()),
+                        partId,
+                        name: l.name,
+                        weights: incomingWeights,
+                      },
+                    });
+                  }
                 }
               }
             }
@@ -2355,10 +2663,7 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
       return res.json(resultObj);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL full sync error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -2386,7 +2691,26 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
     if (season) memFarm.season = season;
     if (status) memFarm.status = status;
     if (progressPercentage !== undefined) memFarm.progressPercentage = progressPercentage;
-    if (Array.isArray(sheds)) memFarm.sheds = sheds;
+    if (Array.isArray(sheds)) {
+      const existingSheds = memFarm.sheds || [];
+      memFarm.sheds = sheds.map((s: any) => {
+        const exShed = existingSheds.find((es: any) => es.id === s.id || (es.name && s.name && es.name.trim().toLowerCase() === s.name.trim().toLowerCase()));
+        if (!exShed) return s;
+        const mergedParts = (s.parts || []).map((p: any) => {
+          const exPart = (exShed.parts || []).find((ep: any) => ep.id === p.id || (ep.name && p.name && ep.name.trim().toLowerCase() === p.name.trim().toLowerCase()));
+          if (!exPart) return p;
+          const mergedLines = (p.lines || []).map((l: any) => {
+            const exLine = (exPart.lines || []).find((el: any) => String(el.id) === String(l.id) || (el.name && l.name && el.name.trim().toLowerCase() === l.name.trim().toLowerCase()));
+            if (!exLine) return l;
+            const incW = Array.isArray(l.weights) && l.weights.length > 0 ? l.weights : [];
+            const exW = Array.isArray(exLine.weights) && exLine.weights.length > 0 ? exLine.weights : [];
+            return { ...l, weights: incW.length > 0 ? incW : exW };
+          });
+          return { ...p, lines: mergedLines };
+        });
+        return { ...s, parts: mergedParts };
+      });
+    }
     if (audit) (memFarm as any).audit = audit;
     memFarm.updatedAt = now;
   }
@@ -2395,17 +2719,57 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 18. POST /api/auth/login - Secure User Sign In
+// Helper: Get next sequential Employee Code (e.g. EMP0001, EMP0002...)
 // --------------------------------------------------------------------------
-farmRouter.post('/auth/login', async (req: Request, res: Response) => {
-  const username = String(req.body.username || req.body.email || '').trim();
-  const password = String(req.body.password || '');
+export async function getNextEmployeeCode(): Promise<string> {
+  let highestNum = 0;
 
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password are required' });
+  if (isPostgresConfigured()) {
+    try {
+      const users = await prisma.user.findMany({ select: { username: true } });
+      for (const u of users) {
+        const match = u.username.match(/^EMP(\d+)$/i);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num > highestNum) highestNum = num;
+        }
+      }
+    } catch {}
   }
 
-  const rateKey = username.toLowerCase();
+  for (const u of memoryUsers) {
+    const code = u.employeeCode || u.username;
+    const match = code.match(/^EMP(\d+)$/i);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      if (num > highestNum) highestNum = num;
+    }
+  }
+
+  const nextNum = Math.max(highestNum + 1, 1);
+  return `EMP${String(nextNum).padStart(4, '0')}`;
+}
+
+// --------------------------------------------------------------------------
+// 17b. GET /api/auth/next-employee-code - Query Next Available Employee Code
+// --------------------------------------------------------------------------
+farmRouter.get('/auth/next-employee-code', async (_req: Request, res: Response) => {
+  const code = await getNextEmployeeCode();
+  return res.json({ nextEmployeeCode: code });
+});
+
+// --------------------------------------------------------------------------
+// 18. POST /api/auth/login - Secure User Sign In (Supports Username or Employee Code)
+// --------------------------------------------------------------------------
+farmRouter.post('/auth/login', async (req: Request, res: Response) => {
+  const rawInput = String(req.body.username || req.body.email || req.body.employeeCode || req.body.employeeId || '').trim();
+  const password = String(req.body.password || '');
+
+  if (!rawInput || !password) {
+    return res.status(400).json({ error: 'Username or Employee Code and password are required' });
+  }
+
+  const rateKey = rawInput.toLowerCase();
   const rateCheck = checkRateLimit(rateKey);
   if (!rateCheck.allowed) {
     return res.status(429).json({ 
@@ -2413,33 +2777,42 @@ farmRouter.post('/auth/login', async (req: Request, res: Response) => {
     });
   }
 
+  const upperInput = rawInput.toUpperCase();
+  const lowerInput = rawInput.toLowerCase();
+
   if (isPostgresConfigured()) {
     try {
       const user = await prisma.user.findFirst({
         where: {
           OR: [
-            { username: { equals: username, mode: 'insensitive' } },
-            { email: { equals: username, mode: 'insensitive' } },
+            { username: { equals: rawInput, mode: 'insensitive' } },
+            { username: { equals: upperInput, mode: 'insensitive' } },
+            { email: { equals: lowerInput, mode: 'insensitive' } },
           ]
         }
       });
 
       if (!user || !verifyPassword(password, user.password)) {
         recordFailedLogin(rateKey);
-        return res.status(401).json({ error: 'Invalid username or password.' });
+        return res.status(401).json({ error: 'Invalid username/employee code or password.' });
       }
 
-      if (user.status === 'INACTIVE') {
+      if (user.status === 'INACTIVE' || user.status === 'DEACTIVATED' || user.status === 'DELETED') {
         return res.status(403).json({ error: 'Account is deactivated. Please contact your Administrator.' });
       }
 
       clearRateLimit(rateKey);
       const token = generateToken({ id: user.id, username: user.username, role: user.role });
+      const userRequiresPwChange = !!(user as any).requiresPasswordChange;
       return res.json({
         token,
+        requiresPasswordChange: userRequiresPwChange,
         user: {
           id: user.id,
           username: user.username,
+          employeeCode: (user as any).employeeCode || (user.username.startsWith('EMP') ? user.username : undefined),
+          phone: (user as any).phone,
+          requiresPasswordChange: userRequiresPwChange,
           name: user.name,
           email: user.email,
           role: user.role,
@@ -2450,35 +2823,39 @@ farmRouter.post('/auth/login', async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL login query failed:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
   // Memory fallback only for local offline simulation
   const memUser = memoryUsers.find(u => 
-    u.username.toLowerCase() === username.toLowerCase() || 
-    (u.email && u.email.toLowerCase() === username.toLowerCase())
+    u.username.toLowerCase() === lowerInput || 
+    (u.employeeCode && u.employeeCode.toUpperCase() === upperInput) ||
+    (u.username.toUpperCase() === upperInput) ||
+    (u.email && u.email.toLowerCase() === lowerInput)
   );
 
   if (!memUser || !verifyPassword(password, memUser.password)) {
     recordFailedLogin(rateKey);
-    return res.status(401).json({ error: 'Invalid username or password.' });
+    return res.status(401).json({ error: 'Invalid username/employee code or password.' });
   }
 
-  if (memUser.status === 'INACTIVE') {
+  if (memUser.status === 'INACTIVE' || memUser.status === 'DEACTIVATED' || memUser.status === 'DELETED') {
     return res.status(403).json({ error: 'Account is deactivated. Please contact your Administrator.' });
   }
 
   clearRateLimit(rateKey);
   const token = generateToken({ id: memUser.id, username: memUser.username, role: memUser.role });
+  const requiresPwChange = !!memUser.requiresPasswordChange;
   return res.json({
     token,
+    requiresPasswordChange: requiresPwChange,
     user: {
       id: memUser.id,
       username: memUser.username,
+      employeeCode: memUser.employeeCode || (memUser.username.startsWith('EMP') ? memUser.username : undefined),
+      phone: memUser.phone,
+      requiresPasswordChange: requiresPwChange,
       name: memUser.name,
       email: memUser.email,
       role: memUser.role,
@@ -2512,6 +2889,9 @@ farmRouter.get('/auth/me', async (req: Request, res: Response) => {
           user: {
             id: user.id,
             username: user.username,
+            employeeCode: (user as any).employeeCode || (user.username.startsWith('EMP') ? user.username : undefined),
+            phone: (user as any).phone,
+            requiresPasswordChange: !!(user as any).requiresPasswordChange,
             name: user.name,
             email: user.email,
             role: user.role,
@@ -2533,6 +2913,9 @@ farmRouter.get('/auth/me', async (req: Request, res: Response) => {
       user: {
         id: memUser.id,
         username: memUser.username,
+        employeeCode: memUser.employeeCode || (memUser.username.startsWith('EMP') ? memUser.username : undefined),
+        phone: memUser.phone,
+        requiresPasswordChange: !!memUser.requiresPasswordChange,
         name: memUser.name,
         email: memUser.email,
         role: memUser.role,
@@ -2559,6 +2942,9 @@ farmRouter.get('/auth/users', async (_req: Request, res: Response) => {
   if (isPostgresConfigured()) {
     try {
       const users = await prisma.user.findMany({
+        where: {
+          status: { notIn: ['DEACTIVATED', 'DELETED'] }
+        },
         select: { 
           id: true, 
           username: true, 
@@ -2571,51 +2957,154 @@ farmRouter.get('/auth/users', async (_req: Request, res: Response) => {
         },
         orderBy: { createdAt: 'asc' },
       });
-      return res.json(users);
+      return res.json(users.map(u => ({
+        ...u,
+        employeeCode: (u as any).employeeCode || (u.username.startsWith('EMP') ? u.username : undefined),
+        phone: (u as any).phone,
+        requiresPasswordChange: !!(u as any).requiresPasswordChange,
+      })));
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL get users error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
-  return res.json(memoryUsers.map(u => ({
-    id: u.id,
-    username: u.username,
-    name: u.name,
-    email: u.email,
-    role: u.role,
-    status: u.status,
-    assignedFarms: u.assignedFarms || [],
-    createdAt: u.createdAt,
-  })));
+  return res.json(
+    memoryUsers
+      .filter(u => u.status !== 'DEACTIVATED' && u.status !== 'DELETED')
+      .map(u => ({
+        id: u.id,
+        username: u.username,
+        employeeCode: u.employeeCode || (u.username.startsWith('EMP') ? u.username : undefined),
+        phone: u.phone,
+        requiresPasswordChange: !!u.requiresPasswordChange,
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        assignedFarms: u.assignedFarms || [],
+        createdAt: u.createdAt,
+      }))
+  );
+});
+
+
+// --------------------------------------------------------------------------
+// 21b. POST /api/auth/change-password - First-Login or Self Password Update
+// --------------------------------------------------------------------------
+farmRouter.post('/auth/change-password', async (req: Request, res: Response) => {
+  const user = await getAuthUserFromRequest(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required to update password.' });
+  }
+
+  const { newPassword } = req.body;
+  const cleanNew = String(newPassword || '').trim();
+  if (!cleanNew || cleanNew.length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters long.' });
+  }
+
+  const hashedPassword = hashPassword(cleanNew);
+
+  if (isPostgresConfigured()) {
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { password: hashedPassword },
+      });
+      try {
+        await prisma.$executeRawUnsafe(
+          'UPDATE "User" SET "requiresPasswordChange" = false WHERE "id" = $1',
+          user.id
+        );
+      } catch {}
+    } catch (err: any) {
+      console.error('❌ [DB] PostgreSQL change password error:', err?.message || err);
+      return sendSafe503(res, 'Database error');
+    }
+  }
+
+  const memUser = memoryUsers.find(u => u.id === user.id || u.username.toLowerCase() === user.username.toLowerCase());
+  if (memUser) {
+    memUser.password = hashedPassword;
+    memUser.requiresPasswordChange = false;
+  }
+
+  const newToken = generateToken({ id: user.id, username: user.username, role: user.role });
+  return res.json({
+    success: true,
+    message: 'Password changed successfully.',
+    token: newToken,
+    user: {
+      ...user,
+      requiresPasswordChange: false,
+    },
+  });
 });
 
 // --------------------------------------------------------------------------
-// 22. POST /api/auth/users - Create User Account (Admin Only)
+// 22. POST /api/auth/users - Create User Account (Admin & Manager)
 // --------------------------------------------------------------------------
 farmRouter.post('/auth/users', async (req: Request, res: Response) => {
-  const { username, name, password, role, assignedFarms } = req.body;
-  if (!username || !password || !name) {
-    return res.status(400).json({ error: 'Username, full name, and initial password are required' });
+  const { name, role, assignedFarms, phone } = req.body;
+  let inputUsername = req.body.username || req.body.employeeCode || req.body.employeeId;
+  let inputPassword = req.body.password;
+
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Full name is required.' });
   }
 
-  const cleanUsername = String(username).trim().toLowerCase();
   const cleanName = String(name).trim();
   const validRoles = ['Admin', 'Manager', 'Supervisor', 'In-Charge'];
   const userRole = validRoles.includes(role) ? role : 'Supervisor';
   const farmList = Array.isArray(assignedFarms) ? assignedFarms : [];
-  const hashedPassword = hashPassword(String(password).trim());
+
+  let employeeCode: string | undefined;
+  const cleanPhone = phone ? String(phone).replace(/\D/g, '') : '';
+  let requiresPasswordChange = false;
+
+  // Auto-generate employee code for Supervisor and In-Charge
+  if (userRole === 'Supervisor' || userRole === 'In-Charge') {
+    employeeCode = await getNextEmployeeCode();
+    // Default username to generated employeeCode if not provided
+    if (!inputUsername || !String(inputUsername).trim()) {
+      inputUsername = employeeCode;
+    }
+
+    // Auto-derive initial temporary password from phone: first 3 + last 3 digits
+    if (cleanPhone && cleanPhone.length >= 6) {
+      inputPassword = cleanPhone.slice(0, 3) + cleanPhone.slice(-3);
+      requiresPasswordChange = true;
+    } else if (!inputPassword || !String(inputPassword).trim()) {
+      return res.status(400).json({ 
+        error: 'A registered phone number (at least 6 digits) is required to generate the initial password.' 
+      });
+    }
+  } else {
+    // Admin / Manager
+    if (!inputUsername || !String(inputUsername).trim()) {
+      return res.status(400).json({ error: 'Username is required.' });
+    }
+    if (!inputPassword || !String(inputPassword).trim()) {
+      return res.status(400).json({ error: 'Password is required.' });
+    }
+  }
+
+  const cleanUsername = String(inputUsername).trim();
+  const hashedPassword = hashPassword(String(inputPassword).trim());
 
   if (isPostgresConfigured()) {
     try {
       const existing = await prisma.user.findFirst({
-        where: { username: { equals: cleanUsername, mode: 'insensitive' } }
+        where: {
+          OR: [
+            { username: { equals: cleanUsername, mode: 'insensitive' as const } },
+            ...(employeeCode ? [{ username: { equals: employeeCode, mode: 'insensitive' as const } }] : [])
+          ]
+        }
       });
       if (existing) {
-        return res.status(409).json({ error: `Username "${cleanUsername}" is already taken.` });
+        return res.status(409).json({ error: `Username or Employee Code "${cleanUsername}" is already taken.` });
       }
 
       const created = await prisma.user.create({
@@ -2623,7 +3112,7 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
           id: crypto.randomUUID(),
           username: cleanUsername,
           name: cleanName,
-          email: `${cleanUsername}@farm.local`,
+          email: `${cleanUsername.toLowerCase()}@farm.local`,
           password: hashedPassword,
           role: userRole,
           status: 'ACTIVE',
@@ -2631,9 +3120,25 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
         }
       });
 
+      // Save additional columns safely
+      try {
+        if (employeeCode || cleanPhone || requiresPasswordChange) {
+          await prisma.$executeRawUnsafe(
+            'UPDATE "User" SET "employeeCode" = $1, "phone" = $2, "requiresPasswordChange" = $3 WHERE "id" = $4',
+            employeeCode || null,
+            cleanPhone || null,
+            requiresPasswordChange,
+            created.id
+          );
+        }
+      } catch {}
+
       return res.status(201).json({
         id: created.id,
         username: created.username,
+        employeeCode: employeeCode || (created.username.startsWith('EMP') ? created.username : undefined),
+        phone: cleanPhone || undefined,
+        requiresPasswordChange,
         name: created.name,
         role: created.role,
         status: created.status,
@@ -2642,23 +3147,26 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create user error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
-  const existingMem = memoryUsers.find(u => u.username.toLowerCase() === cleanUsername);
+  const existingMem = memoryUsers.find(u => 
+    u.username.toLowerCase() === cleanUsername.toLowerCase() ||
+    (employeeCode && u.employeeCode && u.employeeCode.toUpperCase() === employeeCode.toUpperCase())
+  );
   if (existingMem) {
-    return res.status(409).json({ error: `Username "${cleanUsername}" is already taken.` });
+    return res.status(409).json({ error: `Username or Employee Code "${cleanUsername}" is already taken.` });
   }
 
   const newMemUser: MemUser = {
     id: `u-${Date.now()}`,
     username: cleanUsername,
+    employeeCode,
+    phone: cleanPhone || undefined,
+    requiresPasswordChange,
     name: cleanName,
-    email: `${cleanUsername}@farm.local`,
+    email: `${cleanUsername.toLowerCase()}@farm.local`,
     password: hashedPassword,
     role: userRole,
     status: 'ACTIVE',
@@ -2670,6 +3178,9 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
   return res.status(201).json({
     id: newMemUser.id,
     username: newMemUser.username,
+    employeeCode: newMemUser.employeeCode,
+    phone: newMemUser.phone,
+    requiresPasswordChange: newMemUser.requiresPasswordChange,
     name: newMemUser.name,
     role: newMemUser.role,
     status: newMemUser.status,
@@ -2711,10 +3222,7 @@ farmRouter.put('/auth/users/:id', async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL update user error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -2763,10 +3271,7 @@ farmRouter.post('/auth/users/:id/reset-password', async (req: Request, res: Resp
       return res.json({ success: true, message: 'Password reset successfully in database' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL reset password error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -2780,45 +3285,147 @@ farmRouter.post('/auth/users/:id/reset-password', async (req: Request, res: Resp
 });
 
 // --------------------------------------------------------------------------
-// 25. DELETE /api/auth/users/:id - Delete User Account
+// 25. DELETE /api/auth/users/:id - Delete User Account (Admin Only, Safe Deletion)
 // --------------------------------------------------------------------------
 farmRouter.delete('/auth/users/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
 
+  // 1. Verify authentication
+  const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Authentication required. Please log in as Administrator.' });
+  }
+
+  // 2. Enforce strict Admin authorization (Supervisors and Incharges are strictly forbidden)
+  if (authUser.role !== 'Admin') {
+    return res.status(403).json({ error: 'Permission Denied: Only Administrator accounts can delete employee accounts.' });
+  }
+
+  // 3. Prevent self-deletion of currently logged-in Administrator
+  if (authUser.id === id || authUser.username.toLowerCase() === id.toLowerCase()) {
+    return res.status(400).json({ error: 'Security Restriction: You cannot delete your own currently logged-in Administrator account.' });
+  }
+
+  // 4. Prevent deletion of default protected primary system administrator
+  if (id === 'u-admin-1' || id.toLowerCase() === 'admin') {
+    return res.status(400).json({ error: 'Security Restriction: The primary system Administrator account is protected and cannot be deleted.' });
+  }
+
   if (isPostgresConfigured()) {
     try {
-      const user = await prisma.user.findUnique({ where: { id } });
-      if (user?.role === 'Admin') {
-        const adminCount = await prisma.user.count({ where: { role: 'Admin' } });
+      const user = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { id },
+            { username: { equals: id, mode: 'insensitive' as const } }
+          ]
+        }
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: 'User account not found.' });
+      }
+
+      if (user.username.toLowerCase() === 'admin') {
+        return res.status(400).json({ error: 'Security Restriction: The primary system Administrator account is protected and cannot be deleted.' });
+      }
+
+      if (user.id === authUser.id) {
+        return res.status(400).json({ error: 'Security Restriction: You cannot delete your own currently logged-in Administrator account.' });
+      }
+
+      if (user.role === 'Admin') {
+        const adminCount = await prisma.user.count({ where: { role: 'Admin', status: { notIn: ['DEACTIVATED', 'DELETED'] } } });
         if (adminCount <= 1) {
-          return res.status(400).json({ error: 'Cannot delete the sole Administrator account' });
+          return res.status(400).json({ error: 'Security Restriction: Cannot delete the sole Administrator account on the system.' });
         }
       }
-      await prisma.user.delete({ where: { id } });
-      return res.json({ success: true });
+
+      // Detach user from historical Submissions and ActivityLogs to preserve historical audit data
+      await prisma.submission.updateMany({
+        where: { userId: user.id },
+        data: { userId: null }
+      }).catch(() => {});
+
+      await prisma.activityLog.updateMany({
+        where: { userId: user.id },
+        data: { userId: null }
+      }).catch(() => {});
+
+      // Delete user record from database, falling back to safe deactivation if database constraints require it
+      try {
+        await prisma.user.delete({ where: { id: user.id } });
+      } catch (delErr: any) {
+        console.warn('⚠️ [DB] Prisma hard delete constraint, applying safe deactivation:', delErr?.message);
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            status: 'DEACTIVATED',
+            assignedFarms: [],
+            password: hashPassword(`DEACTIVATED_${Date.now()}`),
+          }
+        });
+      }
+
+      return res.json({ 
+        success: true, 
+        message: `Employee account for ${user.name} (@${user.username}) deleted successfully.` 
+      });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete user error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe500(res, 'An error occurred while deleting user account.');
     }
   }
 
-  const idx = memoryUsers.findIndex(u => u.id === id);
-  if (idx !== -1) {
-    if (memoryUsers[idx].role === 'Admin') {
-      const adminCount = memoryUsers.filter(u => u.role === 'Admin').length;
-      if (adminCount <= 1) {
-        return res.status(400).json({ error: 'Cannot delete the sole Administrator account' });
-      }
-    }
-    memoryUsers.splice(idx, 1);
-    return res.json({ success: true });
+  // In-Memory Mode (Local / Offline)
+  const idx = memoryUsers.findIndex(u => u.id === id || u.username.toLowerCase() === id.toLowerCase());
+  if (idx === -1) {
+    return res.status(404).json({ error: 'User account not found.' });
   }
 
-  return res.status(404).json({ error: 'User not found' });
+  const targetUser = memoryUsers[idx];
+
+  if (targetUser.username.toLowerCase() === 'admin') {
+    return res.status(400).json({ error: 'Security Restriction: The primary system Administrator account is protected and cannot be deleted.' });
+  }
+
+  if (targetUser.id === authUser.id) {
+    return res.status(400).json({ error: 'Security Restriction: You cannot delete your own currently logged-in Administrator account.' });
+  }
+
+  if (targetUser.role === 'Admin') {
+    const adminCount = memoryUsers.filter(u => u.role === 'Admin' && u.status !== 'DEACTIVATED' && u.status !== 'DELETED').length;
+    if (adminCount <= 1) {
+      return res.status(400).json({ error: 'Security Restriction: Cannot delete the sole Administrator account on the system.' });
+    }
+  }
+
+  // Remove operator from all assigned farms in memoryFarms
+  for (const farm of memoryFarms) {
+    if (farm.assignedOperators) {
+      farm.assignedOperators = farm.assignedOperators.filter((opId: string) => opId !== targetUser.id && opId !== targetUser.username);
+    }
+    if (farm.assignedUserNames) {
+      farm.assignedUserNames = farm.assignedUserNames.filter((uName: string) => uName !== targetUser.name && uName !== targetUser.username);
+    }
+  }
+
+  // Detach userId in memoryLogs to preserve historical records
+  for (const log of memoryLogs) {
+    if (log.userId === targetUser.id) {
+      log.userId = undefined;
+    }
+  }
+
+  // Remove user from active memoryUsers
+  memoryUsers.splice(idx, 1);
+
+  return res.json({ 
+    success: true, 
+    message: `Employee account for ${targetUser.name} (@${targetUser.username}) deleted successfully.` 
+  });
 });
+
 
 // --------------------------------------------------------------------------
 // 26. GET /api/logs - Activity update history logs
@@ -2869,11 +3476,7 @@ farmRouter.get('/logs', async (req: Request, res: Response) => {
       return res.json(formatted);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL get /logs query failed:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        code: err?.code || 'DB_ERROR',
-        details: err?.message || 'Database query failed',
-      });
+      return sendSafe503(res);
     }
   }
 
@@ -2947,10 +3550,7 @@ farmRouter.post('/logs', async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL create /logs error:', err?.message || err);
-      return res.status(503).json({
-        error: 'Server is not connected',
-        details: err?.message,
-      });
+      return sendSafe503(res);
     }
   }
 

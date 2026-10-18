@@ -21,7 +21,8 @@ flockRouter.get('/', async (req: Request, res: Response) => {
     );
     res.json(flocksWithLatest);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to fetch flocks' });
+    console.error('[Flock Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -39,7 +40,8 @@ flockRouter.get('/:id', async (req: Request, res: Response) => {
       latestWeighing: weighings.length > 0 ? weighings[weighings.length - 1] : null,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to fetch flock' });
+    console.error('[Flock Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -64,6 +66,7 @@ flockRouter.post('/', async (req: Request, res: Response) => {
 
     res.status(201).json(created);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to create flock' });
+    console.error('[Flock Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });

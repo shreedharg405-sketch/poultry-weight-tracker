@@ -246,7 +246,7 @@ export const MobilePoultryDashboard: React.FC<MobilePoultryDashboardProps> = ({
       }));
   }, [tallies, stats.rangeLow, stats.rangeHigh]);
 
-  // Growth curve comparison data (Weeks 1 to 23)
+  // Growth curve comparison data (Weeks 1 to 24)
   const growthCurveData = useMemo(() => {
     return standardsData.map(item => {
       const std = selectedGender === 'FEMALE' ? item.femaleWeight : item.maleWeight;
@@ -366,7 +366,7 @@ export const MobilePoultryDashboard: React.FC<MobilePoultryDashboardProps> = ({
                     : 'bg-slate-800 border-slate-700 text-emerald-400'
                 }`}
               >
-                {Array.from({ length: 23 }, (_, i) => i + 1).map(wk => (
+                {Array.from({ length: 24 }, (_, i) => i + 1).map(wk => (
                   <option key={wk} value={wk}>W{wk}</option>
                 ))}
               </select>

@@ -33,6 +33,7 @@ import { Shed, ShedSummaryData, ShedComparisonItem, Flock } from '../types';
 import { api } from '../services/api';
 import { GrowthChart } from './GrowthChart';
 import { getClientBenchmarkForWeek } from '../services/benchmarks';
+import { exportShedWorkbook } from '../services/excelExportService';
 
 export interface ShedDashboardProps {
   sheds: Shed[];
@@ -56,6 +57,7 @@ export const ShedDashboard: React.FC<ShedDashboardProps> = ({
   const [comparisons, setComparisons] = useState<ShedComparisonItem[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [showComparisonView, setShowComparisonView] = useState<boolean>(false);
+  const [isExportingExcel, setIsExportingExcel] = useState<boolean>(false);
 
   // Load summary for active shed & week
   const loadSummary = async () => {
@@ -103,11 +105,25 @@ export const ShedDashboard: React.FC<ShedDashboardProps> = ({
     ? (((s.shedAverageWeight - benchmarkTarget.targetWeight) / benchmarkTarget.targetWeight) * 100).toFixed(1)
     : null;
 
-  const handleDownloadCsv = () => {
-    if (!s) return;
-    const url = api.getExportShedCsvUrl(activeShed.id, selectedWeek);
-    window.open(url, '_blank');
+  const handleDownloadExcel = async () => {
+    if (!s || !activeShed) return;
+    try {
+      setIsExportingExcel(true);
+      await exportShedWorkbook({
+        farmName: 'Poultry Farm',
+        shedName: activeShed.shedName,
+        season: activeShed.season,
+        week: selectedWeek,
+        dateStr: new Date().toISOString().split('T')[0],
+        summary: s,
+      });
+    } catch (err) {
+      console.error('Failed to export shed excel:', err);
+    } finally {
+      setIsExportingExcel(false);
+    }
   };
+
 
   return (
     <div className="space-y-6">
@@ -163,7 +179,7 @@ export const ShedDashboard: React.FC<ShedDashboardProps> = ({
                 onChange={(e) => setSelectedWeek(Number(e.target.value))}
                 className="bg-transparent font-bold text-emerald-400 focus:outline-none"
               >
-                {Array.from({ length: 23 }, (_, i) => i + 1).map((w) => (
+                {Array.from({ length: 24 }, (_, i) => i + 1).map((w) => (
                   <option key={w} value={w} className="bg-slate-900 text-white">
                     Week {w}
                   </option>
@@ -436,12 +452,15 @@ export const ShedDashboard: React.FC<ShedDashboardProps> = ({
 
           <div className="flex items-center gap-2">
             <button
-              onClick={handleDownloadCsv}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-1.5 shadow"
+              onClick={handleDownloadExcel}
+              disabled={isExportingExcel}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-1.5 shadow disabled:opacity-50 cursor-pointer"
+              title="Download shed-level audit Excel sheet (.xlsx)"
             >
               <Download className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Download Shed CSV</span>
+              <span>{isExportingExcel ? 'Exporting...' : 'Download Shed Excel (.xlsx)'}</span>
             </button>
+
             <button
               onClick={() => s && onPrintShedReport(activeShed, s, selectedWeek)}
               className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center gap-1.5 shadow-md shadow-emerald-700/20"
@@ -655,7 +674,7 @@ export const ShedDashboard: React.FC<ShedDashboardProps> = ({
         </div>
       )}
 
-      {/* 6. GROWTH CHART (WEEKS 1 - 23): ACTUAL SHED WEIGHT VS TARGET CURVE */}
+      {/* 6. GROWTH CHART (WEEKS 1 - 24): ACTUAL SHED WEIGHT VS TARGET CURVE */}
       <GrowthChart
         season={activeShed.season}
         shedAverageWeight={s?.shedAverageWeight}

@@ -56,7 +56,15 @@ export const F_FACTOR_TABLE: Record<number, number> = {
   150: 5.03,
 };
 
+export function getVerifiedFFactor(sampleSize: number): number | null {
+  if (typeof sampleSize !== 'number' || !Number.isFinite(sampleSize) || sampleSize <= 0) return null;
+  if (F_FACTOR_TABLE[sampleSize] !== undefined) return F_FACTOR_TABLE[sampleSize];
+  return null;
+}
+
 export function getFFactor(sampleSize: number): number {
+  const verified = getVerifiedFFactor(sampleSize);
+  if (verified !== null) return verified;
   if (sampleSize <= 10) return 3.08;
   if (sampleSize >= 150) return 5.03;
 

@@ -12,7 +12,7 @@ export type SeasonType = 'WINTER_BROOD_SUMMER_LAY' | 'SUMMER_BROOD_WINTER_LAY';
 
 /**
  * Winter Brood / Grow (Aug - Jan), Summer Laying (Feb - Jul):
- * Reproducing exact Suguna Foods standard benchmarks for Weeks 1 to 23
+ * Reproducing exact Suguna Foods standard benchmarks for Weeks 1 to 24
  */
 export const WINTER_BROOD_STANDARDS: SeasonalBenchmarkRow[] = [
   { week: 1,  femaleWeight: 140,  femaleGain: 100, femaleFeed: 23,  maleWeight: 140,  maleGain: 100, maleFeed: 23 },
@@ -37,12 +37,13 @@ export const WINTER_BROOD_STANDARDS: SeasonalBenchmarkRow[] = [
   { week: 20, femaleWeight: 2235, femaleGain: 170, femaleFeed: 98,  maleWeight: 2890, maleGain: 170, maleFeed: 109 },
   { week: 21, femaleWeight: 2415, femaleGain: 180, femaleFeed: 102, maleWeight: 3050, maleGain: 160, maleFeed: 112 },
   { week: 22, femaleWeight: 2585, femaleGain: 170, femaleFeed: 105, maleWeight: 3200, maleGain: 150, maleFeed: 114 },
-  { week: 23, femaleWeight: 2745, femaleGain: 160, femaleFeed: 108, maleWeight: 3340, maleGain: 140, maleFeed: 117 }
+  { week: 23, femaleWeight: 2745, femaleGain: 160, femaleFeed: 108, maleWeight: 3340, maleGain: 140, maleFeed: 117 },
+  { week: 24, femaleWeight: 2900, femaleGain: 155, femaleFeed: 112, maleWeight: 3470, maleGain: 130, maleFeed: 120 }
 ];
 
 /**
  * Summer Brood / Grow (Feb - Jul), Winter Laying (Aug - Jan):
- * Reproducing exact Suguna Foods standard benchmarks for Weeks 1 to 23
+ * Reproducing exact Suguna Foods standard benchmarks for Weeks 1 to 24
  */
 export const SUMMER_BROOD_STANDARDS: SeasonalBenchmarkRow[] = [
   { week: 1,  femaleWeight: 140,  femaleGain: 100, femaleFeed: 23,  maleWeight: 140,  maleGain: 100, maleFeed: 23 },
@@ -67,7 +68,8 @@ export const SUMMER_BROOD_STANDARDS: SeasonalBenchmarkRow[] = [
   { week: 20, femaleWeight: 2370, femaleGain: 180, femaleFeed: 102, maleWeight: 2890, maleGain: 170, maleFeed: 109 },
   { week: 21, femaleWeight: 2550, femaleGain: 180, femaleFeed: 107, maleWeight: 3050, maleGain: 160, maleFeed: 112 },
   { week: 22, femaleWeight: 2720, femaleGain: 170, femaleFeed: 110, maleWeight: 3200, maleGain: 150, maleFeed: 114 },
-  { week: 23, femaleWeight: 2880, femaleGain: 160, femaleFeed: 113, maleWeight: 3340, maleGain: 140, maleFeed: 117 }
+  { week: 23, femaleWeight: 2880, femaleGain: 160, femaleFeed: 113, maleWeight: 3340, maleGain: 140, maleFeed: 117 },
+  { week: 24, femaleWeight: 3030, femaleGain: 150, femaleFeed: 116, maleWeight: 3470, maleGain: 130, maleFeed: 120 }
 ];
 
 export function normalizeSeason(season: string): SeasonType {

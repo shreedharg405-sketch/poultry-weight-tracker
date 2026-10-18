@@ -308,7 +308,7 @@ export const DigitalTallyMatrix: React.FC<DigitalTallyMatrixProps> = ({
               onChange={(e) => setSelectedWeek(Number(e.target.value))}
               className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 focus:outline-none focus:border-emerald-500"
             >
-              {Array.from({ length: 23 }, (_, i) => i + 1).map((w) => (
+              {Array.from({ length: 24 }, (_, i) => i + 1).map((w) => (
                 <option key={w} value={w}>
                   Week {w}
                 </option>

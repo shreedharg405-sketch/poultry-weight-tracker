@@ -507,10 +507,11 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
         } catch {}
       }
 
+      console.error('❌ [DB] Error committing submission:', dbErr?.message || dbErr);
       return res.status(500).json({
-        error: 'Failed to commit submission to cloud database. Transaction rolled back; your local draft is preserved.',
-        code: dbErr?.code || 'TRANSACTION_ERROR',
-        details: dbErr?.message || 'Database transaction error',
+        status: 500,
+        message: 'An unexpected error occurred. Please try again later.',
+        error: 'Failed to commit submission. Transaction rolled back; your local draft is preserved.',
       });
     }
   }
@@ -828,10 +829,16 @@ submissionRouter.get('/farms/:farmId/submissions', requireAuth, async (req: Auth
     return res.status(403).json({ error: 'Access denied to this farm.' });
   }
 
+  const queryWeek = (req.query.week || req.query.flockAge) as string | undefined;
+  const targetWeek = queryWeek ? queryWeek.trim().toUpperCase() : undefined;
+
   if (isPostgresConfigured()) {
     try {
       const submissions = await prisma.submission.findMany({
-        where: { farmId },
+        where: {
+          farmId,
+          ...(targetWeek && { flockAge: targetWeek })
+        },
         orderBy: { submittedAt: 'desc' },
         include: {
           _count: {
@@ -849,7 +856,9 @@ submissionRouter.get('/farms/:farmId/submissions', requireAuth, async (req: Auth
     }
   }
 
-  const memList = memorySubmissions.filter(s => s.farmId === farmId);
+  const memList = memorySubmissions.filter(s =>
+    s.farmId === farmId && (!targetWeek || s.flockAge?.trim().toUpperCase() === targetWeek)
+  );
   return res.json(memList);
 });
 

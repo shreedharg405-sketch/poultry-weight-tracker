@@ -8,7 +8,7 @@ export const benchmarkRouter = Router();
  * Query parameters:
  *  - season: 'WINTER_BROOD_SUMMER_LAY' | 'SUMMER_BROOD_WINTER_LAY' | 'winter' | 'summer'
  *  - gender or sex: 'FEMALE' | 'MALE' | 'female' | 'male' | 'F' | 'M'
- *  - week (optional): 1 to 23
+ *  - week (optional): 1 to 24
  *
  * Example: GET /api/benchmarks?season=WINTER_BROOD_SUMMER_LAY&gender=FEMALE&week=12
  * Returns: benchmark weight, gain, and feed standard.
@@ -23,8 +23,8 @@ benchmarkRouter.get('/', (req: Request, res: Response) => {
     const gender = normalizeSex(rawSex);
 
     if (weekParam !== undefined) {
-      if (isNaN(weekParam) || weekParam < 1 || weekParam > 23) {
-        return res.status(400).json({ error: 'Week must be an integer between 1 and 23' });
+      if (isNaN(weekParam) || weekParam < 1 || weekParam > 24) {
+        return res.status(400).json({ error: 'Week must be an integer between 1 and 24' });
       }
       const bm = getBenchmarkForWeek(season, gender, weekParam);
       return res.json({
@@ -47,7 +47,8 @@ benchmarkRouter.get('/', (req: Request, res: Response) => {
       benchmarks: curve,
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to fetch benchmarks' });
+    console.error('[Benchmark Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -58,8 +59,8 @@ benchmarkRouter.get('/week/:week', (req: Request, res: Response) => {
     const rawSeason = (req.query.season as string) || 'WINTER_BROOD_SUMMER_LAY';
     const rawSex = (req.query.gender as string) || (req.query.sex as string) || 'FEMALE';
 
-    if (isNaN(week) || week < 1 || week > 23) {
-      return res.status(400).json({ error: 'Week must be between 1 and 23' });
+    if (isNaN(week) || week < 1 || week > 24) {
+      return res.status(400).json({ error: 'Week must be between 1 and 24' });
     }
 
     const season = normalizeSeason(rawSeason);
@@ -72,6 +73,7 @@ benchmarkRouter.get('/week/:week', (req: Request, res: Response) => {
       benchmark,
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to fetch benchmark for week' });
+    console.error('[Benchmark Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });

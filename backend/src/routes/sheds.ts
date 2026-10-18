@@ -24,7 +24,8 @@ shedRouter.get('/', async (req: Request, res: Response) => {
     );
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to fetch sheds' });
+    console.error('[Shed Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -38,7 +39,8 @@ shedRouter.get('/compare', async (req: Request, res: Response) => {
       comparisons,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to compare sheds' });
+    console.error('[Shed Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -55,7 +57,8 @@ shedRouter.get('/:id', async (req: Request, res: Response) => {
       pens,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to fetch shed' });
+    console.error('[Shed Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -69,7 +72,8 @@ shedRouter.get('/:id/summary', async (req: Request, res: Response) => {
       ...data,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to calculate shed summary' });
+    console.error('[Shed Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -86,7 +90,8 @@ shedRouter.post('/', async (req: Request, res: Response) => {
     });
     res.status(201).json(created);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to create shed' });
+    console.error('[Shed Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -104,6 +109,7 @@ shedRouter.post('/:id/pens', async (req: Request, res: Response) => {
     });
     res.status(201).json(created);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to add pen' });
+    console.error('[Shed Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });

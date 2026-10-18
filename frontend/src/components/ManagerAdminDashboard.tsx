@@ -171,7 +171,8 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     return eligibleOperators.filter(u => 
       (u.name && u.name.toLowerCase().includes(q)) ||
       (u.username && u.username.toLowerCase().includes(q)) ||
-      (u.role && u.role.toLowerCase().includes(q))
+      (u.role && u.role.toLowerCase().includes(q)) ||
+      ((u as any).employeeId && String((u as any).employeeId).toLowerCase().includes(q))
     );
   }, [eligibleOperators, operatorSearchQuery]);
 
@@ -186,6 +187,8 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   const [createUsername, setCreateUsername] = useState('');
   const [createName, setCreateName] = useState('');
   const [createPassword, setCreatePassword] = useState('');
+  const [createPhone, setCreatePhone] = useState('');
+  const [nextEmpCode, setNextEmpCode] = useState('EMP0003');
   const [createRole, setCreateRole] = useState<UserRole>('Supervisor');
   const [createAssignedFarms, setCreateAssignedFarms] = useState<string[]>([]);
   const [isSubmittingUser, setIsSubmittingUser] = useState(false);
@@ -199,6 +202,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     try {
       const users = await cloudApi.getUsers();
       setSystemUsers(users);
+      const nextCodeRes = await cloudApi.getNextEmployeeCode().catch(() => null);
+      if (nextCodeRes?.nextEmployeeCode) {
+        setNextEmpCode(nextCodeRes.nextEmployeeCode);
+      }
     } catch (err: any) {
       console.warn('Failed to load system users:', err);
     } finally {
@@ -214,24 +221,56 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
   const handleCreateUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!createUsername.trim() || !createName.trim() || !createPassword.trim()) {
-      alert('Please fill out all required fields.');
+    if (!createName.trim()) {
+      alert('Please fill out the full name.');
       return;
     }
+
+    const isFieldRole = createRole === 'Supervisor' || createRole === 'In-Charge';
+    const cleanPhone = createPhone.replace(/\D/g, '');
+
+    if (isFieldRole) {
+      if (cleanPhone.length < 6 && !createPassword.trim()) {
+        alert('Please enter a registered phone number (at least 6 digits) for initial password generation.');
+        return;
+      }
+    } else {
+      if (!createUsername.trim()) {
+        alert('Please enter a username for sign in.');
+        return;
+      }
+      if (!createPassword.trim()) {
+        alert('Please enter a password.');
+        return;
+      }
+    }
+
     setIsSubmittingUser(true);
     try {
-      await cloudApi.createUser({
-        username: createUsername.trim().toLowerCase(),
+      const derivedPw = (isFieldRole && cleanPhone.length >= 6) 
+        ? cleanPhone.slice(0, 3) + cleanPhone.slice(-3) 
+        : createPassword.trim();
+
+      const created = await cloudApi.createUser({
+        username: isFieldRole ? (createUsername.trim().toLowerCase() || nextEmpCode.toLowerCase()) : createUsername.trim().toLowerCase(),
         name: createName.trim(),
-        password: createPassword.trim(),
+        password: derivedPw,
         role: createRole,
+        phone: createPhone.trim() || undefined,
         assignedFarms: createAssignedFarms,
       });
-      setUserMgmtFeedback(`User @${createUsername} created successfully!`);
+
+      const empCodeDisplay = created.employeeCode || (created.username.startsWith('EMP') ? created.username : nextEmpCode);
+      setUserMgmtFeedback(
+        isFieldRole 
+          ? `Created employee @${created.username} (Code: ${empCodeDisplay}). Initial Password: ${derivedPw} (Prompted on first login)`
+          : `User @${created.username} created successfully!`
+      );
       setShowCreateUser(false);
       setCreateUsername('');
       setCreateName('');
       setCreatePassword('');
+      setCreatePhone('');
       setCreateRole('Supervisor');
       setCreateAssignedFarms([]);
       await loadSystemUsers();
@@ -266,20 +305,60 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     }
   };
 
-  const handleDeleteUser = async (user: AppUser) => {
+  // User Deletion State (Admin Only Confirmation Modal)
+  const [deletingUser, setDeletingUser] = useState<AppUser | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState<boolean>(false);
+  const [deleteUserError, setDeleteUserError] = useState<string | null>(null);
+
+  const handlePromptDeleteUser = (user: AppUser) => {
+    if (!isAdmin) {
+      setUserMgmtFeedback('Unauthorized: Only Administrators can delete user accounts.');
+      return;
+    }
+    const isSelf = 
+      (currentUser?.id && user.id === currentUser.id) || 
+      (currentUser?.userName && user.username.toLowerCase() === currentUser.userName.toLowerCase()) ||
+      (currentUser?.username && user.username.toLowerCase() === currentUser.username.toLowerCase());
+    if (isSelf) {
+      setUserMgmtFeedback('Cannot delete your own currently logged-in Administrator account.');
+      return;
+    }
+    if (user.id === 'u-admin-1' || user.username.toLowerCase() === 'admin') {
+      setUserMgmtFeedback('The primary system Administrator account (@admin) is protected and cannot be deleted.');
+      return;
+    }
     if (user.role === 'Admin' && systemUsers.filter(u => u.role === 'Admin').length <= 1) {
-      alert('Cannot delete the sole Administrator account.');
+      setUserMgmtFeedback('Cannot delete the sole Administrator account.');
       return;
     }
-    if (!confirm(`Are you sure you want to permanently delete user @${user.username} (${user.name})?`)) {
-      return;
-    }
+
+    setDeleteUserError(null);
+    setDeletingUser(user);
+  };
+
+  const handleCancelDeleteUser = () => {
+    if (isDeletingUser) return;
+    setDeletingUser(null);
+    setDeleteUserError(null);
+  };
+
+  const handleConfirmDeleteUser = async () => {
+    if (!deletingUser) return;
+    if (isDeletingUser) return;
+
+    setIsDeletingUser(true);
+    setDeleteUserError(null);
     try {
-      await cloudApi.deleteUser(user.id);
-      setUserMgmtFeedback(`Deleted user @${user.username}`);
+      const targetName = deletingUser.name;
+      const targetCode = deletingUser.employeeCode ? ` (${deletingUser.employeeCode})` : '';
+      const res = await cloudApi.deleteUser(deletingUser.id);
+      setDeletingUser(null);
+      setUserMgmtFeedback(res?.message || `Successfully removed user account ${targetName}${targetCode}.`);
       await loadSystemUsers();
     } catch (err: any) {
-      alert(err.message || 'Failed to delete user');
+      setDeleteUserError(err.message || 'Failed to delete user account. Please try again.');
+    } finally {
+      setIsDeletingUser(false);
     }
   };
 
@@ -744,8 +823,38 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       )}
 
       {/* Master Farm Roster List (Responsive grid: 1 col on mobile, 2 on tablet, 3 on PC desktop) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4 md:gap-5 overflow-y-auto flex-1 pb-6">
-        {farms.map((farm) => {
+      {(() => {
+        const activeFarms = farms.filter(f => !f.isArchived);
+
+        if (activeFarms.length === 0) {
+          return (
+            <div className="bg-white border border-slate-200 rounded-3xl p-8 sm:p-12 text-center space-y-4 shadow-xs my-6 max-w-lg mx-auto w-full">
+              <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mx-auto text-slate-400 border border-slate-200/80">
+                <Building2 className="w-8 h-8 text-emerald-600" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="font-black text-base sm:text-lg text-slate-800">No Active Farms Available</h4>
+                <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
+                  There are no active farm units in the system. Create a new farm unit or restore an archived farm from the archive drawer.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={onNewFarm}
+                  className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl transition cursor-pointer shadow-sm hover:shadow active:scale-95"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Create New Farm</span>
+                </button>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4 md:gap-5 overflow-y-auto flex-1 pb-6">
+            {activeFarms.map((farm) => {
           const isCompleted = farm.status === 'COMPLETED';
           // Filter to only eligible field operators (Supervisor, In-Charge, Incharge) and deduplicate
           const validOperators = (() => {
@@ -907,7 +1016,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => onOpenConclusion(farm.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenConclusion(farm.id);
+                    }}
                     className="bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 font-bold px-3 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 active:scale-95 transition cursor-pointer shrink-0"
                     title="One-Tap Excel Cons Conclusion"
                   >
@@ -919,7 +1031,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => onSelectFarm(farm.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectFarm(farm.id);
+                    }}
                     className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer text-center ${
                       activeFarmId === farm.id
                         ? 'bg-slate-200 text-slate-800'
@@ -932,7 +1047,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                   {canEditFarm(farm) && (
                     <button
                       type="button"
-                      onClick={() => handleOpenRenameFarm(farm)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenRenameFarm(farm);
+                      }}
                       className="px-2.5 py-1.5 text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 shrink-0"
                       title={`Edit name of ${farm.name}`}
                     >
@@ -944,7 +1062,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                   {isAdmin && (
                     <button
                       type="button"
-                      onClick={() => handleOpenDeleteModal(farm)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenDeleteModal(farm);
+                      }}
                       className="px-2.5 py-1.5 text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 shrink-0"
                       title={`Delete or Archive ${farm.name}`}
                     >
@@ -958,6 +1079,8 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
           );
         })}
       </div>
+    );
+  })()}
 
       {/* ========================================================= */}
       {/* MODAL: FARM ACCESS ASSIGNMENT HUB                         */}
@@ -1024,7 +1147,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Search operator by name, username, or role..."
+                  placeholder="Search operator by name..."
                   value={operatorSearchQuery}
                   onChange={e => setOperatorSearchQuery(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-8 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 transition"
@@ -1054,7 +1177,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 </div>
               ) : filteredOperators.length === 0 ? (
                 <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-center text-xs text-slate-400">
-                  <p className="font-semibold text-slate-300">No matching operators found</p>
+                  <p className="font-semibold text-slate-300">No operators found</p>
                   <p className="text-[11px] text-slate-500 mt-1">
                     No field operators match "{operatorSearchQuery}". Try another search term.
                   </p>
@@ -1168,9 +1291,33 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
             {/* Feedback notification banner */}
             {userMgmtFeedback && (
-              <div className="bg-emerald-500/10 border border-emerald-500/40 text-emerald-300 text-xs p-2.5 rounded-xl flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>{userMgmtFeedback}</span>
+              <div className={`text-xs p-2.5 rounded-xl flex items-center justify-between gap-2 animate-in fade-in duration-150 ${
+                userMgmtFeedback.toLowerCase().includes('cannot') || 
+                userMgmtFeedback.toLowerCase().includes('unauthorized') || 
+                userMgmtFeedback.toLowerCase().includes('fail') || 
+                userMgmtFeedback.toLowerCase().includes('error')
+                  ? 'bg-rose-500/15 border border-rose-500/40 text-rose-300'
+                  : 'bg-emerald-500/10 border border-emerald-500/40 text-emerald-300'
+              }`}>
+                <div className="flex items-center gap-2">
+                  {userMgmtFeedback.toLowerCase().includes('cannot') || 
+                   userMgmtFeedback.toLowerCase().includes('unauthorized') || 
+                   userMgmtFeedback.toLowerCase().includes('fail') || 
+                   userMgmtFeedback.toLowerCase().includes('error') ? (
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  )}
+                  <span className="font-semibold">{userMgmtFeedback}</span>
+                </div>
+                <button 
+                  type="button" 
+                  onClick={() => setUserMgmtFeedback(null)} 
+                  className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
+                  aria-label="Dismiss notification"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
             )}
 
@@ -1230,6 +1377,11 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                             <span className="text-[10px] text-slate-400 font-mono">
                               @{user.username}
                             </span>
+                            {user.employeeCode && (
+                              <span className="text-[9px] font-mono font-bold bg-emerald-950/80 text-emerald-400 border border-emerald-800/80 px-1.5 py-0.2 rounded">
+                                {user.employeeCode}
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-2 mt-1.5">
                             <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${roleColor}`}>
@@ -1274,15 +1426,33 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                             <Key className="w-3.5 h-3.5" />
                           </button>
 
-                          {/* Delete User */}
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteUser(user)}
-                            className="p-1.5 bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 rounded-lg border border-slate-700 transition cursor-pointer"
-                            title="Delete user"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {/* Delete User (Admin Only) */}
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => handlePromptDeleteUser(user)}
+                              disabled={
+                                (currentUser?.id && user.id === currentUser.id) ||
+                                (currentUser?.userName && user.username.toLowerCase() === currentUser.userName.toLowerCase()) ||
+                                (currentUser?.username && user.username.toLowerCase() === currentUser.username.toLowerCase()) ||
+                                user.id === 'u-admin-1' ||
+                                user.username.toLowerCase() === 'admin'
+                              }
+                              className="p-1.5 bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 rounded-lg border border-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-slate-800 disabled:hover:text-slate-400"
+                              title={
+                                (currentUser?.id && user.id === currentUser.id) ||
+                                (currentUser?.userName && user.username.toLowerCase() === currentUser.userName.toLowerCase()) ||
+                                (currentUser?.username && user.username.toLowerCase() === currentUser.username.toLowerCase())
+                                  ? "Cannot delete your own logged-in Administrator account"
+                                  : user.id === 'u-admin-1' || user.username.toLowerCase() === 'admin'
+                                  ? "Protected primary system account cannot be deleted"
+                                  : "Delete user account"
+                              }
+                              aria-label={`Delete account for ${user.name}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -1392,21 +1562,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
             <div>
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                Username (for sign in)
-              </label>
-              <input
-                type="text"
-                value={createUsername}
-                onChange={(e) => setCreateUsername(e.target.value)}
-                placeholder="e.g. suresh.kumar"
-                required
-                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
-              />
-            </div>
-
-            <div>
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                Full Name
+                Full Name *
               </label>
               <input
                 type="text"
@@ -1420,7 +1576,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
             <div>
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                Assigned Role
+                Assigned Role *
               </label>
               <select
                 value={createRole}
@@ -1434,19 +1590,76 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               </select>
             </div>
 
-            <div>
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                Initial Password
-              </label>
-              <input
-                type="password"
-                value={createPassword}
-                onChange={(e) => setCreatePassword(e.target.value)}
-                placeholder="••••••••••••"
-                required
-                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
-              />
-            </div>
+            {/* Field Role: Auto-assigned Employee Code & Phone Number for Temporary Password */}
+            {createRole === 'Supervisor' || createRole === 'In-Charge' ? (
+              <>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      Auto-Assigned Employee Code
+                    </span>
+                    <span className="text-[11px] text-slate-400">Unique identifier for sign in</span>
+                  </div>
+                  <span className="font-mono font-black text-xs text-emerald-400 bg-emerald-950/80 border border-emerald-800/80 px-2 py-0.5 rounded-lg">
+                    {nextEmpCode}
+                  </span>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                    Registered Phone Number (10 digits) *
+                  </label>
+                  <input
+                    type="tel"
+                    value={createPhone}
+                    onChange={(e) => setCreatePhone(e.target.value)}
+                    placeholder="e.g. 9876543210"
+                    required
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                  <div className="mt-1 text-[10px] text-slate-400">
+                    Temporary Initial Password: <strong className="text-emerald-400 font-mono">
+                      {createPhone.replace(/\D/g, '').length >= 6 
+                        ? `${createPhone.replace(/\D/g, '').slice(0, 3)}${createPhone.replace(/\D/g, '').slice(-3)}` 
+                        : 'First 3 + Last 3 digits'}
+                    </strong>
+                    <span className="block text-slate-500 text-[9px] mt-0.5">
+                      Employee will be required to change password on first login.
+                    </span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                    Username (for sign in) *
+                  </label>
+                  <input
+                    type="text"
+                    value={createUsername}
+                    onChange={(e) => setCreateUsername(e.target.value)}
+                    placeholder="e.g. admin.operations"
+                    required
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                    Initial Password *
+                  </label>
+                  <input
+                    type="password"
+                    value={createPassword}
+                    onChange={(e) => setCreatePassword(e.target.value)}
+                    placeholder="••••••••••••"
+                    required
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                </div>
+              </>
+            )}
 
             {/* Farm Access Assignment checkboxes */}
             <div>
@@ -1549,6 +1762,128 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: DELETE USER ACCOUNT CONFIRMATION (Admin Only)       */}
+      {/* ========================================================= */}
+      {deletingUser && (
+        <div 
+          className="fixed inset-0 bg-black/85 backdrop-blur-xs z-[100] flex items-center justify-center p-4 animate-in zoom-in-95 duration-150"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-user-modal-title"
+        >
+          <div className="bg-slate-900 border border-slate-700 text-slate-100 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-rose-500/20 text-rose-400 rounded-xl border border-rose-500/30">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 id="delete-user-modal-title" className="font-black text-sm sm:text-base text-white">
+                    Confirm Delete User Account
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Administrator authorization required
+                  </p>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={handleCancelDeleteUser}
+                disabled={isDeletingUser}
+                className="text-slate-400 hover:text-white p-1 rounded-lg disabled:opacity-50 transition cursor-pointer"
+                aria-label="Close dialog"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Target Employee Summary Card */}
+            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2.5">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Employee Name
+                  </span>
+                  <span className="font-black text-sm text-white">
+                    {deletingUser.name}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Employee Code
+                  </span>
+                  <span className="inline-block font-mono font-black text-xs text-emerald-400 bg-emerald-950/80 border border-emerald-800/80 px-2 py-0.5 rounded-md mt-0.5">
+                    {deletingUser.employeeCode || (deletingUser as any).employeeId || 'N/A'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-900 text-[11px]">
+                <div>
+                  <span className="text-slate-500 block text-[10px]">Username:</span>
+                  <span className="font-mono text-slate-200 font-semibold">@{deletingUser.username}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px]">Role:</span>
+                  <span className="font-bold text-purple-300">{deletingUser.role}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Safety & Integrity Notice */}
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-200/90 text-xs flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <span className="font-bold block text-amber-300">Data Preservation Notice</span>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Removing this employee deactivates their account and unassigns them from active farm units. Historical farm records, batch submissions, bird weights, and audit logs are safely preserved.
+                </p>
+              </div>
+            </div>
+
+            {/* Error Message Display if failure occurs */}
+            {deleteUserError && (
+              <div className="p-3 bg-rose-500/15 border border-rose-500/40 rounded-xl text-rose-300 text-xs flex items-start gap-2 animate-in fade-in duration-150">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span className="leading-relaxed font-semibold">{deleteUserError}</span>
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={handleCancelDeleteUser}
+                disabled={isDeletingUser}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteUser}
+                disabled={isDeletingUser}
+                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-black py-2.5 rounded-xl text-xs shadow-md transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isDeletingUser ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Confirm Delete</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1990,6 +2325,18 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               >
                 <X className="w-5 h-5" />
               </button>
+            </div>
+
+            {/* Explicit Confirmation Prompt (Req 3) */}
+            <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl">
+              <p className="text-xs sm:text-sm font-bold text-slate-200">
+                Are you sure you want to {deleteMode === 'archive' ? 'archive' : 'delete'} <span className="text-rose-400 font-extrabold underline underline-offset-2">"{deletingFarm.name}"</span>?
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                {deleteMode === 'archive' 
+                  ? 'This will remove the farm from active operations while safely preserving historical records.' 
+                  : 'This action is irreversible and will delete all associated data.'}
+              </p>
             </div>
 
             {/* Feedback Alert */}

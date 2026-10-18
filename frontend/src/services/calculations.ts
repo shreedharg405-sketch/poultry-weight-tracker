@@ -23,10 +23,17 @@ export const F_FACTOR_LOOKUP: Record<number, number> = {
   150: 5.03,
 };
 
+export function getVerifiedFFactor(n: number): number | null {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return null;
+  if (F_FACTOR_LOOKUP[n] !== undefined) return F_FACTOR_LOOKUP[n];
+  return null;
+}
+
 export function getClientFFactor(n: number): number {
+  const verified = getVerifiedFFactor(n);
+  if (verified !== null) return verified;
   if (n <= 10) return 3.08;
   if (n >= 150) return 5.03;
-  if (F_FACTOR_LOOKUP[n]) return F_FACTOR_LOOKUP[n];
 
   const keys = Object.keys(F_FACTOR_LOOKUP).map(Number).sort((a, b) => a - b);
   for (let i = 0; i < keys.length - 1; i++) {

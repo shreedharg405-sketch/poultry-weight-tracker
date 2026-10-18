@@ -247,7 +247,7 @@ async function runTests() {
     const healthRes = await fetch(`${baseUrl}/healthz`);
     const healthData = await healthRes.json();
     assert(healthRes.status === 200, 'GET /healthz returns 200 OK');
-    assert(healthData.database !== undefined, 'Healthz payload contains detailed database status');
+    assert(healthData.status === 'ok', 'Healthz payload returns sanitized status ok');
 
     const dbHealthRes = await fetch(`${baseUrl}/health/db`);
     const dbHealthData = await dbHealthRes.json();

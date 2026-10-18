@@ -1,6 +1,6 @@
 **Full-Stack Poultry Bodyweight, Uniformity & Shed-Wise Management System**
 
-An enterprise-grade cloud system digitizing manual breeder and broiler growth charts, faithfully reproducing **Suguna Foods recording sheets, seasonal standard benchmarks (Weeks 1 to 23), and multi-pen shed aggregation algorithms**.
+An enterprise-grade cloud system digitizing manual breeder and broiler growth charts, faithfully reproducing **Suguna Foods recording sheets, seasonal standard benchmarks (Weeks 1 to 24), and multi-pen shed aggregation algorithms**.
 
 ---
 
@@ -58,11 +58,11 @@ This system is engineered and optimized as a **pure web application** running sm
 
 ## 2. Domain Data & Shed-Wise Hierarchy
 
-$$\text{Farm} \longrightarrow \text{Shed / House (e.g., Shed 1, Shed 2)} \longrightarrow \text{Pens (e.g., Pen A - Female, Pen B - Male)} \longrightarrow \text{Sample Weighing Records (Weeks 1 to 23)}$$
+$$\text{Farm} \longrightarrow \text{Shed / House (e.g., Shed 1, Shed 2)} \longrightarrow \text{Pens (e.g., Pen A - Female, Pen B - Male)} \longrightarrow \text{Sample Weighing Records (Weeks 1 to 24)}$$
 
 ---
 
-## 3. Suguna Foods Seasonal Standard Benchmarks (Weeks 1 to 23)
+## 3. Suguna Foods Seasonal Standard Benchmarks (Weeks 1 to 24)
 
 ### Winter Brood / Grow (Aug – Jan), Summer Laying (Feb – Jul)
 | Week | Female Weight (g) | Female Gain (g) | Female Feed (g/bird/d) | Male Weight (g) | Male Gain (g) | Male Feed (g/bird/d) |
@@ -90,6 +90,7 @@ $$\text{Farm} \longrightarrow \text{Shed / House (e.g., Shed 1, Shed 2)} \longri
 | **W21** | 2415 | 180 | 102 | 3050 | 160 | 112 |
 | **W22** | 2585 | 170 | 105 | 3200 | 150 | 114 |
 | **W23** | 2745 | 160 | 108 | 3340 | 140 | 117 |
+| **W24** | 2900 | 155 | 112 | 3470 | 130 | 120 |
 
 ### Summer Brood / Grow (Feb – Jul), Winter Laying (Aug – Jan)
 | Week | Female Weight (g) | Female Gain (g) | Female Feed (g/bird/d) | Male Weight (g) | Male Gain (g) | Male Feed (g/bird/d) |
@@ -117,6 +118,7 @@ $$\text{Farm} \longrightarrow \text{Shed / House (e.g., Shed 1, Shed 2)} \longri
 | **W21** | 2550 | 180 | 107 | 3050 | 160 | 112 |
 | **W22** | 2720 | 170 | 110 | 3200 | 150 | 114 |
 | **W23** | 2880 | 160 | 113 | 3340 | 140 | 117 |
+| **W24** | 3030 | 150 | 116 | 3470 | 130 | 120 |
 
 ---
 
@@ -182,7 +184,7 @@ Contains models for:
 - `MobilePoultryDashboard.tsx`: Mobile-first dashboard engineered for handheld screens (360px–430px) with thumb-friendly tally pad (+/- and +1/+5/+10 chips), auto-scroll to standard target weight, sticky summary metrics (Sample/100, Live Avg, Uniformity %, CV%), multi-pen shed aggregation, daily feed requirement calculator, and WhatsApp/SMS 1-click sharing
 - `WeighingGrid.tsx` / `DigitalTallyMatrix.tsx`: Direct digital clone of Suguna 20g/50g tally grid with live uniformity, CV%, and instant bird tally buttons
 - `ShedSummaryDashboard.tsx` / `ShedDashboard.tsx`: Executive dashboard featuring 5 KPI Cards, Pen Comparative Table, Combined Multi-Pen Histogram, and Growth Chart
-- `GrowthChart.tsx`: Weeks 1–23 actual shed weight vs. seasonal target curve with female/male toggles and daily feed overlay
+- `GrowthChart.tsx`: Weeks 1–24 actual shed weight vs. seasonal target curve with female/male toggles and daily feed overlay
 - `PaperSheetReplica.tsx`: Authentic printable Suguna Foods recording sheet with pen tally matrix and shed executive summary
 
 ---

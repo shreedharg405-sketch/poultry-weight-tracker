@@ -1,7 +1,8 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { Printer, Download, Home, Layers, Calendar, Award, Utensils } from 'lucide-react';
 import { Flock, WeighingRecord, Shed, ShedSummaryData } from '../types';
 import { F_FACTOR_LOOKUP } from '../services/calculations';
+import { exportPenWeighingWorkbook } from '../services/excelExportService';
 
 interface PaperSheetReplicaProps {
   flock: Flock | null;
@@ -23,58 +24,30 @@ export const PaperSheetReplica: React.FC<PaperSheetReplicaProps> = ({
     window.print();
   };
 
-  const handleDownloadCsv = () => {
+  const [isExportingExcel, setIsExportingExcel] = useState<boolean>(false);
+
+  const handleDownloadExcel = async () => {
     if (!record) return;
-    let csv = `POULTRY FLOCK BODY WEIGHT & UNIFORMITY RECORDING SHEET\n`;
-    csv += `Farm Name,${flock?.farmName || ''},House / Shed,${shed?.shedName || flock?.houseNo || ''},Pen No,${flock?.penNo || ''}\n`;
-    csv += `Breed,${flock?.breed || ''},Sex,${flock?.sex || ''},Age (Weeks),${record.ageWeeks}\n`;
-    csv += `Date of Weighing,${record.weighDate},Weighed By,${record.weighedBy || ''}\n`;
-    csv += `Target Weight (g),${record.targetWeight},Actual Avg Weight (g),${record.actualAvgWeight}\n\n`;
-
-    if (shedSummary) {
-      csv += `SHED AGGREGATED SUMMARY (HOUSE LEVEL)\n`;
-      csv += `Shed Mean Weight (g),${shedSummary.shedAverageWeight}\n`;
-      csv += `Shed Overall Uniformity (±10%),${shedSummary.shedUniformityPercent}%\n`;
-      csv += `Total Live Birds in Shed,${shedSummary.totalLiveBirds}\n`;
-      csv += `Total Sample Birds Weighed,${shedSummary.totalSampleBirdsWeighed}\n`;
-      csv += `Shed Daily Feed Requirement,${shedSummary.totalDailyFeedKg} kg (${shedSummary.totalFeedBags50kg} bags)\n\n`;
+    try {
+      setIsExportingExcel(true);
+      await exportPenWeighingWorkbook({
+        farmName: flock?.farmName || 'Poultry Farm',
+        shedName: shed?.shedName || flock?.houseNo || 'House',
+        penNo: flock?.penNo || '1',
+        breed: flock?.breed,
+        sex: flock?.sex,
+        week: record.ageWeeks,
+        dateStr: record.weighDate,
+        weighedBy: record.weighedBy,
+        record
+      });
+    } catch (err) {
+      console.error('Failed to export pen excel:', err);
+    } finally {
+      setIsExportingExcel(false);
     }
-
-    csv += `PEN TALLY MATRIX\n`;
-    csv += `Weight (g),Count (Birds),Weight x Count,Category\n`;
-    for (const t of record.tallies) {
-      const isUnder = t.weightGrams < record.actualAvgWeight * 0.9;
-      const isOver = t.weightGrams > record.actualAvgWeight * 1.1;
-      const cat = isUnder ? 'Underweight (<90%)' : isOver ? 'Overweight (>110%)' : 'Uniform (±10%)';
-      csv += `${t.weightGrams},${t.birdCount},${t.weightGrams * t.birdCount},${cat}\n`;
-    }
-
-    csv += `\nSUMMARY STATISTICS\n`;
-    csv += `Total Sample Birds (N),${record.sampleSize}\n`;
-    csv += `Average Weight (g),${record.actualAvgWeight}\n`;
-    csv += `Lightest Bird (g),${record.lightestWeight}\n`;
-    csv += `Heaviest Bird (g),${record.heaviestWeight}\n`;
-    csv += `Weight Range (g),${record.weightRange}\n`;
-    csv += `F-Factor Value,${record.fValue}\n`;
-    csv += `CV % (F-Formula),${record.cvPercent}%\n`;
-    csv += `Standard Deviation,${record.stdDev} g\n`;
-    csv += `Acceptable ±10% Range,${(record.actualAvgWeight * 0.9).toFixed(1)}g - ${(record.actualAvgWeight * 1.1).toFixed(1)}g\n`;
-    csv += `Uniform Birds Count,${record.uniformCount}\n`;
-    csv += `Uniformity %,${record.uniformityPercent}%\n`;
-    csv += `Underweight Birds Count,${record.underCount}\n`;
-    csv += `Overweight Birds Count,${record.overCount}\n`;
-    csv += `Uniformity Grade,${record.status}\n`;
-    csv += `Suggested Feed (g/bird/day),${record.suggestedFeedGrams} g\n`;
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `suguna_sheet_${shed?.shedName || 'shed'}_wk${record.ageWeeks}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   };
+
 
   if (!record) {
     return (
@@ -107,12 +80,15 @@ export const PaperSheetReplica: React.FC<PaperSheetReplicaProps> = ({
 
         <div className="flex items-center gap-2">
           <button
-            onClick={handleDownloadCsv}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-2 shadow"
+            onClick={handleDownloadExcel}
+            disabled={isExportingExcel}
+            className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-2 shadow disabled:opacity-50 cursor-pointer"
+            title="Download official weighing recording Excel sheet (.xlsx)"
           >
             <Download className="w-4 h-4 text-emerald-400" />
-            <span>Export CSV</span>
+            <span>{isExportingExcel ? 'Exporting...' : 'Download Excel (.xlsx)'}</span>
           </button>
+
           <button
             onClick={handlePrint}
             className="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center gap-2 shadow-lg shadow-emerald-700/20"

@@ -28,7 +28,8 @@ async function handlePenEntry(req: Request, res: Response) {
 
     return res.status(201).json(created);
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to record pen weighing entry' });
+    console.error('[Weighing Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 }
 
@@ -60,7 +61,8 @@ weighingRouter.post('/calculate', (req: Request, res: Response) => {
       alerts,
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Calculation failed' });
+    console.error('[Weighing Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -70,7 +72,8 @@ weighingRouter.get('/flock/:flockId', async (req: Request, res: Response) => {
     const records = await WeighingService.getByFlockId(req.params.flockId);
     return res.json(records);
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to fetch weighing records' });
+    console.error('[Weighing Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -87,7 +90,8 @@ weighingRouter.get('/:id', async (req: Request, res: Response) => {
       flock,
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to fetch weighing record' });
+    console.error('[Weighing Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });
 
@@ -102,6 +106,7 @@ weighingRouter.delete('/:id', async (req: Request, res: Response) => {
     }
     return res.json({ message: 'Record deleted successfully' });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to delete record' });
+    console.error('[Weighing Error]:', err?.message || err);
+    return res.status(500).json({ status: 500, message: 'An unexpected error occurred. Please try again later.' });
   }
 });

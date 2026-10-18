@@ -32,6 +32,19 @@ if (process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*') {
 }
 
 // Middlewares
+app.disable('x-powered-by');
+
+// Defensive Security Headers Middleware
+app.use((_req, res, next) => {
+  res.removeHeader('X-Powered-By');
+  res.removeHeader('Server');
+  res.removeHeader('X-AspNet-Version');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
@@ -47,6 +60,7 @@ app.use(cors({
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-user-username'],
+  exposedHeaders: ['Content-Disposition'],
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -63,7 +77,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// 1. Health check & Diagnostics Routers (Handles /healthz, /health, /api/healthz, /api/health, /api/health/db, /api/health/db-sync)
+// 1. Health check & Diagnostics Routers (Handles /healthz, /health, /api/healthz, /api/health)
 app.use(healthRouter);
 
 // 2. Multi-Farm Cloud Routes & Submissions (Mounted on /api and aliased on root)
@@ -78,54 +92,25 @@ app.use('/benchmarks', benchmarkRouter);
 app.use('/api/export', exportRouter);
 app.use('/export', exportRouter);
 
-// 4. Root information endpoint
+// 4. Root information endpoint (Neutral status without schema or endpoint disclosure)
 const rootHandler = (_req: Request, res: Response) => {
   res.json({
-    name: 'Poultry Body Weight Tracker - Multi-Farm Real-Time Cloud API',
-    status: 'online',
-    version: '3.0.0',
-    documentation: '/healthz',
-    healthCheck: '/healthz',
-    databaseCheck: '/api/health/db',
-    apiPrefix: '/api',
-    endpoints: [
-      'GET    /healthz (or /api/health)',
-      'GET    /api/health/db',
-      'POST   /api/health/db-sync',
-      'GET    /api/farms',
-      'POST   /api/farms',
-      'GET    /api/farms/:id',
-      'PUT    /api/farms/:id/details',
-      'DELETE /api/farms/:id',
-      'PUT    /api/farms/:id/sync',
-      'POST   /api/sheds',
-      'DELETE /api/sheds/:shedId',
-      'PUT    /api/sheds/:shedId',
-      'POST   /api/parts',
-      'DELETE /api/parts/:partId',
-      'PUT    /api/parts/:partId',
-      'POST   /api/lines',
-      'DELETE /api/lines/:lineId',
-      'POST   /api/lines/:lineId/weight',
-      'DELETE /api/lines/:lineId/weight/:index',
-      'POST   /api/lines/:lineId/clear',
-      'POST   /api/submissions',
-      'GET    /api/submissions',
-      'GET    /api/submissions/:id',
-      'GET    /api/submissions/:id/birds',
-      'GET    /api/farms/:farmId/submissions',
-      'POST   /api/auth/login',
-      'GET    /api/auth/me',
-      'GET    /api/auth/users',
-      'GET    /api/logs',
-      'POST   /api/logs',
-      'GET    /api/benchmarks'
-    ]
+    status: 'ok',
   });
 };
 
 app.get('/', rootHandler);
 app.get('/api', rootHandler);
+
+// 5. Centralized generic error handling middleware (Zero information leak)
+app.use((err: any, _req: Request, res: Response, _next: express.NextFunction) => {
+  console.error('[Internal Server Error]:', err?.message || err);
+  if (res.headersSent) return;
+  return res.status(500).json({
+    status: 500,
+    message: 'An unexpected error occurred. Please try again later.',
+  });
+});
 
 // Server startup with automatic schema verification
 let server: any = null;
@@ -141,8 +126,6 @@ async function startServer() {
 
     server = app.listen(PORT, HOST, () => {
       console.log(`🚀 Poultry Sync Server running on http://${HOST}:${PORT}`);
-      console.log(`📡 Health check available at http://${HOST}:${PORT}/healthz`);
-      console.log(`📊 DB Inspector available at http://${HOST}:${PORT}/api/health/db`);
     });
 
     process.on('SIGTERM', () => {

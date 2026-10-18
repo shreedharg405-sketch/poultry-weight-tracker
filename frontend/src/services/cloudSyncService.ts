@@ -5,6 +5,9 @@ export type UserRole = 'Admin' | 'Manager' | 'Supervisor' | 'In-Charge' | 'Incha
 export interface AppUser {
   id: string;
   username: string;
+  employeeCode?: string;
+  phone?: string;
+  requiresPasswordChange?: boolean;
   name: string;
   email?: string;
   role: UserRole;
@@ -217,9 +220,12 @@ export const cloudApi = {
     return res.json();
   },
 
-  // 3. Get full farm details by ID
-  async getFarmDetails(farmId: string): Promise<FullFarmData> {
-    const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}`, {
+  // 3. Get full farm details by ID (with optional week query)
+  async getFarmDetails(farmId: string, week?: string): Promise<FullFarmData> {
+    const url = week
+      ? `${getApiBaseUrl()}/farms/${farmId}?week=${encodeURIComponent(week)}`
+      : `${getApiBaseUrl()}/farms/${farmId}`;
+    const res = await fetch(url, {
       headers: getAuthHeaders(),
     });
     if (!res.ok) {
@@ -365,50 +371,66 @@ export const cloudApi = {
     return result;
   },
 
-  // 12. Add Part
+  // 12. Add Part (Enforced Parts A-D)
   async addPart(data: { shedId: string; name: string; order?: number }): Promise<any> {
     const res = await fetch(`${getApiBaseUrl()}/parts`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
-    return res.json();
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.error || `Failed to add part (${res.status})`);
+    return result;
   },
 
   // 13. Delete Part
   async deletePart(partId: string): Promise<boolean> {
     const res = await fetch(`${getApiBaseUrl()}/parts/${partId}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
-    return res.ok;
+    if (!res.ok) {
+      const result = await res.json().catch(() => ({}));
+      throw new Error(result.error || `Failed to delete part (${res.status})`);
+    }
+    return true;
   },
 
   // 14. Rename Part
   async updatePart(partId: string, name: string): Promise<any> {
     const res = await fetch(`${getApiBaseUrl()}/parts/${partId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ name }),
     });
-    return res.json();
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.error || `Failed to update part (${res.status})`);
+    return result;
   },
 
-  // 15. Add Line
+  // 15. Add Line (Enforced Lines 1-16)
   async addLine(data: { partId: string; name?: string }): Promise<any> {
     const res = await fetch(`${getApiBaseUrl()}/lines`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
-    return res.json();
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.error || `Failed to add line (${res.status})`);
+    return result;
   },
 
   // 16. Delete Line
   async deleteLine(lineId: string | number): Promise<boolean> {
     const res = await fetch(`${getApiBaseUrl()}/lines/${lineId}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
-    return res.ok;
+    if (!res.ok) {
+      const result = await res.json().catch(() => ({}));
+      throw new Error(result.error || `Failed to delete line (${res.status})`);
+    }
+    return true;
   },
 
   // 17. Full Farm Sync
@@ -554,9 +576,11 @@ export const cloudApi = {
     return res.json();
   },
 
-  // 18. Login (Username & Password for all roles)
-  async login(data: { username: string; password: string }): Promise<{ token: string; user: AppUser }> {
-    const cleanUsername = data.username.trim().toLowerCase();
+  // 18. Login (Supports Username or Employee Code)
+  async login(data: { username: string; password: string }): Promise<{ token: string; user: AppUser; requiresPasswordChange?: boolean }> {
+    const rawInput = data.username.trim();
+    const cleanLower = rawInput.toLowerCase();
+    const cleanUpper = rawInput.toUpperCase();
     try {
       const res = await fetch(`${getApiBaseUrl()}/auth/login`, {
         method: 'POST',
@@ -566,25 +590,33 @@ export const cloudApi = {
       if (res.ok) {
         return res.json();
       }
-      const err = await res.json().catch(() => ({ error: 'Invalid username or password.' }));
-      throw new Error(err.error || 'Invalid username or password.');
+      const err = await res.json().catch(() => ({ error: 'Invalid username/employee code or password.' }));
+      throw new Error(err.error || 'Invalid username/employee code or password.');
     } catch (networkErr: any) {
-      if (networkErr.message && networkErr.message.includes('Invalid username or password')) {
-        throw networkErr;
-      }
-      if (networkErr.message && networkErr.message.includes('deactivated')) {
-        throw networkErr;
-      }
-      if (networkErr.message && networkErr.message.includes('Too many failed')) {
+      if (networkErr.message && (
+        networkErr.message.includes('Invalid') || 
+        networkErr.message.includes('deactivated') || 
+        networkErr.message.includes('Too many failed')
+      )) {
         throw networkErr;
       }
 
       // Offline fallback authentication
-      const offlineUsers: Array<{ username: string; name: string; password: string; role: UserRole; assignedFarms: string[]; status: 'ACTIVE' | 'INACTIVE' }> = [
+      const offlineUsers: Array<{ 
+        username: string; 
+        employeeCode?: string; 
+        phone?: string; 
+        requiresPasswordChange?: boolean;
+        name: string; 
+        password: string; 
+        role: UserRole; 
+        assignedFarms: string[]; 
+        status: 'ACTIVE' | 'INACTIVE' 
+      }> = [
         { username: 'admin', name: 'System Administrator', password: 'Admin@123', role: 'Admin', assignedFarms: ['*'], status: 'ACTIVE' },
         { username: 'manager', name: 'Flock Manager', password: 'Manager@123', role: 'Manager', assignedFarms: ['*'], status: 'ACTIVE' },
-        { username: 'supervisor', name: 'Suresh Kumar', password: 'Super@123', role: 'Supervisor', assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'], status: 'ACTIVE' },
-        { username: 'incharge', name: 'Ramesh Patel', password: 'Incharge@123', role: 'In-Charge', assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'], status: 'ACTIVE' },
+        { username: 'supervisor', employeeCode: 'EMP0001', phone: '9876543210', name: 'Suresh Kumar', password: 'Super@123', role: 'Supervisor', assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'], status: 'ACTIVE' },
+        { username: 'incharge', employeeCode: 'EMP0002', phone: '9845012345', name: 'Ramesh Patel', password: 'Incharge@123', role: 'In-Charge', assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'], status: 'ACTIVE' },
       ];
 
       const customOfflineStr = localStorage.getItem('poultry_offline_users');
@@ -595,16 +627,25 @@ export const cloudApi = {
         } catch {}
       }
 
-      const match = offlineUsers.find(u => u.username.toLowerCase() === cleanUsername);
+      const match = offlineUsers.find(u => 
+        u.username.toLowerCase() === cleanLower ||
+        (u.employeeCode && u.employeeCode.toUpperCase() === cleanUpper) ||
+        (u.username.toUpperCase() === cleanUpper)
+      );
+
       if (match && match.password === data.password.trim()) {
         if (match.status === 'INACTIVE') {
           throw new Error('Account is deactivated. Please contact your Administrator.');
         }
         return {
           token: `offline-${Date.now()}`,
+          requiresPasswordChange: !!match.requiresPasswordChange,
           user: {
             id: `u-${match.username}`,
             username: match.username,
+            employeeCode: match.employeeCode,
+            phone: match.phone,
+            requiresPasswordChange: match.requiresPasswordChange,
             name: match.name,
             role: match.role,
             status: match.status,
@@ -614,8 +655,34 @@ export const cloudApi = {
         };
       }
 
-      throw new Error('Invalid username or password.');
+      throw new Error('Invalid username/employee code or password.');
     }
+  },
+
+  // 18b. Change Password (First Login or Self Service)
+  async changePassword(newPassword: string, token: string): Promise<{ success: boolean; token: string; user: AppUser }> {
+    const res = await fetch(`${getApiBaseUrl()}/auth/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ newPassword })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to update password' }));
+      throw new Error(err.error || 'Failed to update password');
+    }
+    return res.json();
+  },
+
+  // 18c. Query Next Sequential Employee Code
+  async getNextEmployeeCode(): Promise<{ nextEmployeeCode: string }> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/auth/next-employee-code`);
+      if (res.ok) return res.json();
+    } catch {}
+    return { nextEmployeeCode: 'EMP0003' };
   },
 
   // 19. Get Current User Session (Token Verification)
@@ -661,8 +728,8 @@ export const cloudApi = {
     const defaults: AppUser[] = [
       { id: 'u-admin-1', username: 'admin', name: 'System Administrator', role: 'Admin', status: 'ACTIVE', assignedFarms: ['*'] },
       { id: 'u-manager-1', username: 'manager', name: 'Flock Manager', role: 'Manager', status: 'ACTIVE', assignedFarms: ['*'] },
-      { id: 'u-supervisor-1', username: 'supervisor', name: 'Suresh Kumar', role: 'Supervisor', status: 'ACTIVE', assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'] },
-      { id: 'u-incharge-1', username: 'incharge', name: 'Ramesh Patel', role: 'In-Charge', status: 'ACTIVE', assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'] },
+      { id: 'u-supervisor-1', username: 'supervisor', employeeCode: 'EMP0001', phone: '9876543210', name: 'Suresh Kumar', role: 'Supervisor', status: 'ACTIVE', assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'] },
+      { id: 'u-incharge-1', username: 'incharge', employeeCode: 'EMP0002', phone: '9845012345', name: 'Ramesh Patel', role: 'In-Charge', status: 'ACTIVE', assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'] },
     ];
     const custom = localStorage.getItem('poultry_offline_users');
     if (custom) {
@@ -676,8 +743,8 @@ export const cloudApi = {
     return defaults;
   },
 
-  // 22. Create User Account (Admin Only)
-  async createUser(data: { username: string; name: string; password: string; role: UserRole; assignedFarms?: string[] }): Promise<AppUser> {
+  // 22. Create User Account (Admin & Manager)
+  async createUser(data: { username?: string; name: string; password?: string; role: UserRole; assignedFarms?: string[]; phone?: string; employeeCode?: string }): Promise<AppUser> {
     const res = await fetch(`${getApiBaseUrl()}/auth/users`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -718,16 +785,34 @@ export const cloudApi = {
   },
 
   // 25. Delete User Account (Admin Only)
-  async deleteUser(id: string): Promise<boolean> {
-    const res = await fetch(`${getApiBaseUrl()}/auth/users/${id}`, {
-      method: 'DELETE',
-      headers: getAuthHeaders(),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Failed to delete user' }));
-      throw new Error(err.error || `Failed to delete user (${res.status})`);
+  async deleteUser(id: string): Promise<{ success: boolean; message?: string }> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/auth/users/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to delete user account' }));
+        throw new Error(err.error || `Failed to delete user account (${res.status})`);
+      }
+      const data = await res.json().catch(() => ({ success: true }));
+
+      // Remove from offline local users cache if present
+      try {
+        const offline = localStorage.getItem('poultry_offline_users');
+        if (offline) {
+          const parsed = JSON.parse(offline);
+          if (Array.isArray(parsed)) {
+            const filtered = parsed.filter((u: any) => u.id !== id && u.username !== id);
+            localStorage.setItem('poultry_offline_users', JSON.stringify(filtered));
+          }
+        }
+      } catch {}
+
+      return data;
+    } catch (err: any) {
+      throw new Error(sanitizeErrorMessage(err.message || 'Failed to delete user account. Server is not reachable.'));
     }
-    return res.ok;
   },
 
   // 26. Assign Operators to Farm (Req 5)
@@ -829,14 +914,14 @@ export const cloudApi = {
 
         if (res.ok) {
           const latencyMs = Date.now() - start;
-          const data = await res.json().catch(() => ({ status: 'healthy', database: { status: 'unknown' } }));
-          const dbConnected = data?.database?.status === 'connected' || data?.database === 'healthy';
+          const data = await res.json().catch(() => ({ status: 'ok' }));
+          const isHealthy = data?.status === 'ok' || data?.status === 'healthy' || data?.database?.status === 'connected';
           return {
             online: true,
-            status: data?.status || 'healthy',
-            databaseConnected: dbConnected,
-            databaseStatus: data?.database?.status || (dbConnected ? 'connected' : 'disconnected'),
-            databaseMessage: dbConnected ? 'Server is connected' : 'Server is not connected',
+            status: isHealthy ? 'ok' : 'degraded',
+            databaseConnected: isHealthy,
+            databaseStatus: isHealthy ? 'connected' : 'disconnected',
+            databaseMessage: isHealthy ? 'Server is connected' : 'Server is not connected',
             databaseProvider: 'cloud-server',
             latencyMs,
             testedUrl: url,

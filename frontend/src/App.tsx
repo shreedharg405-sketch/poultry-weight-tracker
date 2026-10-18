@@ -35,7 +35,8 @@ import {
   UploadCloud,
   Save,
   Grid,
-  Home
+  Home,
+  ChevronDown
 } from 'lucide-react';
 import { 
   ShedData, 
@@ -55,6 +56,15 @@ import { ManagerAdminDashboard } from './components/ManagerAdminDashboard';
 import { DedicatedSubmitScreen } from './components/DedicatedSubmitScreen';
 import { SubmissionUpdateScreen } from './components/SubmissionUpdateScreen';
 import { formatDateTimeIST, formatDateIST, formatTimeIST } from './utils/dateFormatter';
+import {
+  applyLineWeightAddition,
+  applyLineWeightDeletion,
+  applyLineWeightClear,
+  mergeServerShedsWithLocalDraft,
+  createEmptyWeeklySheds,
+  formatRecordingWeekLabel,
+  getRecordingWeekDateRange
+} from './utils/weightUpdateHelpers';
 import { 
   cloudApi, 
   FarmSummary, 
@@ -70,7 +80,7 @@ import {
   sanitizeErrorMessage
 } from './services/cloudSyncService';
 
-// Seasonal Target Benchmarks for all 23 Weeks
+// Seasonal Target Benchmarks for all 24 Weeks
 const BENCHMARKS: Record<'Summer' | 'Winter', Record<string, { stdF: number; stdM: number }>> = {
   Summer: SUMMER_BROOD_STANDARDS.reduce((acc, cur) => {
     acc[`W${cur.week}`] = { stdF: cur.femaleWeight, stdM: cur.maleWeight };
@@ -200,7 +210,14 @@ export default function App() {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   });
   const [manualTime, setManualTime] = useState('12:00');
-  const [ageWeek, setAgeWeek] = useState('W18');
+  const [ageWeek, setAgeWeek] = useState<string>(() => {
+    const activeId = localStorage.getItem('poultry_active_farm_id');
+    if (activeId) {
+      const savedWeek = localStorage.getItem(`poultry_active_week_${activeId}`);
+      if (savedWeek) return savedWeek;
+    }
+    return 'W18';
+  });
   const [season, setSeason] = useState<'Summer' | 'Winter'>('Summer');
 
   // Week number extraction for exact tolerance calculation
@@ -232,9 +249,15 @@ export default function App() {
     }
     return [];
   });
+  const farmsListRef = useRef<FarmSummary[]>(farmsList);
+  farmsListRef.current = farmsList;
+
   const [activeFarmId, setActiveFarmId] = useState<string>(() => {
     return localStorage.getItem('poultry_active_farm_id') || '';
   });
+  const activeFarmIdRef = useRef<string>(activeFarmId);
+  activeFarmIdRef.current = activeFarmId;
+
   const [syncStatus, setSyncStatus] = useState<'synced' | 'saving' | 'offline' | 'refreshing'>('synced');
   const [lastUpdatedString, setLastUpdatedString] = useState<string>('Just now');
   const [lastServerUpdatedAt, setLastServerUpdatedAt] = useState<string>('');
@@ -249,19 +272,20 @@ export default function App() {
   });
   const [newFarmAgeWeek, setNewFarmAgeWeek] = useState<string>('W18');
   const [newFarmSeason, setNewFarmSeason] = useState<'Summer' | 'Winter'>('Summer');
-  const [newFarmConfiguredSheds, setNewFarmConfiguredSheds] = useState<Array<{ id: string; name: string; type: 'Female' | 'Male' }>>([
-    { id: '1', name: 'Shed 1', type: 'Female' },
-    { id: '2', name: 'Shed 2', type: 'Female' },
-    { id: '3', name: 'Shed 3', type: 'Female' },
-    { id: '4', name: 'Shed 4', type: 'Male' },
-  ]);
+  const [newFarmShedCount, setNewFarmShedCount] = useState<number | string>(10);
+  const [newFarmShedCountError, setNewFarmShedCountError] = useState<string | null>(null);
   const [isCreatingFarm, setIsCreatingFarm] = useState<boolean>(false);
 
   // Farm Audit, Draft Status & Batch Submission State
   const [farmStatus, setFarmStatus] = useState<FarmStatus>(() => {
     const activeId = localStorage.getItem('poultry_active_farm_id') || '';
     if (activeId) {
+      const activeWeek = localStorage.getItem(`poultry_active_week_${activeId}`) || 'W18';
       try {
+        const savedWeekStatus = localStorage.getItem(`poultry_status_${activeId}_${activeWeek}`);
+        if (savedWeekStatus === 'DRAFT' || savedWeekStatus === 'UPLOADING' || savedWeekStatus === 'COMPLETED' || savedWeekStatus === 'UPLOAD_FAILED') {
+          return savedWeekStatus as FarmStatus;
+        }
         const saved = localStorage.getItem(`poultry_status_${activeId}`);
         if (saved === 'DRAFT' || saved === 'UPLOADING' || saved === 'COMPLETED' || saved === 'UPLOAD_FAILED') return saved as FarmStatus;
       } catch {}
@@ -356,7 +380,12 @@ export default function App() {
     } catch {}
     return false;
   });
-  const [isSwitchingUser, setIsSwitchingUser] = useState<boolean>(false);
+
+  const isAddingPartRef = useRef(false);
+  const isAddingLineRef = useRef(false);
+  const isLoggingOutRef = useRef(false);
+  const isAuthenticatedRef = useRef(isAuthenticated);
+  isAuthenticatedRef.current = isAuthenticated;
 
   // Session verification on mount with backend validation
   useEffect(() => {
@@ -448,12 +477,19 @@ export default function App() {
 
   // Current active farm summary object (Strict isolation - returns null if supervisor has 0 assigned farms)
   const currentActiveFarmSummary = useMemo(() => {
+    let base: FarmSummary | null = null;
     if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
       if (accessibleFarms.length === 0) return null;
-      return accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
+      base = accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
+    } else {
+      base = accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
     }
-    return accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
-  }, [accessibleFarms, activeFarmId, currentUserRole]);
+    if (!base) return null;
+    return {
+      ...base,
+      ageWeek: ageWeek || base.ageWeek || 'W18',
+    };
+  }, [accessibleFarms, activeFarmId, currentUserRole, ageWeek]);
 
   // Farm Assignment Hub handler for Managers & Admins
   const handleAssignUserToFarm = (farmId: string, assignedUsers: string[]) => {
@@ -486,9 +522,13 @@ export default function App() {
     localStorage.setItem('poultry_auth_token', token);
     localStorage.setItem('poultry_current_user', JSON.stringify(authUser));
     setIsAuthenticated(true);
-    setIsSwitchingUser(false);
+    isAuthenticatedRef.current = true;
     showToast(`Welcome, ${authUser.name} (${authUser.role})!`);
     setCurrentScreen('home');
+    currentScreenRef.current = 'home';
+    try {
+      window.history.replaceState({ screen: 'home' }, '', '#home');
+    } catch {}
   };
 
   const handleOpenNewFarmModal = () => {
@@ -531,8 +571,10 @@ export default function App() {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const handleLogout = () => {
-    if (isLoggingOut) return;
+    if (isLoggingOut || isLoggingOutRef.current) return;
     setIsLoggingOut(true);
+    isLoggingOutRef.current = true;
+    setShowExitConfirm(false);
 
     // 1. Revoke server session asynchronously in background without blocking UI
     cloudApi.logout().catch(() => {});
@@ -542,17 +584,20 @@ export default function App() {
     localStorage.removeItem('poultry_current_user');
     setCurrentUser(null);
     setIsAuthenticated(false);
-    setIsSwitchingUser(false);
+    isAuthenticatedRef.current = false;
 
-    // 3. Navigate immediately to login page (#auth)
+    // 3. Navigate immediately to login page (#auth) without triggering Exit dialog
     setCurrentScreen('auth');
+    currentScreenRef.current = 'auth';
     try {
-      window.location.hash = '#auth';
-      window.history.replaceState(null, '', '#auth');
+      window.history.replaceState({ screen: 'auth' }, '', '#auth');
     } catch {}
 
     showToast('Logged out successfully.');
-    setIsLoggingOut(false);
+    setTimeout(() => {
+      setIsLoggingOut(false);
+      isLoggingOutRef.current = false;
+    }, 400);
   };
 
   const fetchLatestLogs = async () => {
@@ -575,6 +620,16 @@ export default function App() {
   const [selectedPartId, setSelectedPartId] = useState<string>('');
   const [selectedLineId, setSelectedLineId] = useState<number | string>('');
   const [inputWeight, setInputWeight] = useState('');
+  const [inputWeightError, setInputWeightError] = useState<string | null>(null);
+  const [isSubmittingWeight, setIsSubmittingWeight] = useState(false);
+  const isSubmittingWeightRef = useRef(false);
+  const weightInputRef = useRef<HTMLInputElement>(null);
+
+  // Strict Manual Entry: Always keep input empty by default for new bird entries
+  useEffect(() => {
+    setInputWeight('');
+    setInputWeightError(null);
+  }, [selectedLineId, selectedPartId, selectedShedId]);
 
   // Modals & In-App Confirmations
   const [showAddShedModal, setShowAddShedModal] = useState(false);
@@ -605,7 +660,22 @@ export default function App() {
   const [sheds, setSheds] = useState<ShedData[]>(() => {
     const activeId = localStorage.getItem('poultry_active_farm_id');
     if (activeId) {
+      const activeWeek = localStorage.getItem(`poultry_active_week_${activeId}`) || 'W18';
       try {
+        const weekDraftStr = localStorage.getItem(`poultry_draft_${activeId}_${activeWeek}`);
+        if (weekDraftStr) {
+          const parsedWeek = JSON.parse(weekDraftStr);
+          if (Array.isArray(parsedWeek?.sheds) && parsedWeek.sheds.length > 0) {
+            return parsedWeek.sheds;
+          }
+        }
+        const draftStr = localStorage.getItem(`poultry_draft_${activeId}`);
+        if (draftStr) {
+          const parsedDraft = JSON.parse(draftStr);
+          if (Array.isArray(parsedDraft?.sheds) && parsedDraft.sheds.length > 0) {
+            return parsedDraft.sheds;
+          }
+        }
         const saved = localStorage.getItem(`poultry_farm_${activeId}`);
         if (saved) {
           const parsed = JSON.parse(saved);
@@ -628,6 +698,9 @@ export default function App() {
 
   const selectedLineIdRef = useRef(selectedLineId);
   selectedLineIdRef.current = selectedLineId;
+
+  const shedsRef = useRef<ShedData[]>(sheds);
+  shedsRef.current = sheds;
 
   // Strict step-by-step backward hierarchy (Req 2)
   // Entering: home -> shed_select -> part_select -> line_select -> weigh_pad
@@ -680,7 +753,34 @@ export default function App() {
     }
   };
 
+  const getScreenFromHash = (hash: string): ScreenType | null => {
+    if (!hash || hash === '#home' || hash === '#') return 'home';
+    if (hash.startsWith('#weigh')) return 'weigh_pad';
+    if (hash.startsWith('#lines')) return 'line_select';
+    if (hash.startsWith('#parts')) return 'part_select';
+    if (hash.startsWith('#sheds')) return 'shed_select';
+    if (hash.startsWith('#submit')) return 'submit_page';
+    if (hash.startsWith('#conclusion')) return 'conclusion';
+    if (hash.startsWith('#submissions') || hash.startsWith('#history')) return 'history';
+    if (hash.startsWith('#submission-update')) return 'submission_update';
+    if (hash.startsWith('#manage')) return 'sheds_manage';
+    if (hash.startsWith('#setup')) return 'setup';
+    if (hash.startsWith('#auth')) return 'auth';
+    return null;
+  };
+
   const handlePopState = (event?: PopStateEvent) => {
+    // If not authenticated or during logout: suppress all navigation & exit confirmations, keep safely on #auth
+    if (isLoggingOutRef.current || !isAuthenticatedRef.current || !localStorage.getItem('poultry_auth_token')) {
+      setShowExitConfirm(false);
+      setCurrentScreen('auth');
+      currentScreenRef.current = 'auth';
+      try {
+        window.history.replaceState({ screen: 'auth' }, '', '#auth');
+      } catch {}
+      return;
+    }
+
     const targetState = event?.state as { screen?: ScreenType; shedId?: string; partId?: string; lineId?: number | string } | null;
 
     // Restore hierarchy identifiers from event state if available
@@ -688,44 +788,19 @@ export default function App() {
     if (targetState?.partId) setSelectedPartId(targetState.partId);
     if (targetState?.lineId !== undefined) setSelectedLineId(targetState.lineId);
 
-    // If explicit screen state exists in popstate, honor it directly
-    if (targetState?.screen) {
-      if (targetState.screen === 'home') {
-        setCurrentScreen('home');
-        currentScreenRef.current = 'home';
-        return;
-      }
-      setCurrentScreen(targetState.screen);
-      currentScreenRef.current = targetState.screen;
-      return;
-    }
+    const targetScreen = targetState?.screen || getScreenFromHash(window.location.hash) || 'home';
 
-    // Direct hash check
-    const hash = window.location.hash;
-    if (!hash || hash === '#home' || hash === '#') {
-      setCurrentScreen('home');
-      currentScreenRef.current = 'home';
-      return;
-    }
-
-    const active = currentScreenRef.current;
-    // If active screen is already 'home': swiping back on home triggers the Exit confirmation
-    if (active === 'home') {
+    // If active screen is already 'home' and navigating back at root: trigger Exit confirmation
+    if (currentScreenRef.current === 'home' && targetScreen === 'home' && event) {
       setShowExitConfirm(true);
       window.history.pushState({ screen: 'home' }, '', '#home');
       return;
     }
 
-    // While inside the farm hierarchy: ALWAYS step back one level hierarchically
-    // (weigh_pad -> line_select -> part_select -> shed_select -> home)
-    const parent = getParentScreen(active);
-    setCurrentScreen(parent);
-    currentScreenRef.current = parent;
-    window.history.replaceState(
-      { screen: parent, shedId: selectedShedIdRef.current, partId: selectedPartIdRef.current },
-      '',
-      getHashForScreen(parent)
-    );
+    // Otherwise navigate smoothly without exit confirmation
+    setShowExitConfirm(false);
+    setCurrentScreen(targetScreen);
+    currentScreenRef.current = targetScreen;
   };
 
   useEffect(() => {
@@ -738,17 +813,15 @@ export default function App() {
       handlePopState();
     }
 
-    const onHashChange = () => handlePopState();
     window.addEventListener('popstate', handlePopState);
-    window.addEventListener('hashchange', onHashChange);
     return () => {
       window.removeEventListener('popstate', handlePopState);
-      window.removeEventListener('hashchange', onHashChange);
     };
   }, []);
 
   // Dedicated Home Navigation: always directly returns to Dashboard Home
   const handleGoHome = useCallback(() => {
+    setShowExitConfirm(false);
     setCurrentScreen('home');
     currentScreenRef.current = 'home';
     window.history.pushState({ screen: 'home' }, '', '#home');
@@ -756,6 +829,10 @@ export default function App() {
 
   // Consistent UI Back Button handler: steps down hierarchical level identically to swipe back
   const handleGoBack = useCallback(() => {
+    if (!isAuthenticatedRef.current || currentScreenRef.current === 'auth') {
+      setShowExitConfirm(false);
+      return;
+    }
     const active = currentScreenRef.current;
     if (active === 'home') {
       setShowExitConfirm(true);
@@ -779,17 +856,32 @@ export default function App() {
 
   const navigateToPartSelect = (shedId: string, partId?: string) => {
     setSelectedShedId(shedId);
-    if (partId) setSelectedPartId(partId);
+    const destShed = sheds.find(s => s.id === shedId);
+    const destPart = partId
+      ? destShed?.parts?.find(p => p.id === partId)
+      : destShed?.parts?.[0];
+    const resolvedPartId = destPart?.id || partId || '';
+    if (resolvedPartId) setSelectedPartId(resolvedPartId);
+    if (destPart?.lines?.[0]) {
+      setSelectedLineId(destPart.lines[0].id);
+    } else {
+      setSelectedLineId('');
+    }
     setCurrentScreen('part_select');
-    window.history.pushState({ screen: 'part_select', shedId, partId }, '', '#parts');
+    window.history.pushState({ screen: 'part_select', shedId, partId: resolvedPartId }, '', '#parts');
   };
 
   const navigateToLineSelect = (shedId: string, partId: string, lineId?: number | string) => {
     setSelectedShedId(shedId);
     setSelectedPartId(partId);
-    if (lineId !== undefined) setSelectedLineId(lineId);
+    const destShed = sheds.find(s => s.id === shedId);
+    const destPart = destShed?.parts?.find(p => p.id === partId);
+    const resolvedLineId = lineId !== undefined
+      ? lineId
+      : (destPart?.lines?.[0]?.id ?? '');
+    setSelectedLineId(resolvedLineId);
     setCurrentScreen('line_select');
-    window.history.pushState({ screen: 'line_select', shedId, partId, lineId }, '', '#lines');
+    window.history.pushState({ screen: 'line_select', shedId, partId, lineId: resolvedLineId }, '', '#lines');
   };
 
   const navigateToWeighPad = (shedId: string, partId: string, lineId: number | string) => {
@@ -835,111 +927,15 @@ export default function App() {
     window.history.go(-2);
   };
 
-// Helper to safely merge cloud response sheds with local unsaved draft weights and gender
-function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: ShedData[], farmId?: string): ShedData[] {
-  if (!Array.isArray(serverSheds)) return localSheds || [];
-
-  let draftSheds: ShedData[] | null = null;
-  if (farmId) {
-    try {
-      const draftStr = localStorage.getItem(`poultry_draft_${farmId}`);
-      if (draftStr) {
-        const parsed = JSON.parse(draftStr);
-        if (Array.isArray(parsed?.sheds)) draftSheds = parsed.sheds;
-      }
-    } catch {}
-  }
-
-  const effectiveLocal = (localSheds && localSheds.length > 0) ? localSheds : (draftSheds || []);
-  if (effectiveLocal.length === 0) return serverSheds;
-
-  const merged = serverSheds.map(serverShed => {
-    const localShed = effectiveLocal.find(ls => 
-      ls.id === serverShed.id || 
-      (ls.name && serverShed.name && ls.name.trim().toLowerCase() === serverShed.name.trim().toLowerCase())
-    );
-
-    if (!localShed) return serverShed;
-
-    // Preserve local user-selected gender
-    const type = localShed.type || serverShed.type || 'Female';
-
-    const serverParts = Array.isArray(serverShed.parts) ? serverShed.parts : [];
-    const localParts = Array.isArray(localShed.parts) ? localShed.parts : [];
-
-    if (serverParts.length === 0 && localParts.length > 0) {
-      return { ...localShed, type };
-    }
-
-    const mergedParts = serverParts.map(serverPart => {
-      const localPart = localParts.find(lp => 
-        lp.id === serverPart.id || 
-        (lp.name && serverPart.name && lp.name.trim().toLowerCase() === serverPart.name.trim().toLowerCase())
-      );
-
-      if (!localPart) return serverPart;
-
-      const serverLines = Array.isArray(serverPart.lines) ? serverPart.lines : [];
-      const localLines = Array.isArray(localPart.lines) ? localPart.lines : [];
-
-      if (serverLines.length === 0 && localLines.length > 0) {
-        return localPart;
-      }
-
-      const mergedLines = serverLines.map(serverLine => {
-        const localLine = localLines.find(ll => 
-          String(ll.id) === String(serverLine.id) || 
-          (ll.name && serverLine.name && ll.name.trim().toLowerCase() === serverLine.name.trim().toLowerCase())
-        );
-
-        if (!localLine) return serverLine;
-
-        const localWeights = Array.isArray(localLine.weights) ? localLine.weights : [];
-        const serverWeights = Array.isArray(serverLine.weights) ? serverLine.weights : [];
-        const weights = localWeights.length > 0 ? localWeights : serverWeights;
-
-        return {
-          ...serverLine,
-          weights,
-        };
-      });
-
-      const extraLocalLines = localLines.filter(ll => 
-        !serverLines.some(sl => String(sl.id) === String(ll.id) || (sl.name && ll.name && sl.name.trim().toLowerCase() === ll.name.trim().toLowerCase()))
-      );
-
-      return {
-        ...serverPart,
-        lines: [...mergedLines, ...extraLocalLines]
-      };
-    });
-
-    const extraLocalParts = localParts.filter(lp => 
-      !serverParts.some(sp => sp.id === lp.id || (sp.name && lp.name && sp.name.trim().toLowerCase() === lp.name.trim().toLowerCase()))
-    );
-
-    return {
-      ...serverShed,
-      type,
-      parts: [...mergedParts, ...extraLocalParts]
-    };
-  });
-
-  const extraLocalSheds = effectiveLocal.filter(ls => 
-    !serverSheds.some(ss => ss.id === ls.id || (ss.name && ls.name && ss.name.trim().toLowerCase() === ls.name.trim().toLowerCase()))
-  );
-
-  return [...merged, ...extraLocalSheds];
-}
-
-  // Switch Active Farm
+  // Switch Active Farm (Week-aware)
   const switchFarm = useCallback(async (targetFarmId: string, silent = false) => {
     setActiveFarmId(targetFarmId);
+    activeFarmIdRef.current = targetFarmId;
     localStorage.setItem('poultry_active_farm_id', targetFarmId);
     if (!silent) setSyncStatus('refreshing');
 
     // Immediately resolve and set farm name from farmsList or localStorage
-    const knownFarm = farmsList.find(f => f.id === targetFarmId || f.name.toLowerCase() === targetFarmId.toLowerCase());
+    const knownFarm = farmsListRef.current.find(f => f.id === targetFarmId || f.name.toLowerCase() === targetFarmId.toLowerCase());
     if (knownFarm?.name) {
       setFarmName(knownFarm.name);
     } else {
@@ -952,12 +948,18 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
       }
     }
 
-    // Immediately restore local draft if available so user never sees empty screen
-    const localDraft = localStorage.getItem(`poultry_draft_${targetFarmId}`);
+    // Determine target week for this farm
+    const targetWeek = localStorage.getItem(`poultry_active_week_${targetFarmId}`) || knownFarm?.ageWeek || 'W18';
+    setAgeWeek(targetWeek);
+
+    // Immediately restore local draft if available (week key first, fallback to farm key)
+    const weekDraft = localStorage.getItem(`poultry_draft_${targetFarmId}_${targetWeek}`);
+    const localDraft = weekDraft || localStorage.getItem(`poultry_draft_${targetFarmId}`);
     if (localDraft) {
       try {
         const parsed = JSON.parse(localDraft);
         if (Array.isArray(parsed?.sheds) && parsed.sheds.length > 0) {
+          shedsRef.current = parsed.sheds;
           setSheds(parsed.sheds);
           if (parsed.sheds[0]) {
             setSelectedShedId(parsed.sheds[0].id);
@@ -970,15 +972,16 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
       } catch {}
     }
 
-    // Restore local audit, draft status & pending status for target farm
-    const localStatus = localStorage.getItem(`poultry_status_${targetFarmId}`) as FarmStatus | null;
+    // Restore local audit, draft status & pending status for target farm and week
+    const localWeekStatus = localStorage.getItem(`poultry_status_${targetFarmId}_${targetWeek}`) as FarmStatus | null;
+    const localStatus = localWeekStatus || (localStorage.getItem(`poultry_status_${targetFarmId}`) as FarmStatus | null);
     if (localStatus === 'DRAFT' || localStatus === 'UPLOADING' || localStatus === 'COMPLETED' || localStatus === 'UPLOAD_FAILED') {
       setFarmStatus(localStatus);
     } else {
       setFarmStatus('DRAFT');
     }
 
-    const localAuditStr = localStorage.getItem(`poultry_audit_${targetFarmId}`);
+    const localAuditStr = localStorage.getItem(`poultry_audit_${targetFarmId}_${targetWeek}`) || localStorage.getItem(`poultry_audit_${targetFarmId}`);
     if (localAuditStr) {
       try { setFarmAudit(JSON.parse(localAuditStr)); } catch {}
     } else {
@@ -988,34 +991,36 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
     setIsPendingSubmission(localPending === 'true');
 
     try {
-      const data = await cloudApi.getFarmDetails(targetFarmId);
+      const data = await cloudApi.getFarmDetails(targetFarmId, targetWeek);
       if (data) {
         setFarmName(data.name);
         setDate(data.flockDate || new Date().toISOString().split('T')[0]);
-        setAgeWeek(data.ageWeek || 'W18');
+        setAgeWeek(data.ageWeek || targetWeek || 'W18');
         setSeason((data.season as any) || 'Summer');
         if (data.status) {
           setFarmStatus(data.status);
+          localStorage.setItem(`poultry_status_${targetFarmId}_${targetWeek}`, data.status);
           localStorage.setItem(`poultry_status_${targetFarmId}`, data.status);
         }
         if (data.audit && localPending !== 'true') {
           setFarmAudit(data.audit);
-          localStorage.setItem(`poultry_audit_${targetFarmId}`, JSON.stringify(data.audit));
+          localStorage.setItem(`poultry_audit_${targetFarmId}_${targetWeek}`, JSON.stringify(data.audit));
         }
         if (Array.isArray(data.sheds)) {
-          setSheds(prev => {
-            const merged = mergeServerShedsWithLocalDraft(data.sheds, prev, targetFarmId);
-            if (merged.length > 0 && (!selectedShedId || !merged.some(s => s.id === selectedShedId))) {
-              setSelectedShedId(merged[0].id);
-              const firstPart = merged[0].parts?.[0];
-              if (firstPart) {
-                setSelectedPartId(firstPart.id);
-                if (firstPart.lines?.[0]) setSelectedLineId(firstPart.lines[0].id);
-                else setSelectedLineId('');
-              }
+          const merged = mergeServerShedsWithLocalDraft(data.sheds, shedsRef.current, targetFarmId, targetWeek);
+          shedsRef.current = merged;
+          setSheds(merged);
+          if (merged.length > 0 && (!selectedShedIdRef.current || !merged.some(s => s.id === selectedShedIdRef.current))) {
+            setSelectedShedId(merged[0].id);
+            selectedShedIdRef.current = merged[0].id;
+            const firstPart = merged[0].parts?.[0];
+            if (firstPart) {
+              setSelectedPartId(firstPart.id);
+              selectedPartIdRef.current = firstPart.id;
+              if (firstPart.lines?.[0]) setSelectedLineId(firstPart.lines[0].id);
+              else setSelectedLineId('');
             }
-            return merged;
-          });
+          }
         }
         setLastServerUpdatedAt(data.updatedAt);
         setLastUpdatedString(formatLastUpdated(data.updatedAt));
@@ -1032,21 +1037,28 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         try {
           const parsed = JSON.parse(localCached);
           if (Array.isArray(parsed.sheds)) {
-            setSheds(prev => mergeServerShedsWithLocalDraft(parsed.sheds, prev, targetFarmId));
-            if (parsed.sheds.length > 0) {
-              setSelectedShedId(parsed.sheds[0].id);
-              const firstPart = parsed.sheds[0].parts?.[0];
+            const merged = mergeServerShedsWithLocalDraft(parsed.sheds, shedsRef.current, targetFarmId, targetWeek);
+            shedsRef.current = merged;
+            setSheds(merged);
+            if (merged.length > 0) {
+              setSelectedShedId(merged[0].id);
+              selectedShedIdRef.current = merged[0].id;
+              const firstPart = merged[0].parts?.[0];
               if (firstPart) {
                 setSelectedPartId(firstPart.id);
+                selectedPartIdRef.current = firstPart.id;
                 if (firstPart.lines?.[0]) setSelectedLineId(firstPart.lines[0].id);
                 else setSelectedLineId('');
               } else {
                 setSelectedPartId('');
+                selectedPartIdRef.current = '';
                 setSelectedLineId('');
               }
             } else {
               setSelectedShedId('');
+              selectedShedIdRef.current = '';
               setSelectedPartId('');
+              selectedPartIdRef.current = '';
               setSelectedLineId('');
             }
           }
@@ -1059,8 +1071,132 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
     }
   }, []);
 
+  // Switch Recording Week for Active Farm (Req Steps 2 & 3)
+  const handleSwitchWeek = useCallback(async (newWeek: string) => {
+    const cleanWeek = (newWeek || '').trim().toUpperCase();
+    if (!cleanWeek || cleanWeek === ageWeek) return;
+
+    // 1. Synchronously persist the outgoing week's draft
+    if (activeFarmId) {
+      const currentSnapshot = shedsRef.current;
+      localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: currentSnapshot, updatedAt: Date.now() }));
+      localStorage.setItem(`poultry_status_${activeFarmId}_${ageWeek}`, farmStatus);
+      if (farmAudit) {
+        localStorage.setItem(`poultry_audit_${activeFarmId}_${ageWeek}`, JSON.stringify(farmAudit));
+      }
+      localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: currentSnapshot, farmName, date, ageWeek, season }));
+      // Also update legacy fallback key
+      localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds: currentSnapshot, updatedAt: Date.now() }));
+    }
+
+    // 2. Set new active week
+    setAgeWeek(cleanWeek);
+    if (activeFarmId) {
+      localStorage.setItem(`poultry_active_week_${activeFarmId}`, cleanWeek);
+    }
+
+    // 3. Check for existing local draft for newWeek
+    const localWeekDraft = activeFarmId ? localStorage.getItem(`poultry_draft_${activeFarmId}_${cleanWeek}`) : null;
+    const localWeekStatus = activeFarmId ? (localStorage.getItem(`poultry_status_${activeFarmId}_${cleanWeek}`) as FarmStatus | null) : null;
+    const localWeekAudit = activeFarmId ? localStorage.getItem(`poultry_audit_${activeFarmId}_${cleanWeek}`) : null;
+
+    if (localWeekDraft) {
+      try {
+        const parsed = JSON.parse(localWeekDraft);
+        if (Array.isArray(parsed?.sheds) && parsed.sheds.length > 0) {
+          shedsRef.current = parsed.sheds;
+          setSheds(parsed.sheds);
+          setFarmStatus(localWeekStatus || 'DRAFT');
+          if (localWeekAudit) {
+            try { setFarmAudit(JSON.parse(localWeekAudit)); } catch { setFarmAudit(null); }
+          } else {
+            setFarmAudit(null);
+          }
+          if (parsed.sheds[0]) {
+            setSelectedShedId(parsed.sheds[0].id);
+            if (parsed.sheds[0].parts?.[0]) {
+              setSelectedPartId(parsed.sheds[0].parts[0].id);
+              if (parsed.sheds[0].parts[0].lines?.[0]) setSelectedLineId(parsed.sheds[0].parts[0].lines[0].id);
+            }
+          }
+          showToast(`Switched to ${cleanWeek} (Draft restored)`);
+          return;
+        }
+      } catch {}
+    }
+
+    // 4. Query cloud for this week
+    if (activeFarmId) {
+      try {
+        setSyncStatus('refreshing');
+        const cloudFarm = await cloudApi.getFarmDetails(activeFarmId, cleanWeek);
+        if (cloudFarm && Array.isArray(cloudFarm.sheds) && cloudFarm.sheds.length > 0) {
+          const hasAnyWeights = cloudFarm.sheds.some((s: any) => s.parts?.some((p: any) => p.lines?.some((l: any) => l.weights?.length > 0)));
+          if (hasAnyWeights) {
+            const merged = mergeServerShedsWithLocalDraft(cloudFarm.sheds, shedsRef.current, activeFarmId, cleanWeek);
+            shedsRef.current = merged;
+            setSheds(merged);
+            setFarmStatus(cloudFarm.status || 'COMPLETED');
+            if (cloudFarm.audit) setFarmAudit(cloudFarm.audit);
+            localStorage.setItem(`poultry_draft_${activeFarmId}_${cleanWeek}`, JSON.stringify({ sheds: merged, updatedAt: Date.now() }));
+            localStorage.setItem(`poultry_status_${activeFarmId}_${cleanWeek}`, cloudFarm.status || 'COMPLETED');
+            setSyncStatus('synced');
+            showToast(`Switched to ${cleanWeek} (${cloudFarm.status || 'Loaded'})`);
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('Could not fetch cloud data for week switch:', err);
+      }
+    }
+
+    // 5. Initialize clean empty sheds using base structure (all sheds, parts, lines with weights: [])
+    const baseSheds = shedsRef.current.length > 0 ? shedsRef.current : sheds;
+    const emptyWeeklySheds = createEmptyWeeklySheds(baseSheds);
+    shedsRef.current = emptyWeeklySheds;
+    setSheds(emptyWeeklySheds);
+    setFarmStatus('DRAFT');
+    setFarmAudit(null);
+    setSyncStatus('synced');
+
+    if (activeFarmId) {
+      localStorage.setItem(`poultry_draft_${activeFarmId}_${cleanWeek}`, JSON.stringify({ sheds: emptyWeeklySheds, updatedAt: Date.now() }));
+      localStorage.setItem(`poultry_status_${activeFarmId}_${cleanWeek}`, 'DRAFT');
+      localStorage.setItem(`poultry_farm_${activeFarmId}_${cleanWeek}`, JSON.stringify({ sheds: emptyWeeklySheds, farmName, date, ageWeek: cleanWeek, season }));
+    }
+    showToast(`Switched to ${cleanWeek} (New draft started)`);
+  }, [ageWeek, activeFarmId, farmStatus, farmAudit, sheds, farmName, date, season]);
+
+  // Week Status Map (which weeks are COMPLETED vs DRAFT for the active farm)
+  const weekStatusMap = useMemo<Record<string, 'COMPLETED' | 'DRAFT'>>(() => {
+    const map: Record<string, 'COMPLETED' | 'DRAFT'> = {};
+    if (!activeFarmId) return map;
+
+    for (let i = 1; i <= 24; i++) {
+      const w = `W${i}`;
+      const savedStatus = localStorage.getItem(`poultry_status_${activeFarmId}_${w}`);
+      if (savedStatus === 'COMPLETED') {
+        map[w] = 'COMPLETED';
+      }
+    }
+
+    const farmObj = farmsList.find(f => f.id === activeFarmId);
+    if (farmObj && Array.isArray((farmObj as any).submissions)) {
+      for (const sub of (farmObj as any).submissions) {
+        if (sub.flockAge && sub.status === 'COMPLETED') {
+          map[sub.flockAge.toUpperCase()] = 'COMPLETED';
+        }
+      }
+    }
+    return map;
+  }, [activeFarmId, farmsList, farmStatus]);
+
   // Initial Startup Bootstrap: Load Farms from Cloud with Offline Fallback
+  const hasInitializedFarmsRef = useRef(false);
   useEffect(() => {
+    if (hasInitializedFarmsRef.current) return;
+    hasInitializedFarmsRef.current = true;
+
     async function initCloudFarms() {
       // 1. First restore offline cached farms list immediately
       const cachedFarms = localStorage.getItem('poultry_farms_list_v4');
@@ -1072,12 +1208,13 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
             setFarmsList(parsed);
             if (savedActive && parsed.some(f => f.id === savedActive)) {
               setActiveFarmId(savedActive);
+              activeFarmIdRef.current = savedActive;
             }
           }
         } catch {}
       }
 
-      // 2. Fetch live farms from Render PostgreSQL
+      // 2. Fetch live farms from cloud backend
       try {
         const remoteFarms = await cloudApi.getFarms();
         if (remoteFarms && remoteFarms.length > 0) {
@@ -1099,19 +1236,28 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
     initCloudFarms();
   }, [switchFarm]);
 
-  // Local Storage Persistence for active farm & offline redundancy
+  // Local Storage Persistence for active farm & offline redundancy (Week-aware)
   useEffect(() => {
     localStorage.setItem(
       'poultry_flock_db_v3',
       JSON.stringify({ sheds, farmName, date, ageWeek, season })
     );
     if (activeFarmId) {
+      localStorage.setItem(`poultry_active_week_${activeFarmId}`, ageWeek);
+      localStorage.setItem(
+        `poultry_farm_${activeFarmId}_${ageWeek}`,
+        JSON.stringify({ sheds, farmName, date, ageWeek, season })
+      );
       localStorage.setItem(
         `poultry_farm_${activeFarmId}`,
         JSON.stringify({ sheds, farmName, date, ageWeek, season })
       );
       // Persist active draft whenever unsubmitted
       if (farmStatus !== 'COMPLETED') {
+        localStorage.setItem(
+          `poultry_draft_${activeFarmId}_${ageWeek}`,
+          JSON.stringify({ sheds, updatedAt: Date.now() })
+        );
         localStorage.setItem(
           `poultry_draft_${activeFarmId}`,
           JSON.stringify({ sheds, updatedAt: Date.now() })
@@ -1136,7 +1282,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
 
     autosaveTimerRef.current = setTimeout(async () => {
       try {
-        await cloudApi.syncFullFarm(activeFarmId, {
+        const synced = await cloudApi.syncFullFarm(activeFarmId, {
           sheds,
           name: farmName,
           flockDate: date,
@@ -1146,6 +1292,9 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
           progressPercentage: completionStats.progressPercent
         });
         if (autosaveSeqRef.current === seq) {
+          if (synced?.updatedAt) {
+            setLastServerUpdatedAt(synced.updatedAt);
+          }
           setSyncStatus('synced');
           setLastUpdatedString('Draft saved just now');
         }
@@ -1185,12 +1334,16 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
           const currentRemote = remoteFarms.find(f => f.id === activeFarmId);
           if (currentRemote) {
             if (currentRemote.updatedAt !== lastServerUpdatedAt) {
-              const full = await cloudApi.getFarmDetails(activeFarmId);
+              const full = await cloudApi.getFarmDetails(activeFarmId, ageWeek);
               if (full && full.sheds) {
-                setSheds(prev => mergeServerShedsWithLocalDraft(full.sheds, prev, activeFarmId));
+                const merged = mergeServerShedsWithLocalDraft(full.sheds, shedsRef.current, activeFarmId, ageWeek);
+                shedsRef.current = merged;
+                setSheds(merged);
                 setFarmName(full.name);
                 setDate(full.flockDate);
-                setAgeWeek(full.ageWeek);
+                if (full.ageWeek && !ageWeek) {
+                  setAgeWeek(full.ageWeek);
+                }
                 setSeason(full.season as any);
                 setLastServerUpdatedAt(full.updatedAt);
                 setLastUpdatedString(formatLastUpdated(full.updatedAt));
@@ -1215,7 +1368,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
     }, 15000);
 
     return () => clearInterval(pollInterval);
-  }, [activeFarmId, lastServerUpdatedAt, inputWeight, syncStatus]);
+  }, [activeFarmId, ageWeek, lastServerUpdatedAt, inputWeight, syncStatus]);
 
   // Manual Pull-To-Refresh from Cloud
   const handleManualRefresh = async () => {
@@ -1232,12 +1385,16 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         setFarmsList(remoteFarms);
         localStorage.setItem('poultry_farms_list_v4', JSON.stringify(remoteFarms));
       }
-      const full = await cloudApi.getFarmDetails(activeFarmId);
+      const full = await cloudApi.getFarmDetails(activeFarmId, ageWeek);
       if (full && full.sheds) {
-        setSheds(prev => mergeServerShedsWithLocalDraft(full.sheds, prev, activeFarmId));
+        const merged = mergeServerShedsWithLocalDraft(full.sheds, shedsRef.current, activeFarmId, ageWeek);
+        shedsRef.current = merged;
+        setSheds(merged);
         setFarmName(full.name);
         setDate(full.flockDate);
-        setAgeWeek(full.ageWeek);
+        if (full.ageWeek && !ageWeek) {
+          setAgeWeek(full.ageWeek);
+        }
         setSeason(full.season as any);
         setLastServerUpdatedAt(full.updatedAt);
         setLastUpdatedString(formatLastUpdated(full.updatedAt));
@@ -1255,36 +1412,44 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
   // Create New Farm Handler with Configurable Sheds & Direct Gender Assignment
   const handleCreateFarm = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newFarmName.trim()) {
+    const trimmedName = newFarmName.trim();
+    if (!trimmedName) {
       showToast('Please enter a farm name');
       return;
     }
 
-    if (newFarmConfiguredSheds.length > 0) {
-      if (newFarmConfiguredSheds.some(s => !s.name.trim())) {
-        showToast('Every configured shed must have a name');
-        return;
-      }
-      const shedNames = newFarmConfiguredSheds.map(s => s.name.trim().toLowerCase());
-      if (new Set(shedNames).size !== shedNames.length) {
-        showToast('Each shed must have a unique name within the farm');
-        return;
-      }
+    const countNum = Number(newFarmShedCount);
+    if (!newFarmShedCount || isNaN(countNum) || !Number.isInteger(countNum)) {
+      setNewFarmShedCountError('Number of sheds must be a whole number between 1 and 40.');
+      showToast('Please enter a valid whole number of sheds (1–40).');
+      return;
     }
+    if (countNum < 1) {
+      setNewFarmShedCountError('Minimum 1 shed is required.');
+      showToast('Minimum 1 shed is required.');
+      return;
+    }
+    if (countNum > 40) {
+      setNewFarmShedCountError('Maximum 40 sheds allowed per farm.');
+      showToast('Maximum 40 sheds allowed per farm.');
+      return;
+    }
+    setNewFarmShedCountError(null);
 
     setIsCreatingFarm(true);
     try {
-      const shedsPayload = newFarmConfiguredSheds.map(s => ({
-        name: s.name.trim(),
-        type: s.type,
+      // Automatically configure Shed 1 through Shed N with default type 'Female'
+      const shedsPayload = Array.from({ length: countNum }, (_, idx) => ({
+        name: `Shed ${idx + 1}`,
+        type: 'Female' as const,
       }));
 
       const created = await cloudApi.createFarm({
-        name: newFarmName.trim(),
+        name: trimmedName,
         flockDate: newFarmFlockDate,
         ageWeek: newFarmAgeWeek,
         season: newFarmSeason,
-        shedCount: shedsPayload.length,
+        shedCount: countNum,
         sheds: shedsPayload,
       });
 
@@ -1339,12 +1504,8 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         setSyncStatus('synced');
         setShowNewFarmModal(false);
         setNewFarmName('');
-        setNewFarmConfiguredSheds([
-          { id: '1', name: 'Shed 1', type: 'Female' },
-          { id: '2', name: 'Shed 2', type: 'Female' },
-          { id: '3', name: 'Shed 3', type: 'Female' },
-          { id: '4', name: 'Shed 4', type: 'Male' },
-        ]);
+        setNewFarmShedCount(10);
+        setNewFarmShedCountError(null);
         setIsPendingSubmission(true);
         setFarmAudit(null);
         localStorage.setItem(`poultry_pending_submission_${created.id}`, 'true');
@@ -1410,12 +1571,36 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
 
   // Delete / Archive Farm Handler (Req 3: Admin Only)
   const handleDeleteFarm = async (farmId: string, options?: { mode?: 'archive' | 'permanent'; confirmFarmName?: string }) => {
-    // 1. Optimistically remove farm immediately from UI & local storage
+    const mode = options?.mode || 'archive';
+
+    // 1. Scoped Farm Deletion / Archival Logic (Target by ID Only)
+    // - For hard delete: farms.filter(farm => farm.id !== targetFarmId)
+    // - For archive: farms.map(farm => farm.id === targetFarmId ? { ...farm, isArchived: true, status: 'ARCHIVED' } : farm)
+    let nextFarms: FarmSummary[] = [];
     setFarmsList(prev => {
-      const remaining = prev.filter(f => f.id !== farmId);
-      localStorage.setItem('poultry_farms_list_v4', JSON.stringify(remaining));
-      return remaining;
+      if (!Array.isArray(prev)) return [];
+      const updated = mode === 'permanent'
+        ? prev.filter(farm => farm.id !== farmId)
+        : prev.map(farm => farm.id === farmId ? { ...farm, isArchived: true, status: 'ARCHIVED' as FarmStatus } : farm);
+      nextFarms = updated;
+      try {
+        localStorage.setItem('poultry_farms_list_v4', JSON.stringify(updated));
+      } catch {}
+      return updated;
     });
+
+    // 2. Handle Currently Selected Farm Fallback:
+    const remainingActive = nextFarms.filter(f => !f.isArchived);
+    if (activeFarmId === farmId) {
+      if (remainingActive.length > 0) {
+        switchFarm(remainingActive[0].id);
+      } else {
+        setActiveFarmId('');
+        try {
+          localStorage.removeItem('poultry_active_farm_id');
+        } catch {}
+      }
+    }
 
     try {
       await cloudApi.deleteFarm(farmId, options);
@@ -1423,18 +1608,28 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
       const updatedFarms = await cloudApi.getFarms();
       if (Array.isArray(updatedFarms)) {
         setFarmsList(updatedFarms);
-        localStorage.setItem('poultry_farms_list_v4', JSON.stringify(updatedFarms));
+        try {
+          localStorage.setItem('poultry_farms_list_v4', JSON.stringify(updatedFarms));
+        } catch {}
 
-        // If active farm was deleted, switch to first remaining farm
-        if (activeFarmId === farmId && updatedFarms.length > 0) {
-          switchFarm(updatedFarms[0].id);
+        // Fallback for active farm selection
+        const remaining = updatedFarms.filter(f => !f.isArchived);
+        if (activeFarmId === farmId || (activeFarmId && !remaining.some(f => f.id === activeFarmId))) {
+          if (remaining.length > 0) {
+            switchFarm(remaining[0].id);
+          } else {
+            setActiveFarmId('');
+            try {
+              localStorage.removeItem('poultry_active_farm_id');
+            } catch {}
+          }
         }
       }
-      showToast(options?.mode === 'permanent' ? 'Farm permanently removed' : 'Farm safely archived');
+      showToast(mode === 'permanent' ? 'Farm permanently removed' : 'Farm safely archived');
     } catch (err: any) {
-      // Re-fetch in case of failure
+      // Re-fetch in case of failure without wiping out
       const reverted = await cloudApi.getFarms().catch(() => null);
-      if (reverted && Array.isArray(reverted)) {
+      if (reverted && Array.isArray(reverted) && reverted.length > 0) {
         setFarmsList(reverted);
       }
       showToast(err.message || 'Failed to delete farm');
@@ -1459,7 +1654,9 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         try {
           const full = await cloudApi.getFarmDetails(activeFarmId);
           if (full && full.sheds) {
-            setSheds(prev => mergeServerShedsWithLocalDraft(full.sheds, prev, activeFarmId));
+            const merged = mergeServerShedsWithLocalDraft(full.sheds, shedsRef.current, activeFarmId);
+            shedsRef.current = merged;
+            setSheds(merged);
             setLastServerUpdatedAt(full.updatedAt);
           }
         } catch {}
@@ -1546,7 +1743,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
   // Active Pointers (Null safe for farms with 0 sheds or parts)
   const activeShed = sheds.find(s => s.id === selectedShedId) || sheds[0] || null;
   const activePart = activeShed?.parts?.find(p => p.id === selectedPartId) || activeShed?.parts?.[0] || null;
-  const activeLine = activePart?.lines?.find(l => l.id === selectedLineId) || activePart?.lines?.[0] || null;
+  const activeLine = activePart?.lines?.find(l => String(l.id) === String(selectedLineId)) || activePart?.lines?.[0] || null;
 
   const activeStd = activeShed?.type === 'Male' ? stdWeightMale : stdWeightFemale;
   const activeBands = useMemo(() => getGradingBands(activeStd, weekNum), [activeStd, weekNum]);
@@ -1715,37 +1912,32 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
     const editorRole = currentUserRole;
 
     setFarmStatus('DRAFT');
+    localStorage.setItem(`poultry_status_${activeFarmId}_${ageWeek}`, 'DRAFT');
     localStorage.setItem(`poultry_status_${activeFarmId}`, 'DRAFT');
     setIsPendingSubmission(true);
     localStorage.setItem(`poultry_pending_submission_${activeFarmId}`, 'true');
 
-    setFarmAudit(prev => {
-      const updated: FarmAudit = {
-        ...(prev || {}),
-        status: 'DRAFT',
-        lastSavedAsDraftAt: draftTimestamp,
-        lastEditedBy: editorName,
-        lastEditedRole: editorRole,
-        isPendingSubmission: true,
-      };
-      localStorage.setItem(`poultry_audit_${activeFarmId}`, JSON.stringify(updated));
-      return updated;
-    });
+    const updatedAudit: FarmAudit = {
+      ...(farmAudit || {}),
+      status: 'DRAFT',
+      lastSavedAsDraftAt: draftTimestamp,
+      lastEditedBy: editorName,
+      lastEditedRole: editorRole,
+      isPendingSubmission: true,
+    };
+    setFarmAudit(updatedAudit);
+    localStorage.setItem(`poultry_audit_${activeFarmId}_${ageWeek}`, JSON.stringify(updatedAudit));
+    localStorage.setItem(`poultry_audit_${activeFarmId}`, JSON.stringify(updatedAudit));
 
     setFarmsList(prev => prev.map(f => f.id === activeFarmId ? {
       ...f,
       status: 'DRAFT',
       progressPercentage: completionStats.progressPercent
     } : f));
-  }, [activeFarmId, completionStats.progressPercent, currentUser, currentUserRole]);
+  }, [activeFarmId, ageWeek, completionStats.progressPercent, currentUser, currentUserRole, farmAudit]);
 
-  // Explicit Save Draft action for Supervisor and Incharge (Req 6)
+  // Explicit Save Draft action (Accessible across all authenticated roles)
   const handleManualSaveDraft = useCallback(async () => {
-    if (currentUserRole !== 'Supervisor' && currentUserRole !== 'In-Charge') {
-      showToast('Only field operators (Supervisor & Incharge) can save drafts.');
-      return;
-    }
-
     setIsSavingDraft(true);
     try {
       const now = new Date();
@@ -1755,26 +1947,31 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
 
       // 1. Mark session as DRAFT in state and storage
       setFarmStatus('DRAFT');
+      localStorage.setItem(`poultry_status_${activeFarmId}_${ageWeek}`, 'DRAFT');
       localStorage.setItem(`poultry_status_${activeFarmId}`, 'DRAFT');
       setIsPendingSubmission(true);
       localStorage.setItem(`poultry_pending_submission_${activeFarmId}`, 'true');
 
-      // 2. Persist current sheds weights
+      // 2. Persist current sheds weights across all storage keys
+      localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds, updatedAt: Date.now() }));
+      localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds, updatedAt: Date.now() }));
+      localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds, farmName, date, ageWeek, season }));
+      localStorage.setItem(`poultry_farm_${activeFarmId}`, JSON.stringify({ sheds, farmName, date, ageWeek, season }));
+      localStorage.setItem('poultry_flock_db_v3', JSON.stringify({ sheds, farmName, date, ageWeek, season }));
       localStorage.setItem(`poultry_sheds_${activeFarmId}`, JSON.stringify(sheds));
 
       // 3. Update and persist farm audit
-      setFarmAudit(prev => {
-        const updated: FarmAudit = {
-          ...(prev || {}),
-          status: 'DRAFT',
-          lastSavedAsDraftAt: draftTimestamp,
-          lastEditedBy: editorName,
-          lastEditedRole: editorRole,
-          isPendingSubmission: true,
-        };
-        localStorage.setItem(`poultry_audit_${activeFarmId}`, JSON.stringify(updated));
-        return updated;
-      });
+      const updatedAudit: FarmAudit = {
+        ...(farmAudit || {}),
+        status: 'DRAFT',
+        lastSavedAsDraftAt: draftTimestamp,
+        lastEditedBy: editorName,
+        lastEditedRole: editorRole,
+        isPendingSubmission: true,
+      };
+      setFarmAudit(updatedAudit);
+      localStorage.setItem(`poultry_audit_${activeFarmId}_${ageWeek}`, JSON.stringify(updatedAudit));
+      localStorage.setItem(`poultry_audit_${activeFarmId}`, JSON.stringify(updatedAudit));
 
       // 4. Update farms list state
       setFarmsList(prev => prev.map(f => f.id === activeFarmId ? {
@@ -1783,110 +1980,223 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         progressPercentage: completionStats.progressPercent
       } : f));
 
-      showToast('✓ Draft saved successfully! You can resume anytime.');
+      // 5. Cloud synchronization with local fallback
+      try {
+        if (activeFarmId) {
+          const synced = await cloudApi.syncFullFarm(activeFarmId, {
+            sheds,
+            name: farmName,
+            flockDate: date,
+            ageWeek,
+            season,
+            status: 'DRAFT',
+            progressPercentage: completionStats.progressPercent
+          });
+          if (synced?.updatedAt) {
+            setLastServerUpdatedAt(synced.updatedAt);
+          }
+          if (Array.isArray(synced?.sheds) && synced.sheds.length > 0) {
+            const merged = mergeServerShedsWithLocalDraft(synced.sheds, shedsRef.current, activeFarmId, ageWeek);
+            shedsRef.current = merged;
+            setSheds(merged);
+            localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: merged, updatedAt: Date.now() }));
+            localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds: merged, updatedAt: Date.now() }));
+            localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: merged, farmName, date, ageWeek, season }));
+            localStorage.setItem(`poultry_farm_${activeFarmId}`, JSON.stringify({ sheds: merged, farmName, date, ageWeek, season }));
+            localStorage.setItem(`poultry_sheds_${activeFarmId}`, JSON.stringify(merged));
+          }
+          setSyncStatus('synced');
+          setLastUpdatedString('Draft saved just now');
+          showToast('✓ Draft saved successfully to cloud & local storage! You can safely switch sheds or weeks.');
+        } else {
+          showToast('✓ Draft saved locally! You can resume anytime.');
+        }
+      } catch (cloudErr) {
+        console.warn('Draft cloud sync offline, draft retained locally:', cloudErr);
+        setSyncStatus('offline');
+        showToast('✓ Draft saved locally (Offline mode)! Your entered weights are safely preserved.');
+      }
     } catch (err: any) {
       console.error('Failed to save draft:', err);
       showToast(`Failed to save draft: ${err.message || 'Storage error'}`);
     } finally {
       setIsSavingDraft(false);
     }
-  }, [activeFarmId, completionStats.progressPercent, currentUser, currentUserRole, sheds]);
+  }, [activeFarmId, completionStats.progressPercent, currentUser, currentUserRole, sheds, farmName, date, ageWeek, season, farmAudit]);
 
   // --- WEIGHING PAD WEIGHT HANDLERS (Local Staging & Draft Workflow) ---
-  const handleAddWeight = (valToAdd?: number) => {
-    const val = valToAdd !== undefined ? valToAdd : parseFloat(inputWeight);
-    if (!val || isNaN(val) || val <= 0 || !activeShed || !activePart || !activeLine) return;
+  const handleAddWeight = () => {
+    // Prevent duplicate submissions from rapid multi-taps
+    if (isSubmittingWeightRef.current) return;
+    isSubmittingWeightRef.current = true;
+    setIsSubmittingWeight(true);
 
-    // Guard: Confirmation if editing a previously completed record
-    if (farmStatus === 'COMPLETED') {
-      const confirmReopen = window.confirm(
-        'This farm record was COMPLETED & SUBMITTED.\n\nAdding or modifying weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
-      );
-      if (!confirmReopen) return;
+    try {
+      const raw = inputWeight.trim();
+
+      // 1. Validation: Reject empty input
+      if (!raw) {
+        const errMsg = 'Weight is required. Please enter a valid bird weight.';
+        setInputWeightError(errMsg);
+        showToast(`⚠️ ${errMsg}`);
+        return;
+      }
+
+      // 2. Validation: Reject negative, non-numeric, or malformed values
+      if (!/^\d+(\.\d+)?$/.test(raw)) {
+        let errMsg = 'Please enter a valid numeric weight.';
+        if (raw.startsWith('-') || /^-/.test(raw)) {
+          errMsg = 'Weight cannot be negative. Please enter a positive weight.';
+        }
+        setInputWeightError(errMsg);
+        showToast(`⚠️ ${errMsg}`);
+        return;
+      }
+
+      const val = parseFloat(raw);
+
+      // 3. Validation: Reject zero or negative values
+      if (isNaN(val) || val <= 0) {
+        const errMsg = 'Weight must be greater than zero.';
+        setInputWeightError(errMsg);
+        showToast(`⚠️ ${errMsg}`);
+        return;
+      }
+
+      // 4. Validation: Upper bound sanity check
+      if (val > 15000) {
+        const errMsg = 'Weight exceeds maximum allowable limit (15,000g).';
+        setInputWeightError(errMsg);
+        showToast(`⚠️ ${errMsg}`);
+        return;
+      }
+
+      const currentShed = shedsRef.current.find(s => s.id === selectedShedId) || shedsRef.current[0] || null;
+      const currentPart = currentShed?.parts?.find(p => p.id === selectedPartId) || currentShed?.parts?.[0] || null;
+      const currentLine = currentPart?.lines?.find(l => String(l.id) === String(selectedLineId)) || currentPart?.lines?.[0] || null;
+
+      if (!currentShed || !currentPart || !currentLine) {
+        const errMsg = 'Please select a valid shed, part, and line before saving weight.';
+        setInputWeightError(errMsg);
+        showToast(`⚠️ ${errMsg}`);
+        return;
+      }
+
+      // Guard: Confirmation if editing a previously completed record
+      if (farmStatus === 'COMPLETED') {
+        if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
+          showToast('Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.');
+          return;
+        }
+        const confirmReopen = window.confirm(
+          'This farm record was COMPLETED & SUBMITTED.\n\nAdding or modifying weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
+        );
+        if (!confirmReopen) return;
+      }
+
+      // 1. Synchronously get latest state from shedsRef to prevent rapid-click race conditions
+      const nextSheds = applyLineWeightAddition(shedsRef.current, currentShed.id, currentPart.id, currentLine.id, val);
+      shedsRef.current = nextSheds;
+      setSheds(nextSheds);
+
+      // Immediately persist to local storage outside of React state updater
+      if (activeFarmId) {
+        localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
+        localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
+        localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
+        localStorage.setItem(`poultry_farm_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
+        localStorage.setItem(`poultry_sheds_${activeFarmId}`, JSON.stringify(nextSheds));
+      }
+
+      // 2. Automatically mark session as DRAFT
+      markSessionAsDraft('Added bird weight');
+
+      // Clear the input only after a successful save; clear any error
+      setInputWeight('');
+      setInputWeightError(null);
+
+      // Keep focus on input for convenient continuous mobile/keyboard entry
+      setTimeout(() => {
+        weightInputRef.current?.focus();
+      }, 50);
+    } catch (err: any) {
+      console.error('Failed to add weight:', err);
+      showToast(`Failed to add weight: ${err?.message || 'Storage error'}`);
+      // Preserve entered text if saving fails
+    } finally {
+      setTimeout(() => {
+        isSubmittingWeightRef.current = false;
+        setIsSubmittingWeight(false);
+      }, 300);
     }
-
-    // 1. Instant local state update
-    setSheds(prev => prev.map(s => {
-      if (s.id !== activeShed.id) return s;
-      return {
-        ...s,
-        parts: s.parts.map(p => {
-          if (p.id !== activePart.id) return p;
-          return {
-            ...p,
-            lines: p.lines.map(l => {
-              if (l.id !== activeLine.id) return l;
-              return { ...l, weights: [...l.weights, val] };
-            })
-          };
-        })
-      };
-    }));
-    setInputWeight('');
-
-    // 2. Automatically mark session as DRAFT
-    markSessionAsDraft('Added bird weight');
   };
 
   const handleDeleteWeight = (idx: number) => {
-    if (!activeShed || !activePart || !activeLine) return;
+    const currentShed = shedsRef.current.find(s => s.id === selectedShedId) || shedsRef.current[0] || null;
+    const currentPart = currentShed?.parts?.find(p => p.id === selectedPartId) || currentShed?.parts?.[0] || null;
+    const currentLine = currentPart?.lines?.find(l => String(l.id) === String(selectedLineId)) || currentPart?.lines?.[0] || null;
+
+    if (!currentShed || !currentPart || !currentLine) return;
+    if (idx < 0 || idx >= currentLine.weights.length) return;
 
     if (farmStatus === 'COMPLETED') {
+      if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
+        showToast('Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.');
+        return;
+      }
       const confirmReopen = window.confirm(
         'This farm record was COMPLETED & SUBMITTED.\n\nDeleting weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
       );
       if (!confirmReopen) return;
     }
 
-    // 1. Instant local state update
-    setSheds(prev => prev.map(s => {
-      if (s.id !== activeShed.id) return s;
-      return {
-        ...s,
-        parts: s.parts.map(p => {
-          if (p.id !== activePart.id) return p;
-          return {
-            ...p,
-            lines: p.lines.map(l => {
-              if (l.id !== activeLine.id) return l;
-              const copy = [...l.weights];
-              copy.splice(idx, 1);
-              return { ...l, weights: copy };
-            })
-          };
-        })
-      };
-    }));
+    // 1. Synchronously get latest state from shedsRef to prevent rapid-click race conditions
+    const nextSheds = applyLineWeightDeletion(shedsRef.current, currentShed.id, currentPart.id, currentLine.id, idx);
+    shedsRef.current = nextSheds;
+    setSheds(nextSheds);
+
+    if (activeFarmId) {
+      localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
+      localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
+      localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
+      localStorage.setItem(`poultry_farm_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
+      localStorage.setItem(`poultry_sheds_${activeFarmId}`, JSON.stringify(nextSheds));
+    }
 
     // 2. Automatically mark session as DRAFT
     markSessionAsDraft('Deleted bird weight');
   };
 
   const handleClearLineWeights = () => {
-    if (!activeShed || !activePart || !activeLine || activeLine.weights.length === 0) return;
+    const currentShed = shedsRef.current.find(s => s.id === selectedShedId) || shedsRef.current[0] || null;
+    const currentPart = currentShed?.parts?.find(p => p.id === selectedPartId) || currentShed?.parts?.[0] || null;
+    const currentLine = currentPart?.lines?.find(l => String(l.id) === String(selectedLineId)) || currentPart?.lines?.[0] || null;
+
+    if (!currentShed || !currentPart || !currentLine || currentLine.weights.length === 0) return;
 
     if (farmStatus === 'COMPLETED') {
+      if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
+        showToast('Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.');
+        return;
+      }
       const confirmReopen = window.confirm(
         'This farm record was COMPLETED & SUBMITTED.\n\nClearing weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
       );
       if (!confirmReopen) return;
     }
 
-    if (window.confirm(`Clear all ${activeLine.weights.length} weights in ${activeLine.name}?`)) {
-      setSheds(prev => prev.map(s => {
-        if (s.id !== activeShed.id) return s;
-        return {
-          ...s,
-          parts: s.parts.map(p => {
-            if (p.id !== activePart.id) return p;
-            return {
-              ...p,
-              lines: p.lines.map(l => l.id === activeLine.id ? { ...l, weights: [] } : l)
-            };
-          })
-        };
-      }));
-      showToast(`Cleared weights in ${activeLine.name}`);
+    if (window.confirm(`Clear all ${currentLine.weights.length} weights in ${currentLine.name}?`)) {
+      const nextSheds = applyLineWeightClear(shedsRef.current, currentShed.id, currentPart.id, currentLine.id);
+      shedsRef.current = nextSheds;
+      setSheds(nextSheds);
+      if (activeFarmId) {
+        localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
+        localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
+        localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
+        localStorage.setItem(`poultry_farm_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
+        localStorage.setItem(`poultry_sheds_${activeFarmId}`, JSON.stringify(nextSheds));
+      }
+      showToast(`Cleared weights in ${currentLine.name}`);
       markSessionAsDraft('Cleared line weights');
     }
   };
@@ -1933,15 +2243,19 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
     const maleAvg = maleWeights.length > 0 
       ? Math.round(maleWeights.reduce((a, b) => a + b, 0) / maleWeights.length) 
       : 0;
+    const allSampledWeights = [...femaleWeights, ...maleWeights];
+    const farmOverallAvg = allSampledWeights.length > 0
+      ? Math.round(allSampledWeights.reduce((a, b) => a + b, 0) / allSampledWeights.length)
+      : (femaleAvg || maleAvg || 0);
 
     const userDisplayName = currentUser?.userName || currentUser?.name || 'Suresh Kumar';
     const userRole = currentUserRole;
 
-    // 4. Stable Idempotency Key per batch attempt
-    let idempotencyKey = localStorage.getItem(`poultry_idempotency_${activeFarmId}`);
+    // 4. Stable Idempotency Key per batch attempt (Week-aware)
+    let idempotencyKey = localStorage.getItem(`poultry_idempotency_${activeFarmId}_${ageWeek}`) || localStorage.getItem(`poultry_idempotency_${activeFarmId}`);
     if (!idempotencyKey) {
-      idempotencyKey = `sub-${activeFarmId}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-      localStorage.setItem(`poultry_idempotency_${activeFarmId}`, idempotencyKey);
+      idempotencyKey = `sub-${activeFarmId}-${ageWeek}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      localStorage.setItem(`poultry_idempotency_${activeFarmId}_${ageWeek}`, idempotencyKey);
     }
 
     try {
@@ -1954,6 +2268,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         sheds,
         metadata: {
           totalBirds: totalBirdsCount,
+          overallAvgWeight: farmOverallAvg,
           femaleAvgWeight: femaleAvg,
           maleAvgWeight: maleAvg,
           submittedAtDMY: formattedSubmittedAt,
@@ -1982,12 +2297,16 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
       };
 
       setFarmStatus('COMPLETED');
+      localStorage.setItem(`poultry_status_${activeFarmId}_${ageWeek}`, 'COMPLETED');
       localStorage.setItem(`poultry_status_${activeFarmId}`, 'COMPLETED');
       // Clear batch idempotency key & draft only after confirmed commit
+      localStorage.removeItem(`poultry_idempotency_${activeFarmId}_${ageWeek}`);
       localStorage.removeItem(`poultry_idempotency_${activeFarmId}`);
+      localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds, updatedAt: Date.now(), isCompleted: true }));
       localStorage.removeItem(`poultry_draft_${activeFarmId}`);
       setFarmAudit(updatedAudit);
       setIsPendingSubmission(false);
+      localStorage.setItem(`poultry_audit_${activeFarmId}_${ageWeek}`, JSON.stringify(updatedAudit));
       localStorage.setItem(`poultry_audit_${activeFarmId}`, JSON.stringify(updatedAudit));
       localStorage.setItem(`poultry_pending_submission_${activeFarmId}`, 'false');
 
@@ -2008,7 +2327,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         userName: `${submitterName} - ${submitterRole}`,
         action: `Batch Weighing Submitted • ${totalBirdsCount} Birds (♀ Act: ${femaleAvg > 0 ? femaleAvg + 'g' : 'N/A'}, ♂ Act: ${maleAvg > 0 ? maleAvg + 'g' : 'N/A'})`,
         sampleCount: totalBirdsCount,
-        avgWeight: femaleAvg || maleAvg,
+        avgWeight: farmOverallAvg,
         femaleAvgWeight: femaleAvg,
         maleAvgWeight: maleAvg,
         status: 'COMPLETED',
@@ -2050,54 +2369,129 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
   // --- PART MANAGEMENT HANDLERS ---
   const handleAddPart = () => {
     if (!activeShed) return;
-    const charCode = 65 + activeShed.parts.length;
-    const partName = `Part ${String.fromCharCode(charCode)}`;
-    const newPartId = `part-${Date.now()}`;
+    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
+      showToast('Permission Denied: Completed submissions cannot be modified.');
+      return;
+    }
+    if (isAddingPartRef.current) return;
+    isAddingPartRef.current = true;
+
+    const shedId = activeShed.id;
+    const allowedLetters = ['A', 'B', 'C', 'D'];
+    const existingLetters = new Set(
+      activeShed.parts.map(p => {
+        const clean = (p.name || '').replace(/^part\s*[:\-]?\s*/i, '').trim().toUpperCase();
+        return allowedLetters.includes(clean[0]) ? clean[0] : null;
+      }).filter((l): l is string => l !== null)
+    );
+
+    if (activeShed.parts.length >= 4 || existingLetters.size >= 4) {
+      showToast('Maximum limit reached: A shed can have at most 4 parts (Part A to Part D).');
+      isAddingPartRef.current = false;
+      return;
+    }
+
+    let nextLetter = 'A';
+    for (const letter of allowedLetters) {
+      if (!existingLetters.has(letter)) {
+        nextLetter = letter;
+        break;
+      }
+    }
+
+    const partName = `Part ${nextLetter}`;
+    const newPartId = `part-${Date.now()}-${nextLetter.toLowerCase()}`;
     const newPart: ShedPart = {
       id: newPartId,
       name: partName,
-      lines: [{ id: 1, name: 'Line 1', weights: [] }]
+      lines: [{ id: `line-${Date.now()}-1`, name: 'Line 1', weights: [] }]
     };
-    setSheds(prev => prev.map(s => s.id === activeShed.id ? { ...s, parts: [...s.parts, newPart] } : s));
+
+    setSheds(prev => prev.map(s => {
+      if (s.id !== shedId) return s;
+      if (s.parts.some(p => p.name.trim().toLowerCase() === partName.toLowerCase())) {
+        return s;
+      }
+      const updatedParts = [...s.parts, newPart].sort((a, b) => {
+        const letA = (a.name.replace(/^part\s*/i, '').trim().toUpperCase()[0] || 'Z');
+        const letB = (b.name.replace(/^part\s*/i, '').trim().toUpperCase()[0] || 'Z');
+        return letA.localeCompare(letB);
+      });
+      return { ...s, parts: updatedParts };
+    }));
     setSelectedPartId(newPartId);
-    setSelectedLineId(1);
+    setSelectedLineId(newPart.lines[0].id);
     showToast(`${partName} added to ${activeShed.name}`);
     markSessionAsDraft('Added part');
 
     setSyncStatus('saving');
-    cloudApi.addPart({ shedId: activeShed.id, name: partName })
+    cloudApi.addPart({ shedId, name: partName })
       .then((createdPart) => {
         if (createdPart?.id) {
-          setSheds(prev => prev.map(s => s.id === activeShed.id ? {
+          setSheds(prev => prev.map(s => s.id === shedId ? {
             ...s,
-            parts: s.parts.map(p => p.id === newPartId ? { ...p, id: createdPart.id, lines: createdPart.lines || p.lines } : p)
+            parts: s.parts.map(p => (p.id === newPartId || p.name === partName) ? {
+              ...p,
+              id: createdPart.id,
+              lines: createdPart.lines?.length ? createdPart.lines : p.lines
+            } : p)
           } : s));
           setSelectedPartId(createdPart.id);
+          if (createdPart.lines?.[0]) setSelectedLineId(createdPart.lines[0].id);
         }
         setSyncStatus('synced');
       })
-      .catch(() => setSyncStatus('offline'));
+      .catch((err) => {
+        console.warn('Backend addPart failed, retaining local part:', err);
+        setSyncStatus('offline');
+      })
+      .finally(() => {
+        isAddingPartRef.current = false;
+      });
   };
 
   const handleStartEditPart = (part: ShedPart) => {
+    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
+      showToast('Permission Denied: Completed submissions cannot be modified.');
+      return;
+    }
     setEditingPart({ id: part.id, name: part.name });
   };
 
   const handleSaveEditPart = () => {
     if (!editingPart || !editingPart.name.trim() || !activeShed) return;
-    const trimmed = editingPart.name.trim();
+    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
+      showToast('Permission Denied: Completed submissions cannot be modified.');
+      setEditingPart(null);
+      return;
+    }
+    const clean = editingPart.name.trim();
+    const withoutPart = clean.replace(/^part\s*[:\-]?\s*/i, '').trim();
+    const letter = (withoutPart || clean).toUpperCase()[0];
+    if (!['A', 'B', 'C', 'D'].includes(letter)) {
+      showToast('Only Parts A, B, C, and D are allowed. Part E or higher is prohibited.');
+      return;
+    }
+    const formattedPartName = `Part ${letter}`;
     const partId = editingPart.id;
+
+    const duplicate = activeShed.parts.some(p => p.id !== partId && p.name.trim().toLowerCase() === formattedPartName.toLowerCase());
+    if (duplicate) {
+      showToast(`${formattedPartName} already exists in this shed.`);
+      return;
+    }
+
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
         ...s,
-        parts: s.parts.map(p => p.id === partId ? { ...p, name: trimmed } : p)
+        parts: s.parts.map(p => p.id === partId ? { ...p, name: formattedPartName } : p)
       };
     }));
-    showToast(`Part renamed to "${trimmed}".`);
+    showToast(`Part renamed to "${formattedPartName}".`);
     setEditingPart(null);
 
-    cloudApi.updatePart(partId, trimmed).catch(() => {});
+    cloudApi.updatePart(partId, formattedPartName).catch(() => {});
   };
 
   const handleDeletePart = (partId: string, e?: React.MouseEvent) => {
@@ -2105,19 +2499,19 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
       e.preventDefault();
       e.stopPropagation();
     }
-    if (currentUserRole === 'Supervisor') {
-      showToast('Permission Denied: Supervisor cannot delete shed parts.');
+    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
+      showToast('Permission Denied: Completed submissions cannot be modified.');
       return;
     }
     if (!activeShed) return;
     if (activeShed.parts.length <= 1) {
-      showToast('A shed must have at least 1 part.');
+      showToast('Cannot delete part: A shed must have at least 1 part.');
       return;
     }
     const target = activeShed.parts.find(p => p.id === partId);
     if (!target) return;
 
-    const totalWeights = target.lines.reduce((acc, l) => acc + l.weights.length, 0);
+    const totalWeights = target.lines.reduce((acc, l) => acc + (l.weights?.length || 0), 0);
     if (totalWeights === 0) {
       executeDeletePart(partId);
     } else {
@@ -2151,41 +2545,106 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
   // --- LINE / PEN MANAGEMENT HANDLERS ---
   const handleAddLine = () => {
     if (!activeShed || !activePart) return;
-    const nextId = (activePart.lines.length ? Math.max(...activePart.lines.map(l => typeof l.id === 'number' ? l.id : 0)) : 0) + 1;
-    const newLineName = `Line ${nextId}`;
+    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
+      showToast('Permission Denied: Completed submissions cannot be modified.');
+      return;
+    }
+    if (isAddingLineRef.current) return;
+    isAddingLineRef.current = true;
+
+    const shedId = activeShed.id;
+    const partId = activePart.id;
+
+    // Detect all existing line numbers between 1 and 16
+    const existingNums = new Set(
+      activePart.lines
+        .map(l => {
+          const match = (l.name || '').match(/\d+/);
+          if (match) {
+            const parsed = parseInt(match[0], 10);
+            if (parsed >= 1 && parsed <= 16) return parsed;
+          }
+          if (typeof l.id === 'number' && l.id >= 1 && l.id <= 16) return l.id;
+          return null;
+        })
+        .filter((n): n is number => n !== null)
+    );
+
+    if (activePart.lines.length >= 16 || existingNums.size >= 16) {
+      showToast('Maximum limit reached: A part can have at most 16 lines (Line 1 to Line 16).');
+      isAddingLineRef.current = false;
+      return;
+    }
+
+    // Pick lowest available line number 1..16
+    let nextNum = 1;
+    for (let i = 1; i <= 16; i++) {
+      if (!existingNums.has(i)) {
+        nextNum = i;
+        break;
+      }
+    }
+
+    const newLineName = `Line ${nextNum}`;
+    const tempLineId = `line-${Date.now()}-${nextNum}`;
+    const newLine: PenLine = {
+      id: tempLineId,
+      name: newLineName,
+      weights: []
+    };
+
     setSheds(prev => prev.map(s => {
-      if (s.id !== activeShed.id) return s;
+      if (s.id !== shedId) return s;
       return {
         ...s,
         parts: s.parts.map(p => {
-          if (p.id !== activePart.id) return p;
+          if (p.id !== partId) return p;
+          if (p.lines.some(l => l.name.trim().toLowerCase() === newLineName.toLowerCase())) {
+            return p;
+          }
+          const updatedLines = [...p.lines, newLine].sort((a, b) => {
+            const mA = a.name.match(/\d+/);
+            const mB = b.name.match(/\d+/);
+            const numA = mA ? parseInt(mA[0], 10) : 0;
+            const numB = mB ? parseInt(mB[0], 10) : 0;
+            return numA - numB;
+          });
           return {
             ...p,
-            lines: [...p.lines, { id: nextId, name: newLineName, weights: [] }]
+            lines: updatedLines
           };
         })
       };
     }));
-    setSelectedLineId(nextId);
+    setSelectedLineId(tempLineId);
     showToast(`${newLineName} added to ${activePart.name}`);
     markSessionAsDraft('Added line');
 
     setSyncStatus('saving');
-    cloudApi.addLine({ partId: activePart.id, name: newLineName })
+    cloudApi.addLine({ partId, name: newLineName })
       .then((createdLine) => {
         if (createdLine?.id) {
-          setSheds(prev => prev.map(s => s.id === activeShed.id ? {
+          setSheds(prev => prev.map(s => s.id === shedId ? {
             ...s,
-            parts: s.parts.map(p => p.id === activePart.id ? {
+            parts: s.parts.map(p => p.id === partId ? {
               ...p,
-              lines: p.lines.map(l => l.id === nextId ? { ...l, id: createdLine.id } : l)
+              lines: p.lines.map(l => (String(l.id) === String(tempLineId) || l.name === newLineName)
+                ? { ...l, id: createdLine.id, name: createdLine.name || newLineName }
+                : l
+              )
             } : p)
           } : s));
           setSelectedLineId(createdLine.id);
         }
         setSyncStatus('synced');
       })
-      .catch(() => setSyncStatus('offline'));
+      .catch((err) => {
+        console.warn('Backend addLine failed, retaining local line:', err);
+        setSyncStatus('offline');
+      })
+      .finally(() => {
+        isAddingLineRef.current = false;
+      });
   };
 
   const handleDeleteLine = (lineId: number | string, e?: React.MouseEvent) => {
@@ -2193,19 +2652,19 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
       e.preventDefault();
       e.stopPropagation();
     }
-    if (currentUserRole === 'Supervisor') {
-      showToast('Permission Denied: Supervisor cannot delete pen lines.');
+    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
+      showToast('Permission Denied: Completed submissions cannot be modified.');
       return;
     }
     if (!activeShed || !activePart) return;
     if (activePart.lines.length <= 1) {
-      showToast('A part must have at least 1 pen line.');
+      showToast('Cannot delete line: A part must have at least 1 pen line.');
       return;
     }
     const target = activePart.lines.find(l => String(l.id) === String(lineId));
     if (!target) return;
 
-    if (target.weights.length === 0) {
+    if (!target.weights || target.weights.length === 0) {
       executeDeleteLine(lineId);
     } else {
       setLinePendingDelete({ id: target.id, name: target.name, weights: target.weights });
@@ -2222,7 +2681,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         parts: s.parts.map(p => p.id === activePart.id ? { ...p, lines: remaining } : p)
       };
     }));
-    setSelectedLineId(prev => (String(prev) === String(lineId) ? remaining[0].id : prev));
+    setSelectedLineId(prev => (String(prev) === String(lineId) ? (remaining[0]?.id || '') : prev));
     setLinePendingDelete(null);
     showToast('Line deleted.');
     markSessionAsDraft('Deleted line');
@@ -2291,8 +2750,17 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
       setIsExporting(true);
       setExportMessage('Generating 13-Sheet Excel Workbook...');
       showToast('Generating complete 13-sheet Excel workbook...');
+      let activeName = currentActiveFarmSummary?.name || farmName;
+      if (!activeName || /^[0-9a-fA-F-]{16,}$/.test(activeName) || /^(shed|farm|flock|user)[-_]/i.test(activeName)) {
+        const found = farmsList.find(f => f.id === activeFarmId);
+        if (found && found.name && !/^[0-9a-fA-F-]{16,}$/.test(found.name)) {
+          activeName = found.name;
+        } else {
+          activeName = 'Poultry_Flock';
+        }
+      }
       const res = await exportPoultryWorkbook({
-        farmName,
+        farmName: activeName,
         dateStr: date,
         formattedDateTime,
         ageWeek,
@@ -2303,12 +2771,13 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         sheds
       });
       if (res.success) {
-        showToast(res.method === 'share' ? 'Shared successfully!' : 'Downloaded successfully!');
+        showToast(res.method === 'share' ? 'Shared successfully!' : `Downloaded ${res.fileName} successfully!`);
       } else if (res.method !== 'aborted') {
         showToast('Download could not complete.');
       }
-    } catch (err) {
-      console.error(err);
+
+    } catch (err: any) {
+      console.error('Workbook export error:', err);
       showToast('Error generating workbook.');
     } finally {
       setIsExporting(false);
@@ -2339,9 +2808,11 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
 
       <div className="flex justify-center bg-slate-100/70 min-h-screen text-slate-800 font-sans antialiased selection:bg-emerald-500 selection:text-white">
         <div className={`w-full min-h-screen bg-slate-50 flex flex-col relative pb-8 transition-all duration-300 overflow-x-hidden ${
-          (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge')
-            ? 'max-w-md mx-auto px-2 sm:px-3 shadow-2xl border-x border-slate-200'
-            : 'max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 border-x border-slate-200/80 shadow-xl'
+          !isAuthenticated
+            ? 'w-full max-w-md mx-auto px-4 bg-transparent'
+            : (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge')
+              ? 'max-w-md mx-auto px-2 sm:px-3 shadow-2xl border-x border-slate-200'
+              : 'max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 border-x border-slate-200/80 shadow-xl'
         }`}>
         
         {!isAuthenticated ? (
@@ -2402,6 +2873,9 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
               onOpenAuth={() => navigateTo('auth')}
               onLogout={handleLogout}
               onRenameFarm={handleRenameFarm}
+              currentWeek={ageWeek}
+              onSwitchWeek={handleSwitchWeek}
+              weekStatusMap={weekStatusMap}
             />
           )
         )}
@@ -2454,18 +2928,16 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
               </h2>
             </div>
 
-            {/* Active Farm Header with Rename Option & Dedicated Shed Gender Filter Row (Req 9) */}
+            {/* Active Farm Header with Rename Option & Dedicated Responsive Recording-Week Selection Form */}
             <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200 shadow-2xs mb-4">
+              {/* Farm Name & Metadata Row */}
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Active Farm</span>
-                  <span className="text-base sm:text-lg font-black text-slate-900 truncate block mt-0.5">
+                  <h1 className="text-base sm:text-lg font-black text-slate-900 truncate block mt-0.5">
                     {currentActiveFarmSummary?.name || farmName || (farmsList.find(f => f.id === activeFarmId)?.name) || 'Active Farm'}
-                  </span>
+                  </h1>
                   <div className="flex items-center gap-2 mt-1 text-xs text-slate-500 flex-wrap">
-                    <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-bold text-[10px] border border-slate-200">
-                      {currentActiveFarmSummary?.ageWeek || ageWeek}
-                    </span>
                     <span>{currentActiveFarmSummary?.season || season} Brood</span>
                     <span>•</span>
                     <span className="font-semibold text-slate-700">{sheds.length} Sheds</span>
@@ -2487,14 +2959,69 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                 </button>
               </div>
 
-              {/* Dedicated Full-Width Shed Gender Filter Bar - Placed Below Header on touchscreens & laptops (Req 9) */}
+              {/* Dedicated Responsive Recording-Week Selection Form (Fits 320px, 360px, 375px, 414px, Tablet, Desktop) */}
+              <div className="mt-3 pt-3 border-t border-slate-100">
+                <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
+                  <label htmlFor="shed-recording-week-select" className="text-[11px] font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span>Select Recording Week</span>
+                  </label>
+                  <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500">
+                    <span className="inline-flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
+                      <span>Completed</span>
+                    </span>
+                    <span>•</span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0"></span>
+                      <span>Draft</span>
+                    </span>
+                  </div>
+                </div>
+
+                <div className="relative w-full min-w-0">
+                  <select
+                    id="shed-recording-week-select"
+                    value={ageWeek}
+                    onChange={(e) => handleSwitchWeek(e.target.value)}
+                    className="w-full min-w-0 max-w-full bg-emerald-50/80 hover:bg-emerald-100/70 border border-emerald-300/80 rounded-xl pl-3 pr-8 py-2 text-xs font-black text-emerald-950 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 transition cursor-pointer appearance-none truncate"
+                    title="Change Recording Week"
+                  >
+                    {Array.from({ length: 24 }, (_, i) => `W${i + 1}`).map((w) => {
+                      const wStatus = weekStatusMap?.[w];
+                      const statusIcon = wStatus === 'COMPLETED' ? '🟢' : '🟡';
+                      const statusText = wStatus === 'COMPLETED' ? 'COMPLETED' : 'DRAFT';
+                      return (
+                        <option key={w} value={w} className="text-slate-900 bg-white py-1">
+                          {w} — {statusIcon} {formatRecordingWeekLabel(w, currentActiveFarmSummary?.flockDate || date)} ({statusText})
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-emerald-700">
+                    <ChevronDown className="w-4 h-4" />
+                  </div>
+                </div>
+
+                {/* Active Recording Period Date Range & Status Strip */}
+                <div className="mt-1.5 flex items-center justify-between text-[11px] text-emerald-900 bg-emerald-50/60 px-2.5 py-1.5 rounded-lg border border-emerald-100 flex-wrap gap-1">
+                  <span className="font-semibold truncate min-w-0 flex-1">
+                    {formatRecordingWeekLabel(ageWeek, currentActiveFarmSummary?.flockDate || date)}
+                  </span>
+                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-100/80 text-emerald-800 shrink-0">
+                    {weekStatusMap?.[ageWeek] === 'COMPLETED' ? '🟢 Completed' : '🟡 In-Progress'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Dedicated Full-Width Shed Gender Filter Bar */}
               <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2">
                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Filter Sheds:</span>
-                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-2xs">
+                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-2xs max-w-full overflow-x-auto">
                   <button
                     type="button"
                     onClick={() => setShedGenderFilter('ALL')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer shrink-0 ${
                       shedGenderFilter === 'ALL'
                         ? 'bg-slate-900 text-white shadow-xs'
                         : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
@@ -2505,7 +3032,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                   <button
                     type="button"
                     onClick={() => setShedGenderFilter('FEMALE')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 shrink-0 ${
                       shedGenderFilter === 'FEMALE'
                         ? 'bg-pink-600 text-white shadow-xs'
                         : 'text-pink-700 hover:bg-pink-100'
@@ -2517,7 +3044,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                   <button
                     type="button"
                     onClick={() => setShedGenderFilter('MALE')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 shrink-0 ${
                       shedGenderFilter === 'MALE'
                         ? 'bg-blue-600 text-white shadow-xs'
                         : 'text-blue-700 hover:bg-blue-100'
@@ -2684,6 +3211,9 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
               </div>
 
               <div className="flex items-center gap-2">
+                <span className="text-xs font-black text-emerald-800 bg-emerald-50 px-2.5 py-1.5 rounded-xl border border-emerald-200 shadow-2xs">
+                  {ageWeek}
+                </span>
                 <span className="text-xs font-bold text-slate-700 bg-white px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs">
                   {activeShed.name}
                 </span>
@@ -2723,14 +3253,27 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
 
             <div className="flex items-center justify-between px-1 mb-3">
               <div>
-                <h2 className="text-base font-black text-slate-900">Parts in {activeShed.name}</h2>
-                <p className="text-xs text-slate-500">Select a part to view its pen lines</p>
+                <h2 className="text-base font-black text-slate-900">
+                  Parts in {activeShed.name} ({activeShed.parts.length}/4)
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {activeShed.parts.length >= 4 
+                    ? 'Maximum 4 parts reached (Parts A–D only)' 
+                    : 'Select a part to view its pen lines (Parts A–D allowed)'}
+                </p>
               </div>
               <button
                 onClick={handleAddPart}
-                className="text-xs bg-amber-500 hover:bg-amber-400 text-slate-950 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1 active:scale-95 cursor-pointer shadow-xs"
+                disabled={activeShed.parts.length >= 4}
+                title={activeShed.parts.length >= 4 ? 'Maximum 4 parts (A-D) allowed per shed' : 'Add Next Part'}
+                className={`text-xs px-3 py-1.5 rounded-xl font-bold flex items-center gap-1 shadow-xs transition ${
+                  activeShed.parts.length >= 4
+                    ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950 active:scale-95 cursor-pointer'
+                }`}
               >
-                <Plus className="w-3.5 h-3.5" /> Add Part
+                <Plus className="w-3.5 h-3.5" />
+                <span>{activeShed.parts.length >= 4 ? 'Max Parts (4/4)' : 'Add Part'}</span>
               </button>
             </div>
 
@@ -2850,21 +3393,39 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                 </button>
               </div>
 
-              <span className="text-xs font-bold text-sky-800 bg-sky-50 px-3 py-1.5 rounded-full border border-sky-200 truncate max-w-[280px]">
-                {activeShed.name} › {activePart.name}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-black text-emerald-800 bg-emerald-50 px-2 py-1 rounded-xl border border-emerald-200 shadow-2xs">
+                  {ageWeek}
+                </span>
+                <span className="text-xs font-bold text-sky-800 bg-sky-50 px-3 py-1.5 rounded-full border border-sky-200 truncate max-w-[280px]">
+                  {activeShed.name} › {activePart.name}
+                </span>
+              </div>
             </div>
 
             <div className="flex items-center justify-between px-1 mb-3">
               <div>
-                <h2 className="text-base font-black text-slate-900">Lines in {activePart.name}</h2>
-                <p className="text-xs text-slate-500">Choose a line to record bird weights</p>
+                <h2 className="text-base font-black text-slate-900">
+                  Lines in {activePart.name} ({activePart.lines.length}/16)
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {activePart.lines.length >= 16
+                    ? 'Maximum 16 lines reached (Line 1–Line 16 only)'
+                    : 'Choose a line to record bird weights (Lines 1–16 allowed)'}
+                </p>
               </div>
               <button
                 onClick={handleAddLine}
-                className="text-xs bg-sky-600 hover:bg-sky-500 text-white px-3 py-1.5 rounded-xl font-bold flex items-center gap-1 active:scale-95 cursor-pointer shadow-xs"
+                disabled={activePart.lines.length >= 16}
+                title={activePart.lines.length >= 16 ? 'Maximum 16 lines reached (Line 1–Line 16)' : 'Add Next Line'}
+                className={`text-xs px-3 py-1.5 rounded-xl font-bold flex items-center gap-1 shadow-xs transition ${
+                  activePart.lines.length >= 16
+                    ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                    : 'bg-sky-600 hover:bg-sky-500 text-white active:scale-95 cursor-pointer'
+                }`}
               >
-                <Plus className="w-3.5 h-3.5" /> Add Line
+                <Plus className="w-3.5 h-3.5" />
+                <span>{activePart.lines.length >= 16 ? 'Max Lines (16/16)' : 'Add Line'}</span>
               </button>
             </div>
 
@@ -3020,7 +3581,9 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
               </div>
 
               {/* Breadcrumb Trail matching screenshot */}
-              <div className="flex items-center gap-1 text-[11px] font-bold bg-white px-2.5 py-1 rounded-xl border border-slate-200 shadow-xs truncate max-w-[280px]">
+              <div className="flex items-center gap-1.5 text-[11px] font-bold bg-white px-2.5 py-1 rounded-xl border border-slate-200 shadow-xs truncate max-w-[320px]">
+                <span className="text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded text-[10px] font-black border border-emerald-200">{ageWeek}</span>
+                <span className="text-slate-300">•</span>
                 <span className="text-emerald-700 font-extrabold">{activeShed.name}</span>
                 <span className="text-slate-300">›</span>
                 <span className="text-indigo-700 font-extrabold">{activePart.name}</span>
@@ -3126,36 +3689,39 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                 </div>
 
                 {/* Manual Entry Form - Compact & Fast */}
-                <form onSubmit={e => { e.preventDefault(); handleAddWeight(); }} className="flex gap-2">
-                  <input
-                    type="number"
-                    placeholder={`Weight for ${activeLine.name}...`}
-                    value={inputWeight}
-                    onChange={e => setInputWeight(e.target.value)}
-                    autoFocus
-                    className="flex-1 min-w-0 bg-white border border-slate-300 rounded-xl px-3 py-2 text-base font-black text-slate-900 focus:outline-none focus:border-emerald-600 font-mono shadow-xs placeholder:text-slate-400"
-                  />
-                  <button
-                    type="submit"
-                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black px-5 rounded-xl text-xs shrink-0 shadow-xs cursor-pointer"
-                  >
-                    Save
-                  </button>
-                </form>
-
-                {/* Quick-Tap Increment Chips */}
-                <div className="grid grid-cols-4 gap-1.5">
-                  {[1250, 1300, 1350, 1400, 1450, 1500, 1550, 1600].map(w => (
+                <form onSubmit={e => { e.preventDefault(); handleAddWeight(); }} className="flex flex-col gap-1.5">
+                  <div className="flex gap-2">
+                    <input
+                      ref={weightInputRef}
+                      type="number"
+                      step="any"
+                      inputMode="decimal"
+                      placeholder={`Weight for ${activeLine.name}...`}
+                      value={inputWeight}
+                      onChange={e => {
+                        setInputWeight(e.target.value);
+                        if (inputWeightError) setInputWeightError(null);
+                      }}
+                      autoFocus
+                      className={`flex-1 min-w-0 bg-white border ${
+                        inputWeightError ? 'border-rose-500 focus:border-rose-600' : 'border-slate-300 focus:border-emerald-600'
+                      } rounded-xl px-3 py-2 text-base font-black text-slate-900 focus:outline-none font-mono shadow-xs placeholder:text-slate-400`}
+                    />
                     <button
-                      key={w}
-                      type="button"
-                      onClick={() => handleAddWeight(w)}
-                      className="bg-white hover:bg-slate-100 active:bg-slate-200 py-1.5 rounded-xl text-xs font-mono font-bold text-slate-800 border border-slate-200 shadow-xs cursor-pointer"
+                      type="submit"
+                      disabled={isSubmittingWeight}
+                      className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black px-5 rounded-xl text-xs shrink-0 shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition"
                     >
-                      +{w}
+                      {isSubmittingWeight ? 'Saving...' : 'Save'}
                     </button>
-                  ))}
-                </div>
+                  </div>
+                  {inputWeightError && (
+                    <div className="flex items-center gap-1.5 text-rose-600 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-xl text-xs font-bold animate-in fade-in duration-150">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-500" />
+                      <span>{inputWeightError}</span>
+                    </div>
+                  )}
+                </form>
 
                 {/* Action Buttons: Save Draft (Supervisor & Incharge) & Go to Submit Screen */}
                 <div className="space-y-2 pt-1">
@@ -3284,9 +3850,28 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                 <h2 className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-wide">
                   Consolidated Flock Conclusion (Cons)
                 </h2>
-                <p className="text-[10px] text-slate-500 font-medium">
-                  {farmName} • {ageWeek} • {season} Brood
-                </p>
+                <div className="flex items-center justify-center gap-1.5 mt-0.5 flex-wrap">
+                  <span className="text-[10px] text-slate-600 font-bold">{farmName}</span>
+                  <span className="text-slate-300">•</span>
+                  <select
+                    value={ageWeek}
+                    onChange={(e) => handleSwitchWeek(e.target.value)}
+                    className="bg-emerald-50 text-emerald-900 border border-emerald-200 rounded-lg px-2 py-0.5 text-[10px] font-black focus:outline-none cursor-pointer max-w-[150px] sm:max-w-xs truncate"
+                    title="Switch Report Recording Week"
+                  >
+                    {Array.from({ length: 24 }, (_, i) => `W${i + 1}`).map(w => {
+                      const wStatus = weekStatusMap?.[w];
+                      const icon = wStatus === 'COMPLETED' ? '🟢' : '🟡';
+                      return (
+                        <option key={w} value={w}>
+                          {w} — {icon} {formatRecordingWeekLabel(w, currentActiveFarmSummary?.flockDate || date)}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <span className="text-slate-300">•</span>
+                  <span className="text-[10px] text-slate-600 font-medium">{season} Brood</span>
+                </div>
               </div>
 
               <button 
@@ -3393,7 +3978,11 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                       <th className="py-2 px-3">Min</th>
                       <th className="py-2 px-3">Max</th>
                       <th className="py-2 px-3">CV %</th>
-                      <th className="py-2 px-3 text-amber-700">Unif (S%)</th>
+                      <th className="py-2 px-3 text-rose-700">MB %</th>
+                      <th className="py-2 px-3 text-amber-700">B %</th>
+                      <th className="py-2 px-3 text-emerald-700">S %</th>
+                      <th className="py-2 px-3 text-sky-700">A %</th>
+                      <th className="py-2 px-3 text-purple-700">MA %</th>
                       <th className="py-2 px-3 text-center">Status</th>
                     </tr>
                   </thead>
@@ -3413,7 +4002,11 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                         <td className="py-2 px-3 font-mono text-slate-500">{s.stats.count > 0 ? `${s.stats.min}g` : '—'}</td>
                         <td className="py-2 px-3 font-mono text-slate-500">{s.stats.count > 0 ? `${s.stats.max}g` : '—'}</td>
                         <td className="py-2 px-3 font-mono text-sky-600">{s.stats.count > 0 ? `${s.stats.cv}%` : '—'}</td>
-                        <td className="py-2 px-3 font-mono font-bold text-amber-600">{s.stats.count > 0 ? `${s.stats.sPct}%` : '—'}</td>
+                        <td className="py-2 px-3 font-mono font-bold text-rose-600">{s.stats.count > 0 ? `${s.stats.mbPct}%` : '—'}</td>
+                        <td className="py-2 px-3 font-mono font-bold text-amber-600">{s.stats.count > 0 ? `${s.stats.bPct}%` : '—'}</td>
+                        <td className="py-2 px-3 font-mono font-bold text-emerald-600">{s.stats.count > 0 ? `${s.stats.sPct}%` : '—'}</td>
+                        <td className="py-2 px-3 font-mono font-bold text-sky-600">{s.stats.count > 0 ? `${s.stats.aPct}%` : '—'}</td>
+                        <td className="py-2 px-3 font-mono font-bold text-purple-600">{s.stats.count > 0 ? `${s.stats.maPct}%` : '—'}</td>
                         <td className="py-2 px-3 text-center">
                           <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
                             s.stats.count === 0 ? 'bg-slate-100 text-slate-500' :
@@ -3739,6 +4332,32 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                 }
 
                 return filtered.map((log) => {
+                  // Bind Male/Female Actual Weights & Farm Overall Average Weight
+                  const femaleVal = 
+                    (log as any).femaleActWt ?? 
+                    log.femaleAvgWeight ?? 
+                    (log as any).femaleAvg ?? 
+                    (() => {
+                      const m = (log.action || '').match(/♀\s*(?:Act|Avg)?[:\s]*([0-9]+(?:\.[0-9]+)?)\s*g?/i);
+                      return m ? parseFloat(m[1]) : null;
+                    })();
+
+                  const maleVal = 
+                    (log as any).maleActWt ?? 
+                    log.maleAvgWeight ?? 
+                    (log as any).maleAvg ?? 
+                    (() => {
+                      const m = (log.action || '').match(/♂\s*(?:Act|Avg)?[:\s]*([0-9]+(?:\.[0-9]+)?)\s*g?/i);
+                      return m ? parseFloat(m[1]) : null;
+                    })();
+
+                  let overallAvg = log.avgWeight;
+                  if ((!overallAvg || (femaleVal && maleVal && overallAvg === femaleVal && femaleVal !== maleVal)) && femaleVal && maleVal) {
+                    overallAvg = Math.round((femaleVal + maleVal) / 2);
+                  } else if (!overallAvg) {
+                    overallAvg = femaleVal || maleVal || 0;
+                  }
+
                   return (
                     <div 
                       key={log.id} 
@@ -3769,32 +4388,25 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                           <div className="min-w-0">
                             <span className="text-[9px] text-emerald-600 font-bold uppercase block truncate">Overall Avg Wt</span>
                             <span className="font-extrabold text-emerald-700 text-sm font-mono truncate block">
-                              {log.avgWeight ? `${log.avgWeight}g` : (log.femaleAvgWeight || log.maleAvgWeight ? `${log.femaleAvgWeight || log.maleAvgWeight}g` : 'N/A')}
+                              {overallAvg ? `${overallAvg}g` : (femaleVal || maleVal ? `${femaleVal || maleVal}g` : 'N/A')}
                             </span>
                           </div>
                           <div className="min-w-0">
                             <span className="text-[9px] text-pink-600 font-bold uppercase block truncate">Female Act Wt</span>
                             <span className="font-extrabold text-pink-700 text-sm font-mono truncate block">
-                              {log.femaleAvgWeight ? `${log.femaleAvgWeight}g` : 'N/A'}
+                              {femaleVal ? `${femaleVal}g` : 'N/A'}
                             </span>
                           </div>
                           <div className="min-w-0">
                             <span className="text-[9px] text-blue-600 font-bold uppercase block truncate">Male Act Wt</span>
                             <span className="font-extrabold text-blue-700 text-sm font-mono truncate block">
-                              {log.maleAvgWeight ? `${log.maleAvgWeight}g` : 'N/A'}
+                              {maleVal ? `${maleVal}g` : 'N/A'}
                             </span>
                           </div>
                         </div>
-
-                        {/* Action summary text */}
-                        {log.action && (
-                          <p className="mt-2 text-[11px] font-semibold text-slate-700 bg-slate-50/60 px-2 py-1 rounded-lg border border-slate-100 break-words">
-                            {log.action}
-                          </p>
-                        )}
                       </div>
 
-                      {/* Footer: Clean Non-Colliding Layout with Submitter, Formatted Timestamp & Update Action */}
+                      {/* Footer: Submitter & Formatted Timestamp (Update Action Button Completely Removed) */}
                       <div className="flex flex-col gap-1.5 text-[11px] text-slate-500 pt-2 mt-2 border-t border-slate-100">
                         <div className="flex items-center justify-between gap-1">
                           <div className="flex items-center gap-1.5 min-w-0">
@@ -3805,23 +4417,9 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                               Submitted By: <strong className="text-slate-800">{log.userName || 'Supervisor'}</strong>
                             </span>
                           </div>
-
-                          {(currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setUpdatingSubmissionId(log.id);
-                                navigateTo('submission_update');
-                              }}
-                              className="text-[10px] font-bold text-sky-700 hover:text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-200 px-2.5 py-1 rounded-lg flex items-center gap-1 transition active:scale-95 cursor-pointer shrink-0"
-                            >
-                              <Edit2 className="w-3 h-3" />
-                              <span>Update</span>
-                            </button>
-                          )}
-                        </div>
-                        <div className="text-[10px] font-mono text-slate-500 font-medium">
-                          {formatDateTimeIST(log.timestamp)}
+                          <div className="text-[10px] font-mono text-slate-500 font-medium shrink-0">
+                            {formatDateTimeIST(log.timestamp)}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -3855,21 +4453,23 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
           <div className="flex-1 flex flex-col p-4 animate-in slide-in-from-right duration-150">
             {/* Top Bar */}
             <div className="flex items-center justify-between mb-4">
-              <button 
-                onClick={handleGoHome} 
-                className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
-                title="Return to Dashboard Home"
-              >
-                <ArrowLeft className="w-4 h-4" /> Home
-              </button>
+              {currentUser && (
+                <button 
+                  onClick={handleGoHome} 
+                  className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs active:scale-95 cursor-pointer"
+                  title="Return to Dashboard Home"
+                >
+                  <ArrowLeft className="w-4 h-4" /> Home
+                </button>
+              )}
               <h2 className="text-xs font-black text-emerald-800 uppercase tracking-wide bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
-                Farm Access & Roles
+                {currentUser ? 'Farm Access & Roles' : 'Sign In'}
               </h2>
             </div>
 
             <div className="space-y-4">
-              {/* If Current User Session exists and not switching, show active session card */}
-              {currentUser && !isSwitchingUser ? (
+              {/* If Current User Session exists, show active session card */}
+              {currentUser ? (
                 <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-3">
                   <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
                     <div className={`w-12 h-12 rounded-2xl text-white flex items-center justify-center font-black text-lg shadow-md ${
@@ -3932,18 +4532,11 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                     </div>
                   </div>
 
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setIsSwitchingUser(true)}
-                      className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 transition cursor-pointer"
-                    >
-                      Switch Account / Role
-                    </button>
+                  <div className="pt-1">
                     <button
                       type="button"
                       onClick={handleLogout}
-                      className="flex-1 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
+                      className="w-full bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
                     >
                       <LogOut className="w-3.5 h-3.5" /> Log Out
                     </button>
@@ -3952,11 +4545,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
               ) : (
                 <div className="space-y-3">
                   <LoginScreen 
-                    onLoginSuccess={(user, token) => {
-                      setIsSwitchingUser(false);
-                      handleLoginSuccess(user, token);
-                    }}
-                    onCancel={currentUser ? () => setIsSwitchingUser(false) : undefined}
+                    onLoginSuccess={handleLoginSuccess}
                   />
                 </div>
               )}
@@ -4224,7 +4813,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                   </div>
                   <div>
                     <h3 className="font-black text-base text-slate-900">Add New Farm</h3>
-                    <p className="text-[11px] text-slate-500">Configure Farm Unit & Individual Shed Genders</p>
+                    <p className="text-[11px] text-slate-500">Configure Farm Unit & Number of Sheds (1–40)</p>
                   </div>
                 </div>
                 <button
@@ -4292,120 +4881,101 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
                   </select>
                 </div>
 
-                {/* Configurable Shed Setup Section */}
-                <div className="space-y-2.5 border-t border-slate-100 pt-3">
+                {/* Simplified Single Shed-Configuration Question: How many sheds? */}
+                <div className="space-y-2 border-t border-slate-100 pt-3">
                   <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-[11px] font-black text-slate-800 uppercase tracking-wider block">
-                        Configured Sheds ({newFarmConfiguredSheds.length})
-                      </label>
-                      <span className="text-[10px] text-slate-500">Configure name and gender (Male/Female) for each shed</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const nextNum = newFarmConfiguredSheds.length + 1;
-                        setNewFarmConfiguredSheds(prev => [
-                          ...prev,
-                          { id: String(Date.now()), name: `Shed-${nextNum}`, type: 'Female' }
-                        ]);
-                      }}
-                      className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold flex items-center gap-1 transition cursor-pointer active:scale-95"
+                    <label 
+                      htmlFor="new-farm-shed-count"
+                      className="text-[11px] font-black text-slate-800 uppercase tracking-wider block"
                     >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Add Shed</span>
-                    </button>
+                      Number of Sheds (1–40) *
+                    </label>
+                    <span className="text-[10px] font-bold text-slate-500">
+                      Integers 1 to 40
+                    </span>
                   </div>
 
-                  {newFarmConfiguredSheds.length === 0 ? (
-                    <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-500">
-                      No sheds configured yet. Click <span className="font-bold text-emerald-700">"+ Add Shed"</span> to add sheds now, or create the farm without sheds to add them later.
-                    </div>
-                  ) : (
-                    <div className="max-h-52 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                      {newFarmConfiguredSheds.map((shed, idx) => (
-                        <div
-                          key={shed.id}
-                          className="p-2.5 bg-slate-50 hover:bg-slate-100/70 border border-slate-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 transition"
-                        >
-                          <div className="flex items-center gap-2 flex-1">
-                            <span className="text-[10px] font-black text-slate-400 w-5 text-center">#{idx + 1}</span>
-                            <input
-                              type="text"
-                              required
-                              placeholder="e.g. Shed-1"
-                              value={shed.name}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setNewFarmConfiguredSheds(prev => prev.map(s => s.id === shed.id ? { ...s, name: val } : s));
-                              }}
-                              className="bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 flex-1 focus:outline-none focus:border-emerald-600 transition"
-                            />
-                          </div>
+                  <input
+                    id="new-farm-shed-count"
+                    type="number"
+                    min="1"
+                    max="40"
+                    step="1"
+                    required
+                    value={newFarmShedCount}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setNewFarmShedCount(val);
+                      const n = Number(val);
+                      if (!val || val.trim() === '') {
+                        setNewFarmShedCountError('Number of sheds is required.');
+                      } else if (isNaN(n) || !Number.isInteger(n)) {
+                        setNewFarmShedCountError('Number of sheds must be a whole number (no decimals).');
+                      } else if (n < 1) {
+                        setNewFarmShedCountError('Minimum 1 shed is required.');
+                      } else if (n > 40) {
+                        setNewFarmShedCountError('Maximum 40 sheds allowed.');
+                      } else {
+                        setNewFarmShedCountError(null);
+                      }
+                    }}
+                    className={`w-full bg-slate-50 border rounded-xl px-3 py-2.5 text-xs font-bold text-slate-900 focus:outline-none focus:bg-white transition ${
+                      newFarmShedCountError 
+                        ? 'border-rose-400 focus:border-rose-500 ring-1 ring-rose-200' 
+                        : 'border-slate-300 focus:border-emerald-600'
+                    }`}
+                    placeholder="Enter number of sheds (e.g. 10)"
+                  />
 
-                          <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
-                            {/* Gender selector pills */}
-                            <div className="flex items-center bg-white border border-slate-300 rounded-lg p-0.5 shadow-2xs">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setNewFarmConfiguredSheds(prev => prev.map(s => s.id === shed.id ? { ...s, type: 'Female' } : s));
-                                }}
-                                className={`px-2 py-1 rounded-md text-[11px] font-black transition cursor-pointer ${
-                                  shed.type === 'Female'
-                                    ? 'bg-rose-500 text-white shadow-xs'
-                                    : 'text-slate-600 hover:text-slate-900'
-                                }`}
-                              >
-                                Female ♀
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setNewFarmConfiguredSheds(prev => prev.map(s => s.id === shed.id ? { ...s, type: 'Male' } : s));
-                                }}
-                                className={`px-2 py-1 rounded-md text-[11px] font-black transition cursor-pointer ${
-                                  shed.type === 'Male'
-                                    ? 'bg-blue-600 text-white shadow-xs'
-                                    : 'text-slate-600 hover:text-slate-900'
-                                }`}
-                              >
-                                Male ♂
-                              </button>
-                            </div>
-
-                            {/* Direct requirement display: Shed-1 → Male */}
-                            <span className={`text-[11px] font-black px-2 py-1 rounded-lg border hidden md:inline-flex ${
-                              shed.type === 'Male' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-rose-50 text-rose-700 border-rose-200'
-                            }`}>
-                              {shed.name.trim() || `Shed-${idx + 1}`} → {shed.type === 'Male' ? 'Male ♂' : 'Female ♀'}
-                            </span>
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setNewFarmConfiguredSheds(prev => prev.filter(s => s.id !== shed.id));
-                              }}
-                              className="p-1 text-slate-400 hover:text-rose-600 rounded-md transition cursor-pointer"
-                              title="Remove shed"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                  {/* Validation Error Banner */}
+                  {newFarmShedCountError && (
+                    <div className="p-2 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-[11px] font-bold flex items-center gap-1.5 animate-in fade-in duration-150">
+                      <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                      <span>{newFarmShedCountError}</span>
                     </div>
                   )}
-                </div>
 
-                <div className="bg-emerald-50/70 p-3 rounded-xl border border-emerald-200 text-[11px] text-emerald-800 flex items-start gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                  <span>
-                    {newFarmConfiguredSheds.length === 0 
-                      ? 'Will create farm with 0 sheds. You can add sheds anytime.' 
-                      : `Will create ${newFarmConfiguredSheds.length} shed${newFarmConfiguredSheds.length === 1 ? '' : 's'} (${newFarmConfiguredSheds.filter(s => s.type === 'Female').length} Female ♀, ${newFarmConfiguredSheds.filter(s => s.type === 'Male').length} Male ♂). Atomic database transaction guarantees complete setup.`
-                    }
-                  </span>
+                  {/* Quick Select Preset Chips */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mr-1">Quick:</span>
+                    {[1, 5, 8, 10, 12, 16, 20, 40].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => {
+                          setNewFarmShedCount(preset);
+                          setNewFarmShedCountError(null);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold border transition cursor-pointer active:scale-95 ${
+                          Number(newFarmShedCount) === preset && !newFarmShedCountError
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                            : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        {preset} {preset === 1 ? 'Shed' : 'Sheds'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Resulting Shed Count Preview */}
+                  {(() => {
+                    const countNum = Number(newFarmShedCount);
+                    const isValid = !newFarmShedCountError && Number.isInteger(countNum) && countNum >= 1 && countNum <= 40;
+                    if (!isValid) return null;
+                    return (
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-xs text-emerald-900 flex items-start gap-2 animate-in fade-in duration-150">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-extrabold">
+                            Will create {countNum} shed{countNum > 1 ? 's' : ''}: Shed 1 {countNum > 1 ? `through Shed ${countNum}` : ''}
+                          </p>
+                          <p className="text-[10px] text-emerald-700 mt-0.5">
+                            Gender (Male/Female) can be selected during body-weight recording.
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="flex gap-2 pt-2">
@@ -4825,7 +5395,7 @@ function mergeServerShedsWithLocalDraft(serverSheds: ShedData[], localSheds: She
         {/* ========================================================= */}
         {/* MODAL: EXIT CONFIRMATION TRAP                             */}
         {/* ========================================================= */}
-        {showExitConfirm && (
+        {isAuthenticated && currentScreen === 'home' && showExitConfirm && (
           <div 
             className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150"
             role="dialog"

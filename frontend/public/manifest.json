@@ -1,0 +1,24 @@
+{
+  "name": "Poultry Flock Pro",
+  "short_name": "PoultryFlock",
+  "description": "Digital poultry flock bodyweight, uniformity and shed-wise management system modeled after Suguna standards.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#10B981",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/hen-logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/hen-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
