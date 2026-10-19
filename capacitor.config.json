@@ -1,0 +1,9 @@
+{
+  "appId": "com.poultryflock.pro",
+  "appName": "Poultry Flock Pro",
+  "webDir": "frontend/dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  }
+}
