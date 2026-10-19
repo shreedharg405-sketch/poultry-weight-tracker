@@ -15,6 +15,7 @@ import {
   Edit3,
   X, 
   AlertCircle,
+  AlertTriangle,
   FileSpreadsheet,
   CheckCircle2,
   CheckCircle,
@@ -432,21 +433,24 @@ export default function App() {
   // Farm Access Assignment filtering: Admins see all; Managers see authorized scope;
   // Supervisors and In-Charges see ONLY explicitly assigned farms (Req 8)
   const accessibleFarms = useMemo(() => {
+    // Only return existing, active (non-deleted and non-archived) farms (Task 3)
+    const activeFarms = (farmsList || []).filter(f => f && !f.isArchived && !(f as any).isDeleted);
+
     if (currentUserRole === 'Admin') {
-      return farmsList;
+      return activeFarms;
     }
     if (currentUserRole === 'Manager') {
       const assignedIds = currentUser?.assignedFarms || [];
       if (assignedIds.length > 0 && !assignedIds.includes('*')) {
-        return farmsList.filter(f => assignedIds.includes(f.id) || assignedIds.includes(f.name));
+        return activeFarms.filter(f => assignedIds.includes(f.id) || assignedIds.includes(f.name));
       }
-      return farmsList;
+      return activeFarms;
     }
     const currentName = (currentUser?.userName || currentUser?.name || '').trim().toLowerCase();
     const currentUsername = (currentUser?.username || '').trim().toLowerCase();
     const assignedIds = currentUser?.assignedFarms || [];
 
-    return farmsList.filter(f => {
+    return activeFarms.filter(f => {
       // 1. Direct farm ID match from user's account assignedFarms
       if (assignedIds.includes(f.id) || assignedIds.includes(f.name)) return true;
       // 2. Name or username match in farm's assignedUserNames
@@ -485,8 +489,13 @@ export default function App() {
       base = accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
     }
     if (!base) return null;
+    const initialWeekStr = base.initialAgeWeek || base.startingWeek || base.ageWeek || 'W18';
+    const startWeekNum = base.startWeekNumber || parseInt(initialWeekStr.replace(/\D/g, ''), 10) || 1;
     return {
       ...base,
+      initialAgeWeek: initialWeekStr,
+      startingWeek: initialWeekStr,
+      startWeekNumber: startWeekNum,
       ageWeek: ageWeek || base.ageWeek || 'W18',
     };
   }, [accessibleFarms, activeFarmId, currentUserRole, ageWeek]);
@@ -623,6 +632,8 @@ export default function App() {
   const [inputWeightError, setInputWeightError] = useState<string | null>(null);
   const [isSubmittingWeight, setIsSubmittingWeight] = useState(false);
   const isSubmittingWeightRef = useRef(false);
+  const isCreatingFarmRef = useRef(false);
+  const isAddingShedRef = useRef(false);
   const weightInputRef = useRef<HTMLInputElement>(null);
 
   // Strict Manual Entry: Always keep input empty by default for new bird entries
@@ -639,6 +650,7 @@ export default function App() {
   const [editingPart, setEditingPart] = useState<{ id: string; name: string } | null>(null);
   const [partPendingDelete, setPartPendingDelete] = useState<{ id: string; name: string; totalWeights: number } | null>(null);
   const [linePendingDelete, setLinePendingDelete] = useState<{ id: number | string; name: string; weights: number[] } | null>(null);
+  const [shedPendingDelete, setShedPendingDelete] = useState<{ id: string; name: string; totalWeights: number } | null>(null);
 
   // Edit Farm Name Modal State (Accessible across all authorized roles)
   const [showEditFarmModal, setShowEditFarmModal] = useState<boolean>(false);
@@ -669,17 +681,18 @@ export default function App() {
             return parsedWeek.sheds;
           }
         }
-        const draftStr = localStorage.getItem(`poultry_draft_${activeId}`);
-        if (draftStr) {
-          const parsedDraft = JSON.parse(draftStr);
-          if (Array.isArray(parsedDraft?.sheds) && parsedDraft.sheds.length > 0) {
-            return parsedDraft.sheds;
+        const weekFarmStr = localStorage.getItem(`poultry_farm_${activeId}_${activeWeek}`);
+        if (weekFarmStr) {
+          const parsedWeekFarm = JSON.parse(weekFarmStr);
+          if (Array.isArray(parsedWeekFarm?.sheds) && parsedWeekFarm.sheds.length > 0) {
+            return parsedWeekFarm.sheds;
           }
         }
+        // Base structural fallback for structural IDs: strictly reset weights to []
         const saved = localStorage.getItem(`poultry_farm_${activeId}`);
         if (saved) {
           const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed?.sheds)) return parsed.sheds;
+          if (Array.isArray(parsed?.sheds)) return createEmptyWeeklySheds(parsed.sheds);
         }
       } catch {}
     }
@@ -952,12 +965,11 @@ export default function App() {
     const targetWeek = localStorage.getItem(`poultry_active_week_${targetFarmId}`) || knownFarm?.ageWeek || 'W18';
     setAgeWeek(targetWeek);
 
-    // Immediately restore local draft if available (week key first, fallback to farm key)
+    // Immediately restore local draft if available strictly for targetWeek
     const weekDraft = localStorage.getItem(`poultry_draft_${targetFarmId}_${targetWeek}`);
-    const localDraft = weekDraft || localStorage.getItem(`poultry_draft_${targetFarmId}`);
-    if (localDraft) {
+    if (weekDraft) {
       try {
-        const parsed = JSON.parse(localDraft);
+        const parsed = JSON.parse(weekDraft);
         if (Array.isArray(parsed?.sheds) && parsed.sheds.length > 0) {
           shedsRef.current = parsed.sheds;
           setSheds(parsed.sheds);
@@ -968,8 +980,21 @@ export default function App() {
               if (parsed.sheds[0].parts[0].lines?.[0]) setSelectedLineId(parsed.sheds[0].parts[0].lines[0].id);
             }
           }
+        } else {
+          shedsRef.current = [];
+          setSheds([]);
         }
-      } catch {}
+      } catch {
+        shedsRef.current = [];
+        setSheds([]);
+      }
+    } else {
+      // Isolate farm state: reset previous farm's in-memory sheds and weights immediately
+      shedsRef.current = [];
+      setSheds([]);
+      setSelectedShedId('');
+      setSelectedPartId('');
+      setSelectedLineId('');
     }
 
     // Restore local audit, draft status & pending status for target farm and week
@@ -1031,13 +1056,15 @@ export default function App() {
     } catch (err) {
       console.warn('Switch farm cloud load error, falling back to local cache:', err);
       setSyncStatus('offline');
-      // If offline, check local cache for this farm
-      const localCached = localStorage.getItem(`poultry_farm_${targetFarmId}`);
+      // If offline, check local cache for this farm strictly scoped
+      const weekCached = localStorage.getItem(`poultry_farm_${targetFarmId}_${targetWeek}`);
+      const localCached = weekCached || localStorage.getItem(`poultry_farm_${targetFarmId}`);
       if (localCached) {
         try {
           const parsed = JSON.parse(localCached);
           if (Array.isArray(parsed.sheds)) {
-            const merged = mergeServerShedsWithLocalDraft(parsed.sheds, shedsRef.current, targetFarmId, targetWeek);
+            const baseSheds = weekCached ? parsed.sheds : createEmptyWeeklySheds(parsed.sheds);
+            const merged = mergeServerShedsWithLocalDraft(baseSheds, shedsRef.current, targetFarmId, targetWeek);
             shedsRef.current = merged;
             setSheds(merged);
             if (merged.length > 0) {
@@ -1085,8 +1112,6 @@ export default function App() {
         localStorage.setItem(`poultry_audit_${activeFarmId}_${ageWeek}`, JSON.stringify(farmAudit));
       }
       localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: currentSnapshot, farmName, date, ageWeek, season }));
-      // Also update legacy fallback key
-      localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds: currentSnapshot, updatedAt: Date.now() }));
     }
 
     // 2. Set new active week
@@ -1131,19 +1156,18 @@ export default function App() {
         setSyncStatus('refreshing');
         const cloudFarm = await cloudApi.getFarmDetails(activeFarmId, cleanWeek);
         if (cloudFarm && Array.isArray(cloudFarm.sheds) && cloudFarm.sheds.length > 0) {
-          const hasAnyWeights = cloudFarm.sheds.some((s: any) => s.parts?.some((p: any) => p.lines?.some((l: any) => l.weights?.length > 0)));
-          if (hasAnyWeights) {
-            const merged = mergeServerShedsWithLocalDraft(cloudFarm.sheds, shedsRef.current, activeFarmId, cleanWeek);
-            shedsRef.current = merged;
-            setSheds(merged);
-            setFarmStatus(cloudFarm.status || 'COMPLETED');
-            if (cloudFarm.audit) setFarmAudit(cloudFarm.audit);
-            localStorage.setItem(`poultry_draft_${activeFarmId}_${cleanWeek}`, JSON.stringify({ sheds: merged, updatedAt: Date.now() }));
-            localStorage.setItem(`poultry_status_${activeFarmId}_${cleanWeek}`, cloudFarm.status || 'COMPLETED');
-            setSyncStatus('synced');
-            showToast(`Switched to ${cleanWeek} (${cloudFarm.status || 'Loaded'})`);
-            return;
-          }
+          const baseStructuralSheds = createEmptyWeeklySheds(shedsRef.current.length > 0 ? shedsRef.current : sheds);
+          const merged = mergeServerShedsWithLocalDraft(cloudFarm.sheds, baseStructuralSheds, activeFarmId, cleanWeek);
+          shedsRef.current = merged;
+          setSheds(merged);
+          setFarmStatus(cloudFarm.status || 'DRAFT');
+          if (cloudFarm.audit) setFarmAudit(cloudFarm.audit);
+          else setFarmAudit(null);
+          localStorage.setItem(`poultry_draft_${activeFarmId}_${cleanWeek}`, JSON.stringify({ sheds: merged, updatedAt: Date.now() }));
+          localStorage.setItem(`poultry_status_${activeFarmId}_${cleanWeek}`, cloudFarm.status || 'DRAFT');
+          setSyncStatus('synced');
+          showToast(`Switched to ${cleanWeek} (${cloudFarm.status || 'Loaded'})`);
+          return;
         }
       } catch (err) {
         console.warn('Could not fetch cloud data for week switch:', err);
@@ -1412,6 +1436,7 @@ export default function App() {
   // Create New Farm Handler with Configurable Sheds & Direct Gender Assignment
   const handleCreateFarm = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isCreatingFarmRef.current) return;
     const trimmedName = newFarmName.trim();
     if (!trimmedName) {
       showToast('Please enter a farm name');
@@ -1436,6 +1461,7 @@ export default function App() {
     }
     setNewFarmShedCountError(null);
 
+    isCreatingFarmRef.current = true;
     setIsCreatingFarm(true);
     try {
       // Automatically configure Shed 1 through Shed N with default type 'Female'
@@ -1465,6 +1491,9 @@ export default function App() {
           progressPercentage: 0,
           updatedAt: created.updatedAt,
           _count: { sheds: shedCount },
+          initialAgeWeek: created.ageWeek,
+          startingWeek: created.ageWeek,
+          startWeekNumber: parseInt(created.ageWeek.replace(/\D/g, ''), 10) || 1,
         };
         setFarmsList(prev => [newSummary, ...prev]);
         setActiveFarmId(created.id);
@@ -1476,6 +1505,7 @@ export default function App() {
         setAgeWeek(created.ageWeek);
         setSeason(created.season as any);
         if (Array.isArray(created.sheds)) {
+          shedsRef.current = created.sheds;
           setSheds(created.sheds);
           if (created.sheds.length > 0) {
             setSelectedShedId(created.sheds[0].id);
@@ -1494,6 +1524,7 @@ export default function App() {
             setSelectedLineId('');
           }
         } else {
+          shedsRef.current = [];
           setSheds([]);
           setSelectedShedId('');
           setSelectedPartId('');
@@ -1515,6 +1546,7 @@ export default function App() {
       console.error('Create farm error:', err);
       showToast(err?.message || 'Failed to create farm on server. Please try again.');
     } finally {
+      isCreatingFarmRef.current = false;
       setIsCreatingFarm(false);
     }
   };
@@ -1588,6 +1620,18 @@ export default function App() {
       } catch {}
       return updated;
     });
+
+    // Cascade-revoke user farm access from current session (Task 3)
+    if (currentUser && currentUser.assignedFarms) {
+      const deletedFarmObj = (farmsList || []).find(f => f.id === farmId);
+      const deletedName = deletedFarmObj?.name || options?.confirmFarmName || '';
+      const updatedAssigned = currentUser.assignedFarms.filter(af => af !== farmId && af !== deletedName);
+      const updatedUser = { ...currentUser, assignedFarms: updatedAssigned };
+      setCurrentUser(updatedUser);
+      try {
+        localStorage.setItem('poultry_current_user', JSON.stringify(updatedUser));
+      } catch {}
+    }
 
     // 2. Handle Currently Selected Farm Fallback:
     const remainingActive = nextFarms.filter(f => !f.isArchived);
@@ -2101,11 +2145,10 @@ export default function App() {
 
       // Immediately persist to local storage outside of React state updater
       if (activeFarmId) {
+        const lineWeights = nextSheds.find(s => s.id === currentShed.id)?.parts?.find(p => p.id === currentPart.id)?.lines?.find(l => String(l.id) === String(currentLine.id))?.weights || [];
+        localStorage.setItem(`flock_draft_${activeFarmId}_${ageWeek}_${currentShed.id}_${currentPart.id}_${currentLine.id}`, JSON.stringify({ weights: lineWeights }));
         localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
-        localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
         localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
-        localStorage.setItem(`poultry_farm_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
-        localStorage.setItem(`poultry_sheds_${activeFarmId}`, JSON.stringify(nextSheds));
       }
 
       // 2. Automatically mark session as DRAFT
@@ -2156,11 +2199,10 @@ export default function App() {
     setSheds(nextSheds);
 
     if (activeFarmId) {
+      const lineWeights = nextSheds.find(s => s.id === currentShed.id)?.parts?.find(p => p.id === currentPart.id)?.lines?.find(l => String(l.id) === String(currentLine.id))?.weights || [];
+      localStorage.setItem(`flock_draft_${activeFarmId}_${ageWeek}_${currentShed.id}_${currentPart.id}_${currentLine.id}`, JSON.stringify({ weights: lineWeights }));
       localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
-      localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
       localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
-      localStorage.setItem(`poultry_farm_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
-      localStorage.setItem(`poultry_sheds_${activeFarmId}`, JSON.stringify(nextSheds));
     }
 
     // 2. Automatically mark session as DRAFT
@@ -2190,11 +2232,9 @@ export default function App() {
       shedsRef.current = nextSheds;
       setSheds(nextSheds);
       if (activeFarmId) {
+        localStorage.setItem(`flock_draft_${activeFarmId}_${ageWeek}_${currentShed.id}_${currentPart.id}_${currentLine.id}`, JSON.stringify({ weights: [] }));
         localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
-        localStorage.setItem(`poultry_draft_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, updatedAt: Date.now() }));
         localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
-        localStorage.setItem(`poultry_farm_${activeFarmId}`, JSON.stringify({ sheds: nextSheds, farmName, date, ageWeek, season }));
-        localStorage.setItem(`poultry_sheds_${activeFarmId}`, JSON.stringify(nextSheds));
       }
       showToast(`Cleared weights in ${currentLine.name}`);
       markSessionAsDraft('Cleared line weights');
@@ -2691,11 +2731,21 @@ export default function App() {
 
   // --- SHED CREATION & EDITING ---
   const handleAddShed = () => {
-    if (!newShedName.trim()) return;
+    const trimmed = newShedName.trim();
+    if (!trimmed) return;
+    if (isAddingShedRef.current) return;
+
+    // Prevent duplicate shed names (Task 4)
+    if (sheds.some(s => s.name.trim().toLowerCase() === trimmed.toLowerCase())) {
+      showToast(`A shed named "${trimmed}" already exists.`);
+      return;
+    }
+
+    isAddingShedRef.current = true;
     const newId = String(Date.now());
     const newShed: ShedData = {
       id: newId,
-      name: newShedName.trim(),
+      name: trimmed,
       sheetName: `Shed ${sheds.length + 1}`,
       type: newShedType,
       parts: [
@@ -2706,7 +2756,11 @@ export default function App() {
         }
       ]
     };
-    setSheds(prev => [...prev, newShed]);
+    setSheds(prev => {
+      const updated = [...prev, newShed];
+      shedsRef.current = updated;
+      return updated;
+    });
     setSelectedShedId(newId);
     setSelectedPartId(newShed.parts[0].id);
     setSelectedLineId(1);
@@ -2716,32 +2770,153 @@ export default function App() {
     markSessionAsDraft('Added shed');
 
     setSyncStatus('saving');
-    cloudApi.addShed({ farmId: activeFarmId, name: newShedName.trim(), type: newShedType })
+    cloudApi.addShed({ farmId: activeFarmId, name: trimmed, type: newShedType })
       .then((createdShed) => {
         if (createdShed?.id) {
-          setSheds(prev => prev.map(s => s.id === newId ? { ...s, id: createdShed.id, parts: createdShed.parts || s.parts } : s));
+          setSheds(prev => {
+            const updated = prev.map(s => s.id === newId ? { ...s, id: createdShed.id, parts: createdShed.parts || s.parts } : s);
+            shedsRef.current = updated;
+            return updated;
+          });
           setSelectedShedId(createdShed.id);
         }
         setSyncStatus('synced');
         setLastUpdatedString('Updated Just now');
       })
-      .catch(() => setSyncStatus('offline'));
+      .catch(() => setSyncStatus('offline'))
+      .finally(() => {
+        isAddingShedRef.current = false;
+      });
   };
 
   const handleStartEditShed = (shed: ShedData) => {
+    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
+      showToast('Permission Denied: Completed submissions cannot be modified.');
+      return;
+    }
     setEditingShed({ id: shed.id, name: shed.name, type: shed.type });
   };
 
   const handleSaveEditShed = () => {
     if (!editingShed || !editingShed.name.trim()) return;
+    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
+      showToast('Permission Denied: Completed submissions cannot be modified.');
+      setEditingShed(null);
+      return;
+    }
     const trimmed = editingShed.name.trim();
     const shedId = editingShed.id;
     const shedType = editingShed.type;
-    setSheds(prev => prev.map(s => s.id === shedId ? { ...s, name: trimmed, type: shedType } : s));
+
+    if (sheds.some(s => s.id !== shedId && s.name.trim().toLowerCase() === trimmed.toLowerCase())) {
+      showToast(`A shed named "${trimmed}" already exists.`);
+      return;
+    }
+
+    const updated = sheds.map(s => s.id === shedId ? { ...s, name: trimmed, type: shedType } : s);
+    setSheds(updated);
+    shedsRef.current = updated;
+
+    if (activeFarmId) {
+      localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: updated, updatedAt: Date.now() }));
+      localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: updated, farmName, date, ageWeek, season }));
+    }
+
     showToast(`Saved ${trimmed}`);
     setEditingShed(null);
+    markSessionAsDraft('Renamed shed');
 
-    cloudApi.updateShed(shedId, { name: trimmed, type: shedType }).catch(() => {});
+    setSyncStatus('saving');
+    cloudApi.updateShed(shedId, { name: trimmed, type: shedType }, ageWeek)
+      .then(() => setSyncStatus('synced'))
+      .catch((err) => {
+        console.warn('Backend updateShed failed:', err);
+        setSyncStatus('offline');
+      });
+  };
+
+  const handleDeleteShed = (shedId: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
+      showToast('Permission Denied: Completed submissions cannot be modified.');
+      return;
+    }
+    if (sheds.length <= 1) {
+      showToast('Cannot delete shed: A farm must have at least 1 shed.');
+      return;
+    }
+    const target = sheds.find(s => s.id === shedId);
+    if (!target) return;
+
+    // Calculate total weights in this shed
+    const totalWeights = (target.parts || []).reduce(
+      (acc, p) => acc + (p.lines || []).reduce((lAcc, l) => lAcc + (l.weights?.length || 0), 0),
+      0
+    );
+
+    if (totalWeights === 0) {
+      executeDeleteShed(shedId);
+    } else {
+      setShedPendingDelete({ id: target.id, name: target.name, totalWeights });
+    }
+  };
+
+  const executeDeleteShed = (shedId: string) => {
+    const target = sheds.find(s => s.id === shedId);
+    const shedName = target?.name || 'Shed';
+    const remainingSheds = sheds.filter(s => s.id !== shedId);
+
+    // Clean up local line drafts for this shed
+    if (activeFarmId && target) {
+      (target.parts || []).forEach(p => {
+        (p.lines || []).forEach(l => {
+          localStorage.removeItem(`flock_draft_${activeFarmId}_${ageWeek}_${target.id}_${p.id}_${l.id}`);
+          localStorage.removeItem(`flock_draft_${activeFarmId}_${target.id}_${p.id}_${l.id}`);
+        });
+      });
+    }
+
+    setSheds(remainingSheds);
+    shedsRef.current = remainingSheds;
+
+    if (selectedShedId === shedId) {
+      const fallback = remainingSheds[0];
+      if (fallback) {
+        setSelectedShedId(fallback.id);
+        const firstPart = fallback.parts?.[0];
+        if (firstPart) {
+          setSelectedPartId(firstPart.id);
+          setSelectedLineId(firstPart.lines?.[0]?.id || 1);
+        } else {
+          setSelectedPartId('');
+          setSelectedLineId('');
+        }
+      } else {
+        setSelectedShedId('');
+        setSelectedPartId('');
+        setSelectedLineId('');
+      }
+    }
+
+    if (activeFarmId) {
+      localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: remainingSheds, updatedAt: Date.now() }));
+      localStorage.setItem(`poultry_farm_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: remainingSheds, farmName, date, ageWeek, season }));
+    }
+
+    setShedPendingDelete(null);
+    showToast(`${shedName} deleted.`);
+    markSessionAsDraft('Deleted shed');
+
+    setSyncStatus('saving');
+    cloudApi.deleteShed(shedId, ageWeek)
+      .then(() => setSyncStatus('synced'))
+      .catch((err) => {
+        console.warn('Backend deleteShed failed:', err);
+        setSyncStatus('offline');
+      });
   };
 
   // --- COMPLETE 13-SHEET WORKBOOK EXPORT ---
@@ -2991,9 +3166,11 @@ export default function App() {
                       const wStatus = weekStatusMap?.[w];
                       const statusIcon = wStatus === 'COMPLETED' ? '🟢' : '🟡';
                       const statusText = wStatus === 'COMPLETED' ? 'COMPLETED' : 'DRAFT';
+                      const farmAnchor = currentActiveFarmSummary || { flockDate: date, ageWeek };
+                      const initialWeek = currentActiveFarmSummary?.startWeekNumber || currentActiveFarmSummary?.initialAgeWeek || currentActiveFarmSummary?.startingWeek || currentActiveFarmSummary?.ageWeek;
                       return (
                         <option key={w} value={w} className="text-slate-900 bg-white py-1">
-                          {w} — {statusIcon} {formatRecordingWeekLabel(w, currentActiveFarmSummary?.flockDate || date)} ({statusText})
+                          {w} — {statusIcon} {formatRecordingWeekLabel(w, farmAnchor, initialWeek)} ({statusText})
                         </option>
                       );
                     })}
@@ -3006,7 +3183,11 @@ export default function App() {
                 {/* Active Recording Period Date Range & Status Strip */}
                 <div className="mt-1.5 flex items-center justify-between text-[11px] text-emerald-900 bg-emerald-50/60 px-2.5 py-1.5 rounded-lg border border-emerald-100 flex-wrap gap-1">
                   <span className="font-semibold truncate min-w-0 flex-1">
-                    {formatRecordingWeekLabel(ageWeek, currentActiveFarmSummary?.flockDate || date)}
+                    {formatRecordingWeekLabel(
+                      ageWeek,
+                      currentActiveFarmSummary || { flockDate: date, ageWeek },
+                      currentActiveFarmSummary?.startWeekNumber || currentActiveFarmSummary?.initialAgeWeek || currentActiveFarmSummary?.startingWeek || currentActiveFarmSummary?.ageWeek
+                    )}
                   </span>
                   <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-100/80 text-emerald-800 shrink-0">
                     {weekStatusMap?.[ageWeek] === 'COMPLETED' ? '🟢 Completed' : '🟡 In-Progress'}
@@ -3083,12 +3264,12 @@ export default function App() {
                   : shedGenderFilter === 'FEMALE'
                     ? sheds.filter(s => s.type !== 'Male')
                     : sheds.filter(s => s.type === 'Male')
-                ).map(s => {
+                ).map((s, sIdx) => {
                   const sStd = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
                   const sStats = calculateFlockStats((s.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || [])), sStd, weekNum);
                   return (
                     <div
-                      key={s.id}
+                      key={`${s.id || sIdx}-${s.name}-${sIdx}`}
                       className="w-full bg-white hover:bg-slate-50/70 p-4 rounded-2xl border border-slate-200 flex flex-col justify-between gap-3 shadow-xs transition"
                     >
                       <div>
@@ -3097,9 +3278,39 @@ export default function App() {
                           className="flex items-center justify-between gap-2 mb-2 cursor-pointer"
                           onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
                         >
-                          <span className="font-black text-base text-slate-900 hover:text-emerald-600 transition truncate">
-                            {s.name}
-                          </span>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-black text-base text-slate-900 hover:text-emerald-600 transition truncate">
+                              {s.name}
+                            </span>
+                            {farmStatus !== 'COMPLETED' && (
+                              <div className="flex items-center gap-0.5 ml-1 shrink-0" onClick={e => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleStartEditShed(s);
+                                  }}
+                                  className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md transition cursor-pointer"
+                                  title="Rename Shed"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                </button>
+                                {sheds.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteShed(s.id, e);
+                                    }}
+                                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
+                                    title="Delete Shed"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 ${
                             s.type === 'Male'
                               ? 'bg-blue-50 text-blue-700 border-blue-200'
@@ -3862,9 +4073,11 @@ export default function App() {
                     {Array.from({ length: 24 }, (_, i) => `W${i + 1}`).map(w => {
                       const wStatus = weekStatusMap?.[w];
                       const icon = wStatus === 'COMPLETED' ? '🟢' : '🟡';
+                      const farmAnchor = currentActiveFarmSummary || { flockDate: date, ageWeek };
+                      const initialWeek = currentActiveFarmSummary?.startWeekNumber || currentActiveFarmSummary?.initialAgeWeek || currentActiveFarmSummary?.startingWeek || currentActiveFarmSummary?.ageWeek;
                       return (
                         <option key={w} value={w}>
-                          {w} — {icon} {formatRecordingWeekLabel(w, currentActiveFarmSummary?.flockDate || date)}
+                          {w} — {icon} {formatRecordingWeekLabel(w, farmAnchor, initialWeek)}
                         </option>
                       );
                     })}
@@ -3962,9 +4175,17 @@ export default function App() {
               <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex items-center justify-between text-xs font-bold text-slate-700">
                 <span className="flex items-center gap-1.5">
                   <Layers className="w-4 h-4 text-emerald-600" />
-                  <span>Shed-Wise Conclusion Breakdown ({consolidated.shedSummaries.length} Sheds)</span>
+                  <span>
+                    {consolidated.shedSummaries.length > 0
+                      ? `Shed-Wise Conclusion Breakdown (${consolidated.shedSummaries.length} Sheds)`
+                      : 'Shed-Wise Conclusion Breakdown'}
+                  </span>
                 </span>
-                <span className="text-[10px] text-slate-500">Shed 1 to 10 Individual Results</span>
+                <span className="text-[10px] text-slate-500">
+                  {consolidated.shedSummaries.length > 0
+                    ? `${consolidated.shedSummaries.length} Evaluated Shed Results`
+                    : 'Evaluated Shed Results'}
+                </span>
               </div>
 
               <div className="overflow-x-auto max-h-60 overflow-y-auto">
@@ -4681,6 +4902,59 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
+        {/* MODAL: CONFIRM DELETE SHED                                */}
+        {/* ========================================================= */}
+        {shedPendingDelete && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl border border-rose-200">
+                  <Trash2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base text-slate-900">Delete {shedPendingDelete.name}?</h3>
+                  <p className="text-xs text-slate-500">
+                    {shedPendingDelete.totalWeights > 0
+                      ? `Contains ${shedPendingDelete.totalWeights} weighed birds across its lines`
+                      : 'No bird weights recorded'}
+                  </p>
+                </div>
+              </div>
+
+              {shedPendingDelete.totalWeights > 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <p className="text-xs font-semibold text-amber-900 leading-relaxed">
+                    This shed contains bird-weight records. Deleting it will permanently remove all associated weights.
+                  </p>
+                </div>
+              )}
+
+              <p className="text-xs text-rose-800 bg-rose-50 p-3 rounded-xl border border-rose-200 leading-relaxed">
+                Delete this Shed and all its parts, lines, and weights? This action cannot be undone.
+              </p>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShedPendingDelete(null)}
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => executeDeleteShed(shedPendingDelete.id)}
+                  className="flex-1 bg-rose-600 hover:bg-rose-700 py-2.5 rounded-xl text-xs font-black text-white shadow-md shadow-rose-600/20 active:scale-95 transition cursor-pointer"
+                >
+                  Yes, Delete Shed
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
         {/* MODAL: RENAME PART                                        */}
         {/* ========================================================= */}
         {editingPart && (
@@ -5136,19 +5410,31 @@ export default function App() {
               {/* Farm Switcher within Audit Modal */}
               <div>
                 <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">
-                  Audit Target Farm (Switch Location)
+                  {['Supervisor', 'In-Charge', 'Incharge'].includes(currentUserRole) ? 'Assigned Farm Unit' : 'Audit Target Farm (Switch Location)'}
                 </label>
-                <select
-                  value={activeFarmId}
-                  onChange={(e) => switchFarm(e.target.value)}
-                  className="w-full bg-slate-50 font-bold text-xs text-slate-900 rounded-xl px-3 py-2 border border-slate-300 focus:outline-none focus:border-emerald-600 cursor-pointer"
-                >
-                  {farmsList.map((farm) => (
-                    <option key={farm.id} value={farm.id}>
-                      {farm.name} ({farm.ageWeek})
-                    </option>
-                  ))}
-                </select>
+                {['Supervisor', 'In-Charge', 'Incharge'].includes(currentUserRole) ? (
+                  <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-100 border border-slate-200 rounded-xl">
+                    <div className="flex items-center gap-2">
+                      <Lock className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-xs font-bold text-slate-800">{farmName || 'Assigned Farm'} ({ageWeek})</span>
+                    </div>
+                    <span className="text-[10px] font-semibold text-slate-500 bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                      Assigned Unit
+                    </span>
+                  </div>
+                ) : (
+                  <select
+                    value={activeFarmId}
+                    onChange={(e) => switchFarm(e.target.value)}
+                    className="w-full bg-slate-50 font-bold text-xs text-slate-900 rounded-xl px-3 py-2 border border-slate-300 focus:outline-none focus:border-emerald-600 cursor-pointer"
+                  >
+                    {farmsList.map((farm) => (
+                      <option key={farm.id} value={farm.id}>
+                        {farm.name} ({farm.ageWeek})
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
                 {/* Audit Summary Card */}

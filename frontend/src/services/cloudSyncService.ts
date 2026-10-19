@@ -74,6 +74,10 @@ export interface FarmSummary {
   _count?: { sheds: number; submissions?: number };
   audit?: FarmAudit;
   submissions?: any[];
+  startDate?: string;
+  startWeekNumber?: number;
+  startingWeek?: string;
+  initialAgeWeek?: string;
 }
 
 export interface FullFarmData {
@@ -94,6 +98,10 @@ export interface FullFarmData {
   sheds: ShedData[];
   audit?: FarmAudit;
   submissions?: any[];
+  startDate?: string;
+  startWeekNumber?: number;
+  startingWeek?: string;
+  initialAgeWeek?: string;
 }
 
 export interface DeleteImpactResult {
@@ -306,49 +314,65 @@ export const cloudApi = {
   },
 
   // 6. Push single weight entry
-  async pushWeight(lineId: string | number, weight: number, meta?: { userName?: string; userId?: string }): Promise<any> {
-    const res = await fetch(`${getApiBaseUrl()}/lines/${lineId}/weight`, {
+  async pushWeight(lineId: string | number, weight: number, meta?: { userName?: string; userId?: string; week?: string }): Promise<any> {
+    const query = meta?.week ? `?week=${encodeURIComponent(meta.week)}` : '';
+    const res = await fetch(`${getApiBaseUrl()}/lines/${lineId}/weight${query}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ weight, userName: meta?.userName, userId: meta?.userId }),
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ weight, userName: meta?.userName, userId: meta?.userId, week: meta?.week }),
     });
-    if (!res.ok) throw new Error(`Failed to push weight (${res.status})`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to push weight (${res.status})`);
+    }
     return res.json();
   },
 
   // 7. Delete weight entry by index
-  async deleteWeight(lineId: string | number, index: number): Promise<any> {
-    const res = await fetch(`${getApiBaseUrl()}/lines/${lineId}/weight/${index}`, {
+  async deleteWeight(lineId: string | number, index: number, week?: string): Promise<any> {
+    const query = week ? `?week=${encodeURIComponent(week)}` : '';
+    const res = await fetch(`${getApiBaseUrl()}/lines/${lineId}/weight/${index}${query}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
-    if (!res.ok) throw new Error(`Failed to delete weight (${res.status})`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to delete weight (${res.status})`);
+    }
     return res.json();
   },
 
   // 8. Clear all weights in a line
-  async clearLineWeights(lineId: string | number): Promise<any> {
-    const res = await fetch(`${getApiBaseUrl()}/lines/${lineId}/clear`, {
+  async clearLineWeights(lineId: string | number, week?: string): Promise<any> {
+    const query = week ? `?week=${encodeURIComponent(week)}` : '';
+    const res = await fetch(`${getApiBaseUrl()}/lines/${lineId}/clear${query}`, {
       method: 'POST',
+      headers: getAuthHeaders(),
     });
-    if (!res.ok) throw new Error(`Failed to clear line weights (${res.status})`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to clear line weights (${res.status})`);
+    }
     return res.json();
   },
 
   // 9. Add new shed
-  async addShed(data: { farmId: string; name: string; type: 'Female' | 'Male'; order?: number }): Promise<any> {
-    const res = await fetch(`${getApiBaseUrl()}/sheds`, {
+  async addShed(data: { farmId: string; name: string; type: 'Female' | 'Male'; order?: number }, week?: string): Promise<any> {
+    const query = week ? `?week=${encodeURIComponent(week)}` : '';
+    const res = await fetch(`${getApiBaseUrl()}/sheds${query}`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify(data),
+      body: JSON.stringify({ ...data, week }),
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(result.error || `Failed to add shed (${res.status})`);
     return result;
   },
 
-  // 10. Delete shed
-  async deleteShed(shedId: string): Promise<boolean> {
-    const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}`, {
+  // 10. Delete shed (cascade deletes parts, lines & weights)
+  async deleteShed(shedId: string, week?: string): Promise<boolean> {
+    const query = week ? `?week=${encodeURIComponent(week)}` : '';
+    const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}${query}`, {
       method: 'DELETE',
       headers: getAuthHeaders(),
     });
@@ -360,11 +384,12 @@ export const cloudApi = {
   },
 
   // 11. Rename / change type of shed
-  async updateShed(shedId: string, data: { name?: string; type?: 'Female' | 'Male' }): Promise<any> {
-    const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}`, {
+  async updateShed(shedId: string, data: { name?: string; type?: 'Female' | 'Male' }, week?: string): Promise<any> {
+    const query = week ? `?week=${encodeURIComponent(week)}` : '';
+    const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}${query}`, {
       method: 'PUT',
       headers: getAuthHeaders(),
-      body: JSON.stringify(data),
+      body: JSON.stringify({ ...data, week }),
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(result.error || `Failed to update shed (${res.status})`);
@@ -446,7 +471,7 @@ export const cloudApi = {
   }): Promise<FullFarmData> {
     const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/sync`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
     if (!res.ok) throw new Error(`Full sync failed (${res.status})`);

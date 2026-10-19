@@ -216,8 +216,9 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             {/* Farm Access Selector */}
             <div className="bg-slate-900 p-4 rounded-2xl border border-slate-700 shadow-md">
               <div className="flex items-center justify-between mb-2">
-                <label className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
-                  Assigned Farm Unit {assignedFarms.length > 1 && `(${assignedFarms.length} Available)`}
+                <label className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider flex items-center gap-1.5">
+                  <Lock className="w-3 h-3 text-emerald-400" />
+                  <span>Assigned Farm Unit (Locked)</span>
                 </label>
                 <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 ${
                   farmStatus === 'COMPLETED'
@@ -252,28 +253,14 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 </span>
               </div>
 
-              {assignedFarms.length > 1 ? (
-                <select
-                  value={activeFarm.id}
-                  onChange={(e) => onSelectFarm(e.target.value)}
-                  className="w-full bg-slate-950 text-emerald-400 font-bold text-xs rounded-xl px-3.5 py-2.5 border border-slate-700 focus:outline-none focus:border-emerald-500 cursor-pointer"
-                >
-                  {assignedFarms.map((farm) => (
-                    <option key={farm.id} value={farm.id}>
-                      {farm.name} ({farm.ageWeek}) — {farm.status === 'COMPLETED' ? '🟢 COMPLETED' : '🟡 DRAFT'}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div className="flex items-center justify-between bg-slate-950 px-3.5 py-2.5 rounded-xl border border-slate-800">
-                  <span className="text-sm font-black text-emerald-400 truncate">
-                    {activeFarm.name}
-                  </span>
-                  <span className="text-xs text-slate-400 font-mono">
-                    {activeFarm.ageWeek} • {activeFarm.season}
-                  </span>
-                </div>
-              )}
+              <div className="flex items-center justify-between bg-slate-950 px-3.5 py-2.5 rounded-xl border border-slate-800">
+                <span className="text-sm font-black text-emerald-400 truncate">
+                  {activeFarm.name}
+                </span>
+                <span className="text-xs text-slate-400 font-mono">
+                  {activeFarm.ageWeek} • {activeFarm.season}
+                </span>
+              </div>
             </div>
 
             {/* Active Farm Quick Detail Card */}
@@ -329,7 +316,11 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 >
                   {Array.from({ length: 24 }, (_, i) => `W${i + 1}`).map((w) => {
                     const wStatus = weekStatusMap?.[w];
-                    const label = formatRecordingWeekLabel(w, activeFarm.flockDate);
+                    const label = formatRecordingWeekLabel(
+                      w,
+                      activeFarm,
+                      activeFarm.startWeekNumber || activeFarm.initialAgeWeek || activeFarm.startingWeek || activeFarm.ageWeek
+                    );
                     const statusText = wStatus === 'COMPLETED' ? '🟢 COMPLETED' : '🟡 DRAFT';
                     return (
                       <option key={w} value={w}>

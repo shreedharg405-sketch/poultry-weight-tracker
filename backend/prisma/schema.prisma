@@ -48,6 +48,8 @@ model Shed {
   order     Int      @default(0)
 
   parts     Part[]
+
+  @@unique([farmId, name])
 }
 
 model Part {

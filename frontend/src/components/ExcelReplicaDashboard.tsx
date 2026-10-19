@@ -710,11 +710,11 @@ export const ExcelReplicaDashboard: React.FC = () => {
 
           <div className="h-6 w-[1px] bg-slate-800 mx-1 shrink-0" />
 
-          {sheds.map((shed) => {
+          {sheds.map((shed, idx) => {
             const count = shed.lines.reduce((acc, l) => acc + l.weights.length, 0);
             return (
               <button
-                key={shed.id}
+                key={`${shed.id || idx}-${shed.name}-${idx}`}
                 onClick={() => {
                   setActiveTab(shed.id);
                   setSelectedLineId(shed.lines[0]?.id || 1);
@@ -903,7 +903,9 @@ export const ExcelReplicaDashboard: React.FC = () => {
                   <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
                   <span>Shed-Wise Conclusion Table</span>
                 </h3>
-                <p className="text-xs text-slate-400 mt-0.5">Shed 1 to 10 Consolidated Uniformity & Body Weight Analysis</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {sheds.length > 0 ? `${sheds.length} Sheds Consolidated Uniformity & Body Weight Analysis` : 'Consolidated Uniformity & Body Weight Analysis'}
+                </p>
               </div>
               <span className="text-xs bg-slate-800 text-slate-300 px-3 py-1 rounded-full font-mono">
                 {sheds.length} Sheds Total

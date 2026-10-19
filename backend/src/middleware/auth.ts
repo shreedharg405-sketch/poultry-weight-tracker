@@ -105,15 +105,25 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
  */
 export function canUserAccessFarm(user: AuthenticatedUser, farmId: string, farmName?: string): boolean {
   if (!user) return false;
-  // Admin and Manager can access all farms
-  if (user.role === 'Admin' || user.role === 'Manager') {
+  const role = (user.role || '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (role === 'ADMIN') {
     return true;
   }
-  // Check assignedFarms array
-  const assignments = (user.assignedFarms || []).map(a => a.toLowerCase().trim());
+
+  const assignments = [
+    ...(user.assignedFarms || []),
+    ...((user as any).assignedFarmId ? [(user as any).assignedFarmId] : []),
+    ...((user as any).assignedFarm ? [(user as any).assignedFarm] : [])
+  ].map(a => a.toLowerCase().trim());
+
   if (assignments.includes('*')) {
     return true;
   }
+
+  if (role === 'MANAGER') {
+    if (assignments.length === 0) return true;
+  }
+
   if (farmId && assignments.includes(farmId.toLowerCase().trim())) {
     return true;
   }

@@ -135,29 +135,140 @@ export function formatDMYDate(d: Date): string {
   return `${day}-${month}-${year}`;
 }
 
+export interface FarmDateAnchorInfo {
+  startDate?: string;
+  flockDate?: string;
+  createdAt?: string | Date;
+  startWeekNumber?: number;
+  startingWeek?: string | number;
+  initialAgeWeek?: string | number;
+  ageWeek?: string | number;
+  [key: string]: any;
+}
+
 /**
- * Calculates start and end dates for a recording week given a flock base date and week number.
- * Standard poultry business convention:
- * Day 1 of flock is Week 1 Day 1.
- * Week N starts at (N - 1) * 7 days after placement and ends at (N * 7 - 1) days after placement.
+ * Safely parses any date string, timestamp, or Date instance into a local calendar Date object.
+ * Properly parses YYYY-MM-DD and DD-MM-YYYY strings without UTC midnight shift bugs.
+ */
+export function parseDateInput(input?: string | number | Date | null): Date {
+  if (!input) return new Date();
+  if (input instanceof Date) {
+    return isNaN(input.getTime()) ? new Date() : input;
+  }
+  const str = String(input).trim();
+  if (!str) return new Date();
+
+  // Handle YYYY-MM-DD
+  const ymdMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (ymdMatch) {
+    const year = parseInt(ymdMatch[1], 10);
+    const month = parseInt(ymdMatch[2], 10) - 1;
+    const day = parseInt(ymdMatch[3], 10);
+    const d = new Date(year, month, day, 0, 0, 0);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // Handle DD-MM-YYYY
+  const dmyMatch = str.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const month = parseInt(dmyMatch[2], 10) - 1;
+    const year = parseInt(dmyMatch[3], 10);
+    const d = new Date(year, month, day, 0, 0, 0);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  const standard = new Date(str);
+  return isNaN(standard.getTime()) ? new Date() : standard;
+}
+
+/**
+ * Returns Monday (start of the week, 00:00:00) for any given Date according to Monday-Sunday week convention.
+ */
+export function getStartOfWeek(d: Date): Date {
+  const date = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
+  const day = date.getDay(); // 0 is Sun, 1 is Mon, ..., 6 is Sat
+  const diff = day === 0 ? -6 : 1 - day;
+  date.setDate(date.getDate() + diff);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+/**
+ * Adds an integer number of days to a Date.
+ */
+export function addDays(date: Date, days: number): Date {
+  const result = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+/**
+ * Safely parses a week number from any string or number representation (e.g. 'W4', 'Week 4', 4).
+ */
+export function parseWeekNumber(val: any): number {
+  if (typeof val === 'number' && !isNaN(val) && val > 0) return Math.floor(val);
+  if (typeof val === 'string') {
+    const num = parseInt(val.replace(/\D/g, ''), 10);
+    if (!isNaN(num) && num > 0) return num;
+  }
+  return 1;
+}
+
+/**
+ * Calculates start and end dates (Monday to Sunday) for a recording week.
+ *
+ * Anchor Calculation Logic:
+ * - Anchors the farm's initial/current week to the base date's Monday–Sunday dates.
+ * - Back-calculates past weeks (e.g. W1 to W3) by subtracting 7 days per week.
+ * - Projects future weeks (e.g. W5+) by adding 7 days per week.
+ *
+ * Example:
+ * Base date: 19-10-2026 (Monday), Start week: W4
+ * W4: 19-10-2026 to 25-10-2026
+ * W3: 12-10-2026 to 18-10-2026
+ * W2: 05-10-2026 to 11-10-2026
+ * W1: 28-09-2026 to 04-10-2026
+ * W5: 26-10-2026 to 01-11-2026
+ * W6: 02-11-2026 to 08-11-2026
  */
 export function getRecordingWeekDateRange(
-  flockDateStr?: string,
-  weekNum?: number
+  flockDateOrFarm?: string | Date | FarmDateAnchorInfo | null,
+  weekNum?: number | string,
+  initialWeek?: number | string
 ): { startDate: string; endDate: string; startDateStr: string; endDateStr: string; year: number } {
-  const safeWeek = Math.max(1, weekNum || 1);
-  const now = new Date();
-  const base = flockDateStr ? new Date(flockDateStr) : now;
-  const validBase = isNaN(base.getTime()) ? now : base;
+  let dateInput: string | Date | undefined;
+  let startWeekNum: number = 1;
 
-  const startDayOffset = (safeWeek - 1) * 7;
-  const endDayOffset = safeWeek * 7 - 1;
+  if (flockDateOrFarm && typeof flockDateOrFarm === 'object' && !(flockDateOrFarm instanceof Date)) {
+    const farm = flockDateOrFarm as FarmDateAnchorInfo;
+    dateInput = farm.startDate || farm.flockDate || (typeof farm.createdAt === 'string' ? farm.createdAt : undefined);
+    if (!dateInput && farm.createdAt instanceof Date) {
+      dateInput = farm.createdAt;
+    }
+    const resolvedInitial =
+      initialWeek ??
+      farm.startWeekNumber ??
+      farm.startingWeek ??
+      farm.initialAgeWeek ??
+      farm.ageWeek;
+    startWeekNum = parseWeekNumber(resolvedInitial);
+  } else {
+    dateInput = flockDateOrFarm as string | Date | undefined;
+    startWeekNum = parseWeekNumber(initialWeek);
+  }
 
-  const start = new Date(validBase.getTime() + startDayOffset * 86400000);
-  const end = new Date(validBase.getTime() + endDayOffset * 86400000);
+  const targetWeekNum = parseWeekNumber(weekNum);
+  const parsedDate = parseDateInput(dateInput);
+  const currentWeekMonday = getStartOfWeek(parsedDate);
+
+  const weekDiff = targetWeekNum - startWeekNum;
+  const start = addDays(currentWeekMonday, weekDiff * 7);
+  const end = addDays(start, 6);
 
   const sStr = formatDMYDate(start);
   const eStr = formatDMYDate(end);
+
   return {
     startDate: sStr,
     endDate: eStr,
@@ -168,15 +279,31 @@ export function getRecordingWeekDateRange(
 }
 
 /**
+ * Re-export alias for getRecordingWeekDateRange
+ */
+export const getWeekDateRange = getRecordingWeekDateRange;
+
+/**
  * Returns an unambiguous label for a recording week including week number, year, and dates.
  */
 export function formatRecordingWeekLabel(
-  ageWeek: string,
-  flockDateStr?: string
+  ageWeek: string | number,
+  flockDateOrFarm?: string | Date | FarmDateAnchorInfo | null,
+  initialAgeWeek?: string | number
 ): string {
-  const weekNum = parseInt(ageWeek.replace(/\D/g, ''), 10) || 18;
-  const { startDateStr, endDateStr, year } = getRecordingWeekDateRange(flockDateStr, weekNum);
-  return `Week ${weekNum} (${ageWeek}) • ${startDateStr} to ${endDateStr} (${year})`;
+  const weekNum = parseWeekNumber(ageWeek);
+  const weekLabel =
+    typeof ageWeek === 'string' && ageWeek.trim().toUpperCase().startsWith('W')
+      ? ageWeek.trim().toUpperCase()
+      : `W${weekNum}`;
+
+  const { startDateStr, endDateStr, year } = getRecordingWeekDateRange(
+    flockDateOrFarm,
+    weekNum,
+    initialAgeWeek
+  );
+
+  return `Week ${weekNum} (${weekLabel}) • ${startDateStr} to ${endDateStr} (${year})`;
 }
 
 /**
@@ -196,7 +323,7 @@ export function mergeServerShedsWithLocalDraft(
 
   let draftSheds: ShedData[] = [];
   if (farmId && typeof localStorage !== 'undefined') {
-    // 1. Try week-specific draft key first
+    // 1. Strictly load week-scoped draft key when week is provided
     if (week) {
       try {
         const weekDraftStr = localStorage.getItem(`poultry_draft_${farmId}_${week}`);
@@ -214,10 +341,8 @@ export function mergeServerShedsWithLocalDraft(
           }
         } catch {}
       }
-    }
-
-    // 2. Fall back to farm-level draft key if week key was not found
-    if (draftSheds.length === 0) {
+    } else {
+      // Only when week is not specified, fall back to farm-level draft key
       try {
         const draftStr = localStorage.getItem(`poultry_draft_${farmId}`);
         if (draftStr) {
@@ -225,27 +350,33 @@ export function mergeServerShedsWithLocalDraft(
           if (Array.isArray(parsed?.sheds)) draftSheds = parsed.sheds;
         }
       } catch {}
-    }
-    if (draftSheds.length === 0) {
-      try {
-        const farmStr = localStorage.getItem(`poultry_farm_${farmId}`);
-        if (farmStr) {
-          const parsed = JSON.parse(farmStr);
-          if (Array.isArray(parsed?.sheds)) draftSheds = parsed.sheds;
-        }
-      } catch {}
+      if (draftSheds.length === 0) {
+        try {
+          const farmStr = localStorage.getItem(`poultry_farm_${farmId}`);
+          if (farmStr) {
+            const parsed = JSON.parse(farmStr);
+            if (Array.isArray(parsed?.sheds)) draftSheds = parsed.sheds;
+          }
+        } catch {}
+      }
     }
   }
 
-  // Combine localSheds and draftSheds into a comprehensive candidate set
+  // Combine localSheds and draftSheds into candidate set strictly scoped to farmId and current week
   const localList = Array.isArray(localSheds) ? localSheds : [];
-  const allLocalCandidateSheds = [...localList];
-  for (const ds of draftSheds) {
-    const existing = allLocalCandidateSheds.find(
-      s => s.id === ds.id || (s.name && ds.name && s.name.trim().toLowerCase() === ds.name.trim().toLowerCase())
-    );
+
+  // Strictly filter localSheds: only keep sheds whose id matches a serverShed or draftShed belonging to this farm
+  const scopedLocalSheds = localList.filter(ls => {
+    if (!farmId) return true;
+    if ((ls as any).farmId) return (ls as any).farmId === farmId;
+    return serverSheds.some(ss => ss.id === ls.id) || draftSheds.some(ds => ds.id === ls.id);
+  });
+
+  const allLocalCandidateSheds = [...draftSheds];
+  for (const ls of scopedLocalSheds) {
+    const existing = allLocalCandidateSheds.find(s => s.id === ls.id);
     if (!existing) {
-      allLocalCandidateSheds.push(ds);
+      allLocalCandidateSheds.push(ls);
     }
   }
 
@@ -254,9 +385,8 @@ export function mergeServerShedsWithLocalDraft(
   }
 
   const merged = serverSheds.map(serverShed => {
-    const localShed = allLocalCandidateSheds.find(
-      ls => ls.id === serverShed.id || (ls.name && serverShed.name && ls.name.trim().toLowerCase() === serverShed.name.trim().toLowerCase())
-    );
+    // Strictly match shed by ID, never by generic name like "Shed 1"
+    const localShed = allLocalCandidateSheds.find(ls => ls.id === serverShed.id);
 
     if (!localShed) return serverShed;
 
@@ -271,9 +401,8 @@ export function mergeServerShedsWithLocalDraft(
     }
 
     const mergedParts = serverParts.map(serverPart => {
-      const localPart = localParts.find(
-        lp => lp.id === serverPart.id || (lp.name && serverPart.name && lp.name.trim().toLowerCase() === serverPart.name.trim().toLowerCase())
-      );
+      // Strictly match part by ID
+      const localPart = localParts.find(lp => lp.id === serverPart.id);
 
       if (!localPart) return serverPart;
 
@@ -285,23 +414,16 @@ export function mergeServerShedsWithLocalDraft(
       }
 
       const mergedLines = serverLines.map(serverLine => {
-        const localLine = localLines.find(
-          ll => String(ll.id) === String(serverLine.id) || (ll.name && serverLine.name && ll.name.trim().toLowerCase() === serverLine.name.trim().toLowerCase())
-        );
+        // Strictly match line by ID
+        const localLine = localLines.find(ll => String(ll.id) === String(serverLine.id));
 
-        // Also check if draftShed has weights or was cleared for this line
+        // Check if draftShed has weights or was cleared for this line
         let draftLineWeights: number[] = [];
         let isDraftCleared = false;
         if (farmId) {
-          const matchedDraftShed = draftSheds.find(
-            ds => ds.id === serverShed.id || (ds.name && serverShed.name && ds.name.trim().toLowerCase() === serverShed.name.trim().toLowerCase())
-          );
-          const matchedDraftPart = matchedDraftShed?.parts?.find(
-            dp => dp.id === serverPart.id || (dp.name && serverPart.name && dp.name.trim().toLowerCase() === serverPart.name.trim().toLowerCase())
-          );
-          const matchedDraftLine = matchedDraftPart?.lines?.find(
-            dl => String(dl.id) === String(serverLine.id) || (dl.name && serverLine.name && dl.name.trim().toLowerCase() === serverLine.name.trim().toLowerCase())
-          );
+          const matchedDraftShed = draftSheds.find(ds => ds.id === serverShed.id);
+          const matchedDraftPart = matchedDraftShed?.parts?.find(dp => dp.id === serverPart.id);
+          const matchedDraftLine = matchedDraftPart?.lines?.find(dl => String(dl.id) === String(serverLine.id));
           if (matchedDraftLine) {
             if (Array.isArray(matchedDraftLine.weights) && matchedDraftLine.weights.length > 0) {
               draftLineWeights = matchedDraftLine.weights;
@@ -312,19 +434,42 @@ export function mergeServerShedsWithLocalDraft(
           }
         }
 
+        // Check composite-scoped draft key: flock_draft_${farmId}_${week}_${shedId}_${partId}_${lineId}
+        let lineScopedDraftWeights: number[] = [];
+        if (farmId && typeof localStorage !== 'undefined') {
+          try {
+            const lineKey = week
+              ? `flock_draft_${farmId}_${week}_${serverShed.id}_${serverPart.id}_${serverLine.id}`
+              : `flock_draft_${farmId}_${serverShed.id}_${serverPart.id}_${serverLine.id}`;
+            const lineVal = localStorage.getItem(lineKey);
+            if (lineVal) {
+              const parsedLineVal = JSON.parse(lineVal);
+              if (Array.isArray(parsedLineVal?.weights)) {
+                lineScopedDraftWeights = parsedLineVal.weights;
+              } else if (Array.isArray(parsedLineVal)) {
+                lineScopedDraftWeights = parsedLineVal;
+              }
+            }
+          } catch {}
+        }
+
         const localWeights = Array.isArray(localLine?.weights) ? localLine.weights : [];
         const serverWeights = Array.isArray(serverLine.weights) ? serverLine.weights : [];
         const isLocallyCleared = Boolean(localLine?.clearedAt);
 
-        // Priority 1: local in-memory weights if non-empty
-        // Priority 2: intentional local deletion/clear (weights = []) -> MUST NOT be resurrected by stale server weights!
-        // Priority 3: stored local draft weights
-        // Priority 4: server weights for unweighed/untouched lines
+        // Priority 1: line-scoped draft weights (flock_draft_${farmId}_${week}_${shedId}_${partId}_${lineId})
+        // Priority 2: local in-memory weights if non-empty (and belong to scoped local shed)
+        // Priority 3: intentional local deletion/clear (weights = []) -> MUST NOT be resurrected by stale server weights!
+        // Priority 4: stored week draft weights (draftLineWeights)
+        // Priority 5: server weights for unweighed/untouched lines
         let weights = serverWeights;
         let clearedAt = localLine?.clearedAt || (isDraftCleared ? Date.now() : undefined);
         let updatedAt = localLine?.updatedAt;
 
-        if (localWeights.length > 0) {
+        if (lineScopedDraftWeights.length > 0) {
+          weights = lineScopedDraftWeights;
+          clearedAt = undefined;
+        } else if (localWeights.length > 0) {
           weights = localWeights;
           clearedAt = undefined;
         } else if (isLocallyCleared || isDraftCleared) {
@@ -348,7 +493,7 @@ export function mergeServerShedsWithLocalDraft(
       });
 
       const extraLocalLines = localLines.filter(
-        ll => !serverLines.some(sl => String(sl.id) === String(ll.id) || (sl.name && ll.name && sl.name.trim().toLowerCase() === ll.name.trim().toLowerCase()))
+        ll => !serverLines.some(sl => String(sl.id) === String(ll.id))
       );
 
       return {
@@ -358,7 +503,7 @@ export function mergeServerShedsWithLocalDraft(
     });
 
     const extraLocalParts = localParts.filter(
-      lp => !serverParts.some(sp => sp.id === lp.id || (sp.name && lp.name && sp.name.trim().toLowerCase() === lp.name.trim().toLowerCase()))
+      lp => !serverParts.some(sp => sp.id === lp.id)
     );
 
     return {
@@ -369,7 +514,7 @@ export function mergeServerShedsWithLocalDraft(
   });
 
   const extraLocalSheds = allLocalCandidateSheds.filter(
-    ls => !serverSheds.some(ss => ss.id === ls.id || (ss.name && ls.name && ss.name.trim().toLowerCase() === ls.name.trim().toLowerCase()))
+    ls => !serverSheds.some(ss => ss.id === ls.id)
   );
 
   return [...merged, ...extraLocalSheds];

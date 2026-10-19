@@ -181,6 +181,22 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   const [systemUsers, setSystemUsers] = useState<AppUser[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
   const [userMgmtFeedback, setUserMgmtFeedback] = useState<string | null>(null);
+  const [accountSearchQuery, setAccountSearchQuery] = useState('');
+
+  const filteredAccounts = useMemo(() => {
+    const q = accountSearchQuery.trim().toLowerCase();
+    if (!q) return systemUsers;
+    return systemUsers.filter(u => {
+      const nameMatch = Boolean(u.name && u.name.toLowerCase().includes(q));
+      const codeMatch = Boolean(
+        (u.employeeCode && u.employeeCode.toLowerCase().includes(q)) ||
+        (u.username && u.username.toLowerCase().includes(q))
+      );
+      const emailMatch = Boolean(u.email && u.email.toLowerCase().includes(q));
+      const roleMatch = Boolean(u.role && u.role.toLowerCase().includes(q));
+      return nameMatch || codeMatch || emailMatch || roleMatch;
+    });
+  }, [systemUsers, accountSearchQuery]);
 
   // Create User Form State
   const [showCreateUser, setShowCreateUser] = useState(false);
@@ -1325,6 +1341,11 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
             <div className="flex items-center justify-between shrink-0">
               <span className="text-xs text-slate-400 font-bold">
                 Total System Accounts: <strong className="text-white font-mono">{systemUsers.length}</strong>
+                {accountSearchQuery && (
+                  <span className="text-purple-400 font-normal ml-1.5">
+                    ({filteredAccounts.length} matching)
+                  </span>
+                )}
               </span>
               <button
                 type="button"
@@ -1339,6 +1360,28 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               </button>
             </div>
 
+            {/* Fast Account Search Bar (Task 6) */}
+            <div className="relative shrink-0">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search accounts by name, employee code, email, or role..."
+                value={accountSearchQuery}
+                onChange={e => setAccountSearchQuery(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-8 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500 transition"
+              />
+              {accountSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setAccountSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                  title="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
             {/* User List in Responsive Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 overflow-y-auto flex-1 pr-1">
               {isLoadingUsers ? (
@@ -1346,12 +1389,25 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                   <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
                   <span>Loading user accounts...</span>
                 </div>
-              ) : systemUsers.length === 0 ? (
+              ) : filteredAccounts.length === 0 ? (
                 <div className="col-span-full py-8 text-center text-xs text-slate-400 bg-slate-950 rounded-xl border border-slate-800">
-                  No accounts found. Tap "Create New User" to provision one.
+                  {accountSearchQuery ? (
+                    <div>
+                      <p className="font-semibold text-slate-300">No accounts match "{accountSearchQuery}".</p>
+                      <button
+                        type="button"
+                        onClick={() => setAccountSearchQuery('')}
+                        className="mt-2 text-purple-400 hover:underline text-[11px] cursor-pointer"
+                      >
+                        Reset search query
+                      </button>
+                    </div>
+                  ) : (
+                    'No accounts found. Tap "Create New User" to provision one.'
+                  )}
                 </div>
               ) : (
-                systemUsers.map((user) => {
+                filteredAccounts.map((user) => {
                   const isUserActive = user.status !== 'INACTIVE';
                   const roleColor = 
                     user.role === 'Admin' ? 'bg-purple-500/20 text-purple-300 border-purple-500/40' :
@@ -2208,6 +2264,8 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                                         <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400">
                                           <Clock className="w-3 h-3 text-slate-500" />
                                           <span>{formattedDate}</span>
+                                          <span>•</span>
+                                          <span>Farm: <strong className="text-slate-200">{sub.snapshotData?.farmName || sub.farmName || sub.metadata?.snapshotData?.farmName || sub.metadata?.farmName || sub.farm?.name || viewingFarm.name}</strong></span>
                                           <span>•</span>
                                           <span>Operator: <strong className="text-slate-200">{sub.submittedBy || sub.userName || 'Field Operator'}</strong></span>
                                         </div>

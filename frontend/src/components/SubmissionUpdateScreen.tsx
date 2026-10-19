@@ -410,7 +410,7 @@ export const SubmissionUpdateScreen: React.FC<SubmissionUpdateScreenProps> = ({
     );
   }
 
-  const farmDisplayName = submission?.farm?.name || submission?.farmName || 'Assigned Farm';
+  const farmDisplayName = submission?.snapshotData?.farmName || submission?.farmName || (submission as any)?.metadata?.snapshotData?.farmName || (submission as any)?.metadata?.farmName || submission?.farm?.name || 'Assigned Farm';
   const originalSubmitter = submission?.submitterName || 'Supervisor';
   const originalRole = submission?.submitterRole || 'Supervisor';
   const submittedAtFormatted = formatDateTimeIST(submission?.submittedAt || submission?.createdAt);
@@ -586,7 +586,7 @@ export const SubmissionUpdateScreen: React.FC<SubmissionUpdateScreenProps> = ({
           <div className="flex flex-wrap gap-1.5 overflow-x-auto pb-1">
             {sheds.map((s, sIdx) => (
               <button
-                key={sIdx}
+                key={`${(s as any).shedId || (s as any).id || sIdx}-${s.name || sIdx}-${sIdx}`}
                 type="button"
                 onClick={() => {
                   setActiveShedIndex(sIdx);

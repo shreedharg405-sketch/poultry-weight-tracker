@@ -349,7 +349,14 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
             maleAvgWeight,
             overallAvgWeight,
             uniformity,
-            metadata: metadata || {},
+            metadata: {
+              ...(metadata || {}),
+              farmName,
+              snapshotData: {
+                ...(metadata?.snapshotData || {}),
+                farmName,
+              }
+            },
             submittedAt: now,
           }
         });
@@ -534,7 +541,14 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
     maleAvgWeight,
     overallAvgWeight,
     uniformity,
-    metadata: metadata || {},
+    metadata: {
+      ...(metadata || {}),
+      farmName,
+      snapshotData: {
+        ...(metadata?.snapshotData || {}),
+        farmName,
+      }
+    },
     submittedAt: now,
     createdAt: now,
     updatedAt: now,
@@ -674,8 +688,20 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
           }
         }
       });
+      const formatted = submissions.map((sub: any) => {
+        const meta = sub.metadata || {};
+        const snapshotFarmName = meta.farmName || meta.snapshotData?.farmName || sub.farmName || sub.farm?.name || 'Farm';
+        return {
+          ...sub,
+          farmName: snapshotFarmName,
+          snapshotData: {
+            ...(meta.snapshotData || {}),
+            farmName: snapshotFarmName,
+          }
+        };
+      });
 
-      return res.json(submissions);
+      return res.json(formatted);
     } catch (err: any) {
       console.error('❌ [DB] Error in get /submissions:', err?.message || err);
       return res.status(503).json({
@@ -696,7 +722,20 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
     filtered = filtered.filter(s => canUserAccessFarm(user, s.farmId, s.farmName));
   }
 
-  return res.json(filtered);
+  const formattedMem = filtered.map(s => {
+    const meta = s.metadata || {};
+    const snapshotFarmName = s.farmName || meta.farmName || meta.snapshotData?.farmName || 'Farm';
+    return {
+      ...s,
+      farmName: snapshotFarmName,
+      snapshotData: {
+        ...(meta.snapshotData || {}),
+        farmName: snapshotFarmName,
+      }
+    };
+  });
+
+  return res.json(formattedMem);
 });
 
 // --------------------------------------------------------------------------
@@ -737,7 +776,16 @@ submissionRouter.get('/submissions/:id', requireAuth, async (req: AuthenticatedR
         return res.status(403).json({ error: 'Access denied: You are not authorized to view this submission.' });
       }
 
-      return res.json(submission);
+      const meta = (submission as any).metadata || {};
+      const snapshotFarmName = meta.farmName || meta.snapshotData?.farmName || (submission as any).farmName || (submission as any).farm?.name || 'Farm';
+      return res.json({
+        ...submission,
+        farmName: snapshotFarmName,
+        snapshotData: {
+          ...(meta.snapshotData || {}),
+          farmName: snapshotFarmName,
+        }
+      });
     } catch (err: any) {
       console.error('❌ [DB] Error in get /submissions/:id:', err?.message || err);
       return res.status(503).json({
@@ -756,7 +804,16 @@ submissionRouter.get('/submissions/:id', requireAuth, async (req: AuthenticatedR
     return res.status(403).json({ error: 'Access denied: You are not authorized to view this submission.' });
   }
 
-  return res.json(memSub);
+  const memMeta = memSub.metadata || {};
+  const memSnapshotFarmName = memSub.farmName || memMeta.farmName || memMeta.snapshotData?.farmName || 'Farm';
+  return res.json({
+    ...memSub,
+    farmName: memSnapshotFarmName,
+    snapshotData: {
+      ...(memMeta.snapshotData || {}),
+      farmName: memSnapshotFarmName,
+    }
+  });
 });
 
 // --------------------------------------------------------------------------
@@ -846,7 +903,19 @@ submissionRouter.get('/farms/:farmId/submissions', requireAuth, async (req: Auth
           }
         }
       });
-      return res.json(submissions);
+      const formatted = submissions.map((sub: any) => {
+        const meta = sub.metadata || {};
+        const snapshotFarmName = meta.farmName || meta.snapshotData?.farmName || sub.farmName || sub.farm?.name || 'Farm';
+        return {
+          ...sub,
+          farmName: snapshotFarmName,
+          snapshotData: {
+            ...(meta.snapshotData || {}),
+            farmName: snapshotFarmName,
+          }
+        };
+      });
+      return res.json(formatted);
     } catch (err: any) {
       console.error('❌ [DB] Error in get farm submissions:', err?.message || err);
       return res.status(503).json({
@@ -856,9 +925,20 @@ submissionRouter.get('/farms/:farmId/submissions', requireAuth, async (req: Auth
     }
   }
 
-  const memList = memorySubmissions.filter(s =>
-    s.farmId === farmId && (!targetWeek || s.flockAge?.trim().toUpperCase() === targetWeek)
-  );
+  const memList = memorySubmissions
+    .filter(s => s.farmId === farmId && (!targetWeek || s.flockAge?.trim().toUpperCase() === targetWeek))
+    .map(s => {
+      const meta = s.metadata || {};
+      const snapshotFarmName = s.farmName || meta.farmName || meta.snapshotData?.farmName || 'Farm';
+      return {
+        ...s,
+        farmName: snapshotFarmName,
+        snapshotData: {
+          ...(meta.snapshotData || {}),
+          farmName: snapshotFarmName,
+        }
+      };
+    });
   return res.json(memList);
 });
 

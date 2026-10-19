@@ -286,6 +286,46 @@ export async function getAuthUserFromRequest(req: Request): Promise<{ id: string
   };
 }
 
+/**
+ * Verifies if user has permission to view or mutate resources on a given farm.
+ * - Admin: global access
+ * - Manager: access unless restricted by assignedFarms without '*'
+ * - Supervisor / In-Charge: access ONLY if farmId or farmName is in assignedFarms
+ */
+export function checkFarmAuthorization(
+  user: { id: string; role: string; assignedFarms?: string[]; assignedFarmId?: string; assignedFarm?: string } | null | undefined,
+  farmId: string,
+  farmName?: string
+): { authorized: boolean; error?: string } {
+  if (!user) {
+    return { authorized: false, error: 'Authentication required. Please log in.' };
+  }
+  const role = (user.role || '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (role === 'ADMIN') return { authorized: true };
+
+  const assignedList = [
+    ...(user.assignedFarms || []),
+    ...(user.assignedFarmId ? [user.assignedFarmId] : []),
+    ...(user.assignedFarm ? [user.assignedFarm] : [])
+  ];
+  const assigned = assignedList.map(a => a.toLowerCase().trim());
+  const isAssigned = assigned.includes('*') || 
+    (farmId && assigned.includes(farmId.toLowerCase().trim())) || 
+    (farmName && assigned.includes(farmName.toLowerCase().trim()));
+
+  if (role === 'MANAGER') {
+    if (assigned.length === 0 || isAssigned) return { authorized: true };
+    return { authorized: false, error: 'Access denied: You are not authorized for this farm.' };
+  }
+
+  if (role === 'SUPERVISOR' || role === 'INCHARGE') {
+    if (isAssigned) return { authorized: true };
+    return { authorized: false, error: 'Access denied to unassigned farm.' };
+  }
+
+  return { authorized: false, error: 'Access denied: Insufficient permissions.' };
+}
+
 // --------------------------------------------------------------------------
 // 1. GET /api/farms - Fetch all farms summaries with synchronized statuses & operator assignments
 // --------------------------------------------------------------------------
@@ -337,16 +377,21 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
 
       // Role-based visibility enforcement (Req 8)
       if (authUser) {
-        if (authUser.role === 'Supervisor' || authUser.role === 'In-Charge') {
-          const userAssigned = authUser.assignedFarms || [];
+        const rUpper = (authUser.role || '').toUpperCase().replace(/[^A-Z]/g, '');
+        if (rUpper === 'SUPERVISOR' || rUpper === 'INCHARGE') {
+          const userAssigned = [
+            ...(authUser.assignedFarms || []),
+            ...((authUser as any).assignedFarmId ? [(authUser as any).assignedFarmId] : []),
+            ...((authUser as any).assignedFarm ? [(authUser as any).assignedFarm] : [])
+          ].map(a => a.toLowerCase().trim());
           if (userAssigned.length === 0) {
             return res.json([]);
           }
-          filteredFarms = farms.filter(f => userAssigned.includes(f.id) || userAssigned.includes(f.name));
-        } else if (authUser.role === 'Manager') {
-          const userAssigned = authUser.assignedFarms || [];
+          filteredFarms = farms.filter(f => userAssigned.includes(f.id.toLowerCase().trim()) || userAssigned.includes(f.name.toLowerCase().trim()));
+        } else if (rUpper === 'MANAGER') {
+          const userAssigned = (authUser.assignedFarms || []).map(a => a.toLowerCase().trim());
           if (userAssigned.length > 0 && !userAssigned.includes('*')) {
-            filteredFarms = farms.filter(f => userAssigned.includes(f.id) || userAssigned.includes(f.name));
+            filteredFarms = farms.filter(f => userAssigned.includes(f.id.toLowerCase().trim()) || userAssigned.includes(f.name.toLowerCase().trim()));
           }
         }
       }
@@ -475,14 +520,19 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
   }
 
   if (authUser) {
-    if (authUser.role === 'Supervisor' || authUser.role === 'In-Charge') {
-      const userAssigned = authUser.assignedFarms || [];
+    const rUpper = (authUser.role || '').toUpperCase().replace(/[^A-Z]/g, '');
+    if (rUpper === 'SUPERVISOR' || rUpper === 'INCHARGE') {
+      const userAssigned = [
+        ...(authUser.assignedFarms || []),
+        ...((authUser as any).assignedFarmId ? [(authUser as any).assignedFarmId] : []),
+        ...((authUser as any).assignedFarm ? [(authUser as any).assignedFarm] : [])
+      ].map(a => a.toLowerCase().trim());
       if (userAssigned.length === 0) return res.json([]);
-      memFarmsFiltered = memoryFarms.filter(f => userAssigned.includes(f.id) || userAssigned.includes(f.name));
-    } else if (authUser.role === 'Manager') {
-      const userAssigned = authUser.assignedFarms || [];
+      memFarmsFiltered = memFarmsFiltered.filter(f => userAssigned.includes(f.id.toLowerCase().trim()) || userAssigned.includes(f.name.toLowerCase().trim()));
+    } else if (rUpper === 'MANAGER') {
+      const userAssigned = (authUser.assignedFarms || []).map(a => a.toLowerCase().trim());
       if (userAssigned.length > 0 && !userAssigned.includes('*')) {
-        memFarmsFiltered = memoryFarms.filter(f => userAssigned.includes(f.id) || userAssigned.includes(f.name));
+        memFarmsFiltered = memFarmsFiltered.filter(f => userAssigned.includes(f.id.toLowerCase().trim()) || userAssigned.includes(f.name.toLowerCase().trim()));
       }
     }
   }
@@ -951,51 +1001,40 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
 
       // Enforce assigned-farm visibility on direct API requests (Req 8)
       if (authUser) {
-        if (authUser.role === 'Supervisor' || authUser.role === 'In-Charge') {
-          const userAssigned = authUser.assignedFarms || [];
-          if (!userAssigned.includes(farm.id) && !userAssigned.includes(farm.name)) {
-            return res.status(403).json({ error: 'Access denied: You are not assigned to this farm unit.' });
-          }
-        } else if (authUser.role === 'Manager') {
-          const userAssigned = authUser.assignedFarms || [];
-          if (userAssigned.length > 0 && !userAssigned.includes('*')) {
-            if (!userAssigned.includes(farm.id) && !userAssigned.includes(farm.name)) {
-              return res.status(403).json({ error: 'Access denied: You are not authorized for this farm unit.' });
-            }
-          }
+        const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+        if (!authCheck.authorized) {
+          return res.status(403).json({ error: authCheck.error || 'Access denied: You are not assigned to this farm unit.' });
         }
       }
 
       const queryWeek = (req.query.week || req.query.flockAge) as string | undefined;
-      const targetWeek = queryWeek ? queryWeek.trim().toUpperCase() : undefined;
+      const targetWeek = queryWeek ? queryWeek.trim().toUpperCase() : (farm.ageWeek ? farm.ageWeek.trim().toUpperCase() : 'W18');
 
-      // Match submission specifically for the requested recording week, or default to latest
-      const matchedSub = targetWeek
-        ? farm.submissions?.find((s: any) => s.flockAge?.trim().toUpperCase() === targetWeek)
-        : farm.submissions?.[0];
+      // Match submission strictly for the requested recording week with status COMPLETED
+      const matchedSub = farm.submissions?.find((s: any) => s.flockAge?.trim().toUpperCase() === targetWeek && s.status === 'COMPLETED');
 
-      const latestSub = matchedSub || null;
-      const isCompleted = Boolean(latestSub && latestSub.status === 'COMPLETED');
-      const audit = latestSub ? {
-        status: isCompleted ? 'COMPLETED' : 'DRAFT',
-        lastSubmittedAt: latestSub.submittedAt ? new Date(latestSub.submittedAt).toISOString() : null,
-        lastSubmittedBy: latestSub.submitterName,
-        lastSubmittedRole: latestSub.submitterRole,
-        submittedBy: latestSub.submitterName,
-        submittedRole: latestSub.submitterRole,
-        totalBirdsSubmitted: latestSub.totalBirds,
-        femaleAvgWeight: latestSub.femaleAvgWeight,
-        maleAvgWeight: latestSub.maleAvgWeight,
+      const isCompleted = Boolean(matchedSub);
+      const audit = matchedSub ? {
+        status: 'COMPLETED',
+        lastSubmittedAt: matchedSub.submittedAt ? new Date(matchedSub.submittedAt).toISOString() : null,
+        lastSubmittedBy: matchedSub.submitterName,
+        lastSubmittedRole: matchedSub.submitterRole,
+        submittedBy: matchedSub.submitterName,
+        submittedRole: matchedSub.submitterRole,
+        totalBirdsSubmitted: matchedSub.totalBirds,
+        femaleAvgWeight: matchedSub.femaleAvgWeight,
+        maleAvgWeight: matchedSub.maleAvgWeight,
       } : undefined;
 
-      // Map submitted bird weights into sheds if matching week submission exists
+      // If submitted: load the read-only submitted record snapshot
+      // If unsubmitted: load clean structural sheds with empty weights []
       let mappedSheds = farm.sheds || [];
-      if (latestSub && latestSub.sheds && latestSub.sheds.length > 0) {
+      if (matchedSub && matchedSub.sheds && matchedSub.sheds.length > 0) {
         if (mappedSheds.length === 0) {
-          mappedSheds = latestSub.sheds as any;
+          mappedSheds = matchedSub.sheds as any;
         } else {
           mappedSheds = farm.sheds.map((s: any, sIdx: number) => {
-            const matchingSubShed = latestSub.sheds.find((ss: any) => 
+            const matchingSubShed = matchedSub.sheds.find((ss: any) => 
               (ss.shedId && ss.shedId === s.id) || 
               (ss.name && s.name && ss.name.trim().toLowerCase() === s.name.trim().toLowerCase()) ||
               ss.order === sIdx ||
@@ -1023,11 +1062,10 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
                           (sl.name && l.name && sl.name.trim().toLowerCase() === l.name.trim().toLowerCase()) ||
                           lIdx === 0
                         );
-                        const liveWeights = Array.isArray(l.weights) && l.weights.length > 0 ? l.weights : [];
                         const subWeights = matchingLine && Array.isArray(matchingLine.weights) && matchingLine.weights.length > 0 ? matchingLine.weights : [];
                         return {
                           ...l,
-                          weights: liveWeights.length > 0 ? liveWeights : subWeights
+                          weights: subWeights
                         };
                       })
                     };
@@ -1039,9 +1077,8 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
             return s;
           });
         }
-      } else if (targetWeek) {
-        // Requested a specific recording week that has not been submitted yet:
-        // Return clean structural sheds with empty weights
+      } else {
+        // UN-SUBMITTED: All lines MUST have weights: []
         mappedSheds = (farm.sheds || []).map((s: any) => ({
           ...s,
           parts: (s.parts || []).map((p: any) => ({
@@ -1054,13 +1091,25 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         }));
       }
 
+      const formattedSubmissions = (farm.submissions || []).map((s: any) => {
+        const snapName = (s.metadata as any)?.snapshotData?.farmName || (s.metadata as any)?.farmName || farm.name;
+        return {
+          ...s,
+          farmName: snapName,
+          snapshotData: {
+            ...((s.metadata as any)?.snapshotData || {}),
+            farmName: snapName,
+          }
+        };
+      });
+
       return res.json({
         ...farm,
         ageWeek: targetWeek || farm.ageWeek,
         sheds: mappedSheds,
         status: isCompleted ? 'COMPLETED' : 'DRAFT',
         submissionCount: farm.submissions ? farm.submissions.length : (farm._count?.submissions || 0),
-        submissions: farm.submissions || [],
+        submissions: formattedSubmissions,
         audit,
       });
     } catch (err: any) {
@@ -1099,33 +1148,30 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
   }
 
   const queryWeekMem = (req.query.week || req.query.flockAge) as string | undefined;
-  const targetWeekMem = queryWeekMem ? queryWeekMem.trim().toUpperCase() : undefined;
+  const targetWeekMem = queryWeekMem ? queryWeekMem.trim().toUpperCase() : (memFarm.ageWeek ? memFarm.ageWeek.trim().toUpperCase() : 'W18');
 
   const farmSubs = memorySubmissions.filter(s => s.farmId === farmId || (memFarm.name && s.farmName?.trim().toLowerCase() === memFarm.name.trim().toLowerCase()));
-  const matchedMemSub = targetWeekMem
-    ? farmSubs.find(s => s.flockAge?.trim().toUpperCase() === targetWeekMem)
-    : farmSubs[0];
-  const latestMemSub = matchedMemSub || null;
-  const isCompleted = Boolean(latestMemSub && latestMemSub.status === 'COMPLETED');
-  const audit = latestMemSub ? {
-    status: isCompleted ? 'COMPLETED' : 'DRAFT',
-    lastSubmittedAt: latestMemSub.submittedAt ? new Date(latestMemSub.submittedAt).toISOString() : null,
-    lastSubmittedBy: latestMemSub.submitterName,
-    lastSubmittedRole: latestMemSub.submitterRole,
-    submittedBy: latestMemSub.submitterName,
-    submittedRole: latestMemSub.submitterRole,
-    totalBirdsSubmitted: latestMemSub.totalBirds,
-    femaleAvgWeight: latestMemSub.femaleAvgWeight,
-    maleAvgWeight: latestMemSub.maleAvgWeight,
-  } : memFarm.audit;
+  const matchedMemSub = farmSubs.find(s => s.flockAge?.trim().toUpperCase() === targetWeekMem && s.status === 'COMPLETED');
+  const isCompleted = Boolean(matchedMemSub);
+  const audit = matchedMemSub ? {
+    status: 'COMPLETED',
+    lastSubmittedAt: matchedMemSub.submittedAt ? new Date(matchedMemSub.submittedAt).toISOString() : null,
+    lastSubmittedBy: matchedMemSub.submitterName,
+    lastSubmittedRole: matchedMemSub.submitterRole,
+    submittedBy: matchedMemSub.submitterName,
+    submittedRole: matchedMemSub.submitterRole,
+    totalBirdsSubmitted: matchedMemSub.totalBirds,
+    femaleAvgWeight: matchedMemSub.femaleAvgWeight,
+    maleAvgWeight: matchedMemSub.maleAvgWeight,
+  } : undefined;
 
   let mappedMemSheds = memFarm.sheds || [];
-  if (latestMemSub && latestMemSub.sheds && latestMemSub.sheds.length > 0) {
+  if (matchedMemSub && matchedMemSub.sheds && matchedMemSub.sheds.length > 0) {
     if (mappedMemSheds.length === 0) {
-      mappedMemSheds = latestMemSub.sheds;
+      mappedMemSheds = matchedMemSub.sheds;
     } else {
       mappedMemSheds = memFarm.sheds.map((s, sIdx) => {
-        const matchingSubShed = latestMemSub.sheds.find((ss: any) => 
+        const matchingSubShed = matchedMemSub.sheds.find((ss: any) => 
           ss.id === s.id || 
           ss.name?.trim().toLowerCase() === s.name?.trim().toLowerCase() ||
           ss.order === sIdx
@@ -1149,9 +1195,11 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
                       sl.name?.trim().toLowerCase() === l.name?.trim().toLowerCase() ||
                       sl.order === lIdx
                     );
-                    return matchingLine && matchingLine.weights && matchingLine.weights.length > 0
-                      ? { ...l, weights: matchingLine.weights }
-                      : l;
+                    const subWeights = matchingLine && Array.isArray(matchingLine.weights) && matchingLine.weights.length > 0 ? matchingLine.weights : [];
+                    return {
+                      ...l,
+                      weights: subWeights
+                    };
                   })
                 };
               }
@@ -1162,7 +1210,8 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         return s;
       });
     }
-  } else if (targetWeekMem) {
+  } else {
+    // UN-SUBMITTED: All lines MUST have weights: []
     mappedMemSheds = (memFarm.sheds || []).map((s: any) => ({
       ...s,
       parts: (s.parts || []).map((p: any) => ({
@@ -1175,14 +1224,26 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
     }));
   }
 
+  const formattedFarmSubs = farmSubs.map((s: any) => {
+    const snapName = s.snapshotData?.farmName || s.metadata?.snapshotData?.farmName || s.metadata?.farmName || s.farmName || memFarm.name;
+    return {
+      ...s,
+      farmName: snapName,
+      snapshotData: {
+        ...(s.snapshotData || s.metadata?.snapshotData || {}),
+        farmName: snapName,
+      }
+    };
+  });
+
   return res.json({
     ...memFarm,
     ageWeek: targetWeekMem || memFarm.ageWeek,
     sheds: mappedMemSheds,
     status: isCompleted ? 'COMPLETED' : (memFarm.status || 'DRAFT'),
-    submissions: farmSubs,
-    submissionCount: farmSubs.length,
-    _count: { sheds: mappedMemSheds.length, submissions: farmSubs.length },
+    submissions: formattedFarmSubs,
+    submissionCount: formattedFarmSubs.length,
+    _count: { sheds: mappedMemSheds.length, submissions: formattedFarmSubs.length },
     audit,
   });
 });
@@ -1262,25 +1323,9 @@ farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
         return res.status(404).json({ error: 'Farm not found in database.' });
       }
 
-      // Check permissions:
-      // Admin: can edit any farm
-      // Manager: can edit if assigned to '*' or farm is in user.assignedFarms
-      // Supervisor / In-Charge: can edit ONLY if explicitly authorized for that assigned farm
-      const userAssigned = user.assignedFarms || [];
-      const isAssigned = userAssigned.includes('*') || userAssigned.includes(existing.id) || userAssigned.includes(existing.name);
-      
-      if (user.role === 'Admin') {
-        // Allowed
-      } else if (user.role === 'Manager') {
-        if (!isAssigned) {
-          return res.status(403).json({ error: 'Access Denied: You are not authorized to edit this farm.' });
-        }
-      } else if (user.role === 'Supervisor' || user.role === 'In-Charge' || user.role === 'Incharge') {
-        if (!isAssigned) {
-          return res.status(403).json({ error: 'Access Denied: You can only edit farm details for your explicitly assigned farm.' });
-        }
-      } else {
-        return res.status(403).json({ error: 'Access Denied: Insufficient permissions to edit farm.' });
+      const authCheck = checkFarmAuthorization(user, existing.id, existing.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access Denied: You are not authorized to edit this farm.' });
       }
 
       // If name is changing, check for duplicate name
@@ -1361,10 +1406,9 @@ farmRouter.put('/farms/:id/details', async (req: Request, res: Response) => {
   const memFarm = memoryFarms.find(f => f.id === farmId);
   if (!memFarm) return res.status(404).json({ error: 'Farm not found' });
 
-  const userAssigned = user.assignedFarms || [];
-  const isAssigned = userAssigned.includes('*') || userAssigned.includes(memFarm.id) || userAssigned.includes(memFarm.name);
-  if (user.role !== 'Admin' && !isAssigned) {
-    return res.status(403).json({ error: 'Access Denied: You are not authorized to edit this farm.' });
+  const authCheck = checkFarmAuthorization(user, memFarm.id, memFarm.name);
+  if (!authCheck.authorized) {
+    return res.status(403).json({ error: authCheck.error || 'Access Denied: You are not authorized to edit this farm.' });
   }
 
   if (trimmedName && trimmedName.toLowerCase() !== memFarm.name.toLowerCase()) {
@@ -1487,6 +1531,38 @@ farmRouter.get('/farms/:id/delete-impact', async (req: Request, res: Response) =
   });
 });
 
+// Cascade-revoke user farm access when a farm is deleted or archived (Req 3)
+async function revokeUserAccessForFarm(farmId: string, farmName?: string): Promise<void> {
+  if (isPostgresConfigured()) {
+    try {
+      const orConditions: any[] = [{ assignedFarms: { has: farmId } }];
+      if (farmName) {
+        orConditions.push({ assignedFarms: { has: farmName } });
+      }
+      const affectedUsers = await prisma.user.findMany({
+        where: { OR: orConditions }
+      });
+      for (const u of affectedUsers) {
+        const rawAssigned: string[] = u.assignedFarms || [];
+        const newAssigned = rawAssigned.filter(af => af !== farmId && af !== farmName);
+        await prisma.user.update({
+          where: { id: u.id },
+          data: { assignedFarms: newAssigned }
+        });
+      }
+    } catch (err) {
+      console.warn('⚠️ [DB] Failed to revoke user assignments on farm deletion/archive:', err);
+    }
+  }
+
+  // Always sync in-memory user list as well
+  memoryUsers.forEach(u => {
+    if (u.assignedFarms && u.assignedFarms.length > 0) {
+      u.assignedFarms = u.assignedFarms.filter(af => af !== farmId && af !== farmName);
+    }
+  });
+}
+
 // --------------------------------------------------------------------------
 // 5.B DELETE /api/farms/:id - Safe Archive or Authorized Permanent Delete (Admin only)
 // --------------------------------------------------------------------------
@@ -1534,6 +1610,9 @@ farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
           }
         });
 
+        // Cascade-revoke user farm access (Task 3)
+        await revokeUserAccessForFarm(farmId, farm.name);
+
         // Log archiving activity
         try {
           await prisma.activityLog.create({
@@ -1571,6 +1650,9 @@ farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
           await tx.farm.delete({ where: { id: farmId } });
         });
 
+        // Cascade-revoke user farm access (Task 3)
+        await revokeUserAccessForFarm(farmId, farm.name);
+
         return res.json({
           success: true,
           permanentlyDeleted: true,
@@ -1596,6 +1678,7 @@ farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
   if (mode === 'archive' || (hasMemRecords && mode !== 'permanent')) {
     memFarm.isArchived = true;
     memFarm.archivedAt = new Date();
+    await revokeUserAccessForFarm(farmId, memFarm.name);
     return res.json({
       success: true,
       archived: true,
@@ -1612,6 +1695,7 @@ farmRouter.delete('/farms/:id', async (req: Request, res: Response) => {
     }
 
     memoryFarms.splice(idx, 1);
+    await revokeUserAccessForFarm(farmId, memFarm.name);
     return res.json({
       success: true,
       permanentlyDeleted: true,
@@ -1649,6 +1733,9 @@ farmRouter.post('/farms/:id/archive', async (req: Request, res: Response) => {
         }
       });
 
+      // Cascade-revoke user farm access (Task 3)
+      await revokeUserAccessForFarm(farmId, farm.name);
+
       try {
         await prisma.activityLog.create({
           data: {
@@ -1677,6 +1764,7 @@ farmRouter.post('/farms/:id/archive', async (req: Request, res: Response) => {
   if (!memFarm) return res.status(404).json({ error: 'Farm not found' });
   memFarm.isArchived = true;
   memFarm.archivedAt = new Date();
+  await revokeUserAccessForFarm(farmId, memFarm.name);
   return res.json({
     success: true,
     archived: true,
@@ -1734,10 +1822,22 @@ farmRouter.post('/farms/:id/restore', async (req: Request, res: Response) => {
 // 6. POST /api/sheds - Add new shed to farm
 // --------------------------------------------------------------------------
 farmRouter.post('/sheds', async (req: Request, res: Response) => {
+  const user = await getAuthUserFromRequest(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
   const { farmId, name, type, order } = req.body;
   if (!farmId || !name || !String(name).trim()) {
     return res.status(400).json({ error: 'farmId and non-blank shed name required' });
   }
+
+  const authCheck = checkFarmAuthorization(user, farmId);
+  if (!authCheck.authorized) {
+    return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+  }
+
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
 
   const trimmedName = String(name).trim();
   const shedId = crypto.randomUUID();
@@ -1746,6 +1846,19 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
 
   if (isPostgresConfigured()) {
     try {
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot add shed: ${queryWeek} has already been submitted.` });
+        }
+      }
+
       const existing = await prisma.shed.findFirst({
         where: {
           farmId,
@@ -1779,6 +1892,13 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
   const memFarm = memoryFarms.find(f => f.id === farmId);
   if (!memFarm) return res.status(404).json({ error: 'Farm not found' });
 
+  if (queryWeek) {
+    const memCompleted = memorySubmissions.find(s => s.farmId === farmId && s.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && s.status === 'COMPLETED');
+    if (memCompleted) {
+      return res.status(400).json({ error: `Cannot add shed: ${queryWeek} has already been submitted.` });
+    }
+  }
+
   const dupMem = memFarm.sheds.find(s => s.name.toLowerCase() === trimmedName.toLowerCase());
   if (dupMem) {
     return res.status(400).json({ error: `A shed named "${trimmedName}" already exists on this farm.` });
@@ -1798,19 +1918,49 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 7. DELETE /api/sheds/:shedId - Delete shed
+// 7. DELETE /api/sheds/:shedId - Delete shed (Cascade deleting parts, lines & weights)
 // --------------------------------------------------------------------------
 farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
   const shedId = req.params.shedId;
+  const user = await getAuthUserFromRequest(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
+
   if (isPostgresConfigured()) {
     try {
-      const shed = await prisma.shed.findUnique({ where: { id: shedId } });
-      if (shed) {
-        await prisma.shed.delete({ where: { id: shedId } });
-        await touchFarm(shed.farmId);
-        return res.json({ success: true });
+      const shed = await prisma.shed.findUnique({
+        where: { id: shedId },
+        include: { farm: true }
+      });
+      if (!shed) {
+        return res.status(404).json({ error: 'Shed not found in database' });
       }
-      return res.status(404).json({ error: 'Shed not found in database' });
+
+      const authCheck = checkFarmAuthorization(user, shed.farmId, shed.farm?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: shed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot delete shed: ${queryWeek} has already been submitted.` });
+        }
+      }
+
+      // Prisma cascade deletion cleanly deletes parts and lines belonging strictly to this shed
+      await prisma.shed.delete({ where: { id: shedId } });
+      await touchFarm(shed.farmId);
+      return res.json({ success: true, deletedShedId: shedId });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete shed error:', err?.message || err);
       return sendSafe503(res);
@@ -1820,9 +1970,19 @@ farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
   for (const farm of memoryFarms) {
     const sIdx = farm.sheds.findIndex(s => s.id === shedId);
     if (sIdx !== -1) {
+      const authCheck = checkFarmAuthorization(user, farm.id, farm.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+      if (queryWeek) {
+        const memCompleted = memorySubmissions.find(s => s.farmId === farm.id && s.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && s.status === 'COMPLETED');
+        if (memCompleted) {
+          return res.status(400).json({ error: `Cannot delete shed: ${queryWeek} has already been submitted.` });
+        }
+      }
       farm.sheds.splice(sIdx, 1);
       farm.updatedAt = new Date();
-      return res.json({ success: true });
+      return res.json({ success: true, deletedShedId: shedId });
     }
   }
   return res.status(404).json({ error: 'Shed not found' });
@@ -1833,9 +1993,15 @@ farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
   const shedId = req.params.shedId;
+  const user = await getAuthUserFromRequest(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
   const { name, type } = req.body;
   const validGender = type !== undefined ? (type === 'Male' ? 'Male' : 'Female') : undefined;
   const trimmedName = name !== undefined ? String(name).trim() : undefined;
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
 
   if (trimmedName !== undefined && trimmedName.length === 0) {
     return res.status(400).json({ error: 'Shed name cannot be blank.' });
@@ -1843,9 +2009,30 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
 
   if (isPostgresConfigured()) {
     try {
-      const currentShed = await prisma.shed.findUnique({ where: { id: shedId } });
+      const currentShed = await prisma.shed.findUnique({
+        where: { id: shedId },
+        include: { farm: true }
+      });
       if (!currentShed) {
         return res.status(404).json({ error: 'Shed not found' });
+      }
+
+      const authCheck = checkFarmAuthorization(user, currentShed.farmId, currentShed.farm?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: currentShed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot rename shed: ${queryWeek} has already been submitted.` });
+        }
       }
 
       if (trimmedName && trimmedName.toLowerCase() !== currentShed.name.toLowerCase()) {
@@ -1882,6 +2069,16 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
   for (const farm of memoryFarms) {
     const s = farm.sheds.find(shed => shed.id === shedId);
     if (s) {
+      const authCheck = checkFarmAuthorization(user, farm.id, farm.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+      if (queryWeek) {
+        const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
+        if (memCompleted) {
+          return res.status(400).json({ error: `Cannot rename shed: ${queryWeek} has already been submitted.` });
+        }
+      }
       if (trimmedName && trimmedName.toLowerCase() !== s.name.toLowerCase()) {
         const dup = farm.sheds.find(other => other.id !== shedId && other.name.toLowerCase() === trimmedName.toLowerCase());
         if (dup) {
@@ -1966,6 +2163,11 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
   if (!shedId || !name) return res.status(400).json({ error: 'shedId and name required' });
 
   const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
   const partVal = validatePartLetter(name);
   if (partVal.error || !partVal.letter) {
     return res.status(400).json({ error: partVal.error || 'Only Parts A, B, C, and D are allowed. Part E or higher is prohibited.' });
@@ -1981,10 +2183,21 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
       });
       if (!shed) return res.status(404).json({ error: 'Shed not found' });
 
-      // Check if Supervisor/Incharge attempting to edit completed submission
-      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-        if ((shed.farm as any).status === 'COMPLETED') {
-          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+      const authCheck = checkFarmAuthorization(authUser, shed.farmId, (shed.farm as any)?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: shed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot modify parts: ${queryWeek} has already been submitted.` });
         }
       }
 
@@ -2020,9 +2233,15 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
   for (const farm of memoryFarms) {
     const s = farm.sheds.find(shed => shed.id === shedId);
     if (s) {
-      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-        if (farm.status === 'COMPLETED') {
-          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+      const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
+        if (memCompleted) {
+          return res.status(400).json({ error: `Cannot modify parts: ${queryWeek} has already been submitted.` });
         }
       }
 
@@ -2056,6 +2275,11 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
 farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
   const partId = req.params.partId;
   const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
 
   if (isPostgresConfigured()) {
     try {
@@ -2067,9 +2291,21 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
         return res.status(404).json({ error: 'Part not found in database' });
       }
 
-      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-        if ((part.shed.farm as any).status === 'COMPLETED') {
-          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+      const authCheck = checkFarmAuthorization(authUser, part.shed.farmId, part.shed.farm?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: part.shed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot delete part: ${queryWeek} has already been submitted.` });
         }
       }
 
@@ -2090,9 +2326,15 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
     for (const shed of farm.sheds) {
       const pIdx = shed.parts.findIndex(p => p.id === partId);
       if (pIdx !== -1) {
-        if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-          if (farm.status === 'COMPLETED') {
-            return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+        const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+        if (!authCheck.authorized) {
+          return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+        }
+
+        if (queryWeek) {
+          const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
+          if (memCompleted) {
+            return res.status(400).json({ error: `Cannot delete part: ${queryWeek} has already been submitted.` });
           }
         }
 
@@ -2116,7 +2358,11 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
   const partId = req.params.partId;
   const { name } = req.body;
   const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
 
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
   const partVal = validatePartLetter(name);
   if (partVal.error || !partVal.letter) {
     return res.status(400).json({ error: partVal.error || 'Only Parts A, B, C, and D are allowed. Part E or higher is prohibited.' });
@@ -2131,9 +2377,21 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
       });
       if (!part) return res.status(404).json({ error: 'Part not found' });
 
-      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-        if ((part.shed.farm as any).status === 'COMPLETED') {
-          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+      const authCheck = checkFarmAuthorization(authUser, part.shed.farmId, part.shed.farm?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: part.shed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot rename part: ${queryWeek} has already been submitted.` });
         }
       }
 
@@ -2159,9 +2417,15 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
     for (const shed of farm.sheds) {
       const p = shed.parts.find(part => part.id === partId);
       if (p) {
-        if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-          if (farm.status === 'COMPLETED') {
-            return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+        const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+        if (!authCheck.authorized) {
+          return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+        }
+
+        if (queryWeek) {
+          const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
+          if (memCompleted) {
+            return res.status(400).json({ error: `Cannot rename part: ${queryWeek} has already been submitted.` });
           }
         }
 
@@ -2186,6 +2450,11 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
   const { partId, name } = req.body;
   if (!partId) return res.status(400).json({ error: 'partId required' });
   const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
   const lineId = crypto.randomUUID();
 
   if (isPostgresConfigured()) {
@@ -2196,9 +2465,21 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
       });
       if (!part) return res.status(404).json({ error: 'Part not found' });
 
-      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-        if ((part.shed.farm as any).status === 'COMPLETED') {
-          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+      const authCheck = checkFarmAuthorization(authUser, part.shed.farmId, (part.shed.farm as any)?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: part.shed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot modify lines: ${queryWeek} has already been submitted.` });
         }
       }
 
@@ -2229,9 +2510,15 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
     for (const shed of farm.sheds) {
       const p = shed.parts.find(part => part.id === partId);
       if (p) {
-        if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-          if (farm.status === 'COMPLETED') {
-            return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+        const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+        if (!authCheck.authorized) {
+          return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+        }
+
+        if (queryWeek) {
+          const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
+          if (memCompleted) {
+            return res.status(400).json({ error: `Cannot modify lines: ${queryWeek} has already been submitted.` });
           }
         }
 
@@ -2262,6 +2549,11 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
 farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
   const lineId = req.params.lineId;
   const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
 
   if (isPostgresConfigured()) {
     try {
@@ -2273,9 +2565,21 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
         return res.status(404).json({ error: 'Line not found in database' });
       }
 
-      if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-        if ((line.part.shed.farm as any).status === 'COMPLETED') {
-          return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+      const authCheck = checkFarmAuthorization(authUser, line.part.shed.farmId, line.part.shed.farm?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: line.part.shed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot delete line: ${queryWeek} has already been submitted.` });
         }
       }
 
@@ -2297,9 +2601,15 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
       for (const part of shed.parts) {
         const lIdx = part.lines.findIndex(l => String(l.id) === String(lineId));
         if (lIdx !== -1) {
-          if (authUser && (authUser.role === 'Supervisor' || authUser.role === 'Incharge' || authUser.role === 'In-Charge')) {
-            if (farm.status === 'COMPLETED') {
-              return res.status(403).json({ error: 'Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.' });
+          const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+          if (!authCheck.authorized) {
+            return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+          }
+
+          if (queryWeek) {
+            const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
+            if (memCompleted) {
+              return res.status(400).json({ error: `Cannot delete line: ${queryWeek} has already been submitted.` });
             }
           }
 
@@ -2322,9 +2632,15 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => {
   const lineId = req.params.lineId;
+  const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
   const weight = parseFloat(req.body.weight);
-  const userName = req.body.userName?.trim() || 'Weighing Supervisor';
-  const userId = req.body.userId || null;
+  const userName = req.body.userName?.trim() || authUser.name || 'Weighing Supervisor';
+  const userId = req.body.userId || authUser.id || null;
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
 
   if (isNaN(weight) || weight <= 0) {
     return res.status(400).json({ error: 'Valid positive weight required' });
@@ -2338,6 +2654,24 @@ farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => 
       });
       if (!line) {
         return res.status(404).json({ error: 'Line not found in database' });
+      }
+
+      const authCheck = checkFarmAuthorization(authUser, line.part.shed.farmId, line.part.shed.farm?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: line.part.shed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot add weights: ${queryWeek} has already been submitted.` });
+        }
       }
 
       const updated = await prisma.line.update({
@@ -2381,6 +2715,18 @@ farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => 
       for (const part of shed.parts) {
         const l = part.lines.find(line => String(line.id) === String(lineId));
         if (l) {
+          const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+          if (!authCheck.authorized) {
+            return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+          }
+
+          if (queryWeek) {
+            const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
+            if (memCompleted) {
+              return res.status(400).json({ error: `Cannot add weights: ${queryWeek} has already been submitted.` });
+            }
+          }
+
           l.weights.push(weight);
           farm.updatedAt = new Date();
 
@@ -2418,7 +2764,14 @@ farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => 
 // --------------------------------------------------------------------------
 farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Response) => {
   const lineId = req.params.lineId;
+  const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
   const index = parseInt(req.params.index, 10);
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
+
   if (isNaN(index) || index < 0) {
     return res.status(400).json({ error: 'Valid index required' });
   }
@@ -2427,9 +2780,31 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
     try {
       const line = await prisma.line.findUnique({
         where: { id: lineId },
-        include: { part: { include: { shed: true } } },
+        include: { part: { include: { shed: { include: { farm: true } } } } },
       });
-      if (line && index < line.weights.length) {
+      if (!line) {
+        return res.status(404).json({ error: 'Line not found in database' });
+      }
+
+      const authCheck = checkFarmAuthorization(authUser, line.part.shed.farmId, line.part.shed.farm?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: line.part.shed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot delete weight: ${queryWeek} has already been submitted.` });
+        }
+      }
+
+      if (index < line.weights.length) {
         const updatedWeights = [...line.weights];
         updatedWeights.splice(index, 1);
         const updated = await prisma.line.update({
@@ -2439,7 +2814,7 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
         await touchFarm(line.part.shed.farmId);
         return res.json(updated);
       }
-      return res.status(404).json({ error: 'Line or weight index not found in database' });
+      return res.status(404).json({ error: 'Weight index not found in line' });
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL delete weight error:', err?.message || err);
       return sendSafe503(res);
@@ -2450,15 +2825,30 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
     for (const shed of farm.sheds) {
       for (const part of shed.parts) {
         const l = part.lines.find(line => String(line.id) === String(lineId));
-        if (l && index < l.weights.length) {
-          l.weights.splice(index, 1);
-          farm.updatedAt = new Date();
-          return res.json(l);
+        if (l) {
+          const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+          if (!authCheck.authorized) {
+            return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+          }
+
+          if (queryWeek) {
+            const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
+            if (memCompleted) {
+              return res.status(400).json({ error: `Cannot delete weight: ${queryWeek} has already been submitted.` });
+            }
+          }
+
+          if (index < l.weights.length) {
+            l.weights.splice(index, 1);
+            farm.updatedAt = new Date();
+            return res.json(l);
+          }
+          return res.status(404).json({ error: 'Weight index not found' });
         }
       }
     }
   }
-  return res.status(404).json({ error: 'Line or weight index not found' });
+  return res.status(404).json({ error: 'Line not found' });
 });
 
 // --------------------------------------------------------------------------
@@ -2466,21 +2856,47 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
 // --------------------------------------------------------------------------
 farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
   const lineId = req.params.lineId;
+  const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
+  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
+
   if (isPostgresConfigured()) {
     try {
       const line = await prisma.line.findUnique({
         where: { id: lineId },
-        include: { part: { include: { shed: true } } },
+        include: { part: { include: { shed: { include: { farm: true } } } } },
       });
-      if (line) {
-        const updated = await prisma.line.update({
-          where: { id: lineId },
-          data: { weights: { set: [] } },
-        });
-        await touchFarm(line.part.shed.farmId);
-        return res.json(updated);
+      if (!line) {
+        return res.status(404).json({ error: 'Line not found in database' });
       }
-      return res.status(404).json({ error: 'Line not found in database' });
+
+      const authCheck = checkFarmAuthorization(authUser, line.part.shed.farmId, line.part.shed.farm?.name);
+      if (!authCheck.authorized) {
+        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+      }
+
+      if (queryWeek) {
+        const completedSub = await prisma.submission.findFirst({
+          where: {
+            farmId: line.part.shed.farmId,
+            flockAge: queryWeek.trim().toUpperCase(),
+            status: 'COMPLETED'
+          }
+        });
+        if (completedSub) {
+          return res.status(400).json({ error: `Cannot clear line weights: ${queryWeek} has already been submitted.` });
+        }
+      }
+
+      const updated = await prisma.line.update({
+        where: { id: lineId },
+        data: { weights: { set: [] } },
+      });
+      await touchFarm(line.part.shed.farmId);
+      return res.json(updated);
     } catch (err: any) {
       console.error('❌ [DB] PostgreSQL clear line error:', err?.message || err);
       return sendSafe503(res);
@@ -2492,6 +2908,18 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
       for (const part of shed.parts) {
         const l = part.lines.find(line => String(line.id) === String(lineId));
         if (l) {
+          const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+          if (!authCheck.authorized) {
+            return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+          }
+
+          if (queryWeek) {
+            const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
+            if (memCompleted) {
+              return res.status(400).json({ error: `Cannot clear line weights: ${queryWeek} has already been submitted.` });
+            }
+          }
+
           l.weights = [];
           farm.updatedAt = new Date();
           return res.json(l);
@@ -2507,6 +2935,16 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
   const farmId = req.params.id;
+  const user = await getAuthUserFromRequest(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
+  const authCheck = checkFarmAuthorization(user, farmId, req.body?.name);
+  if (!authCheck.authorized) {
+    return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
+  }
+
   const { sheds, name, flockDate, ageWeek, season, status, progressPercentage, audit } = req.body;
   const now = new Date();
 

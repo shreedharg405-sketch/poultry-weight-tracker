@@ -129,8 +129,8 @@ export const ShedPenSetupModal: React.FC<ShedPenSetupModalProps> = ({
                 onChange={(e) => setTargetShedId(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white focus:outline-none focus:border-emerald-500"
               >
-                {sheds.map((sh) => (
-                  <option key={sh.id} value={sh.id}>
+                {sheds.map((sh, idx) => (
+                  <option key={`${sh.id || idx}-${sh.shedName || idx}-${idx}`} value={sh.id}>
                     {sh.shedName}
                   </option>
                 ))}
