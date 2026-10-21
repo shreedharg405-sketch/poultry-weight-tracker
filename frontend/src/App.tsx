@@ -767,7 +767,7 @@ export default function App() {
       case 'line_select':
         return 'part_select';
       case 'part_select':
-        return 'shed_select';
+        return (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') ? 'home' : 'shed_select';
       case 'shed_select':
         return 'home';
       case 'submit_page':
@@ -1985,17 +1985,25 @@ export default function App() {
   // Toggle Line-Wise Female/Male Gender Selection (Req 2)
   const handleToggleLineGender = async (lineId: string | number, newGender: 'Female' | 'Male') => {
     const uppercaseGender = newGender.toUpperCase() as 'MALE' | 'FEMALE';
-    setSheds(prev => prev.map(s => ({
-      ...s,
-      parts: s.parts.map(p => ({
-        ...p,
-        lines: p.lines.map(l => String(l.id) === String(lineId) ? { ...l, gender: uppercaseGender } : l)
-      }))
-    })));
+    setSheds(prev => {
+      const next = prev.map(s => ({
+        ...s,
+        parts: s.parts.map(p => ({
+          ...p,
+          lines: p.lines.map(l => String(l.id) === String(lineId) ? { ...l, gender: uppercaseGender } : l)
+        }))
+      }));
+      shedsRef.current = next;
+      try {
+        localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
 
     try {
       await cloudApi.updateLineGender(lineId, uppercaseGender);
-      showToast(`Line standard updated to ${newGender === 'Male' ? '♂ Male' : '♀ Female'} (STD: ${newGender === 'Male' ? stdWeightMale : stdWeightFemale}g)`);
+      const targetStd = newGender === 'Male' ? stdWeightMale : stdWeightFemale;
+      showToast(`Line standard updated to ${newGender === 'Male' ? '♂ Male' : '♀ Female'} (STD: ${targetStd}g)`);
     } catch {
       showToast(`Line standard set to ${newGender === 'Male' ? '♂ Male' : '♀ Female'}`);
     }
@@ -3605,6 +3613,21 @@ export default function App() {
                 totalFarmBirdsCount={totalFarmBirdsCount}
                 isAllShedsSaved={isAllShedsSaved}
                 onSubmitOverallFarm={() => setShowOverallSubmitConfirmModal(true)}
+                sheds={sheds}
+                shedLocks={shedLocks}
+                onEnterShed={handleEnterShed}
+                onStartEditShed={handleStartEditShed}
+                onDeleteShed={handleDeleteShed}
+                onForceUnlock={handleForceUnlock}
+                onAddShed={() => setShowAddShedModal(true)}
+                isEnteringShed={isEnteringShed}
+                isForceUnlockingShed={isForceUnlockingShed}
+                isFieldWorker={isFieldWorker}
+                stdWeightFemale={stdWeightFemale}
+                stdWeightMale={stdWeightMale}
+                weekNum={weekNum}
+                syncStatus={syncStatus}
+                pendingSyncCount={pendingSyncCount}
               />
             );
           })()
@@ -3788,7 +3811,9 @@ export default function App() {
               ) : (
                 sheds.map((s, sIdx) => {
                   const sAllWeights = (s.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || []));
-                  const sStats = calculateFlockStats(sAllWeights, stdWeightFemale, weekNum);
+                  const shedGender = s.type === 'Male' ? 'Male' : (s.parts?.some(p => p.lines?.some(l => (l.gender || '').toUpperCase() === 'MALE')) ? 'Male' : 'Female');
+                  const shedStd = shedGender === 'Male' ? stdWeightMale : stdWeightFemale;
+                  const sStats = calculateFlockStats(sAllWeights, shedStd, weekNum);
 
                   const lock = shedLocks[s.id] || {
                     locked: Boolean(s.lockedByUserId),
@@ -4150,7 +4175,9 @@ export default function App() {
             {/* Responsive Multi-Column Part Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6 overflow-y-auto flex-1">
               {activeShed.parts.map((part, partIndex) => {
-                const partStat = calculateFlockStats(part.lines.flatMap(l => l.weights), activeStd, weekNum);
+                const partGender = part.lines?.some(l => (l.gender || '').toUpperCase() === 'MALE') ? 'Male' : (activeShed.type === 'Male' ? 'Male' : 'Female');
+                const partStd = partGender === 'Male' ? stdWeightMale : stdWeightFemale;
+                const partStat = calculateFlockStats(part.lines.flatMap(l => l.weights), partStd, weekNum);
                 const partBirds = part.lines.reduce((acc, l) => acc + l.weights.length, 0);
 
                 return (
@@ -4316,8 +4343,8 @@ export default function App() {
             {/* Responsive Multi-Column Line Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6 overflow-y-auto flex-1">
               {activePart.lines.map((line, lineIndex) => {
-                const lineGender: 'Male' | 'Female' = (line.gender === 'Female' || line.gender === 'FEMALE') ? 'Female' : 'Male';
-                const lineStd = (lineGender === 'Female' ? stdWeightFemale : stdWeightMale) || activeStd;
+                const lineGender: 'Male' | 'Female' = (line.gender?.toUpperCase() === 'MALE' || (!line.gender && activeShed.type === 'Male')) ? 'Male' : 'Female';
+                const lineStd = lineGender === 'Male' ? stdWeightMale : stdWeightFemale;
                 const lStats = calculateFlockStats(line.weights, lineStd, weekNum);
                 const hasWeights = (line.weights || []).length > 0;
                 const isComplete = lStats.isComplete;
@@ -4506,21 +4533,52 @@ export default function App() {
 
             {/* Centered Weighing Pad Screen (Weighed Birds list card completely removed) */}
             <div className="w-full max-w-lg mx-auto flex-1 flex flex-col space-y-3 pt-2">
-              {/* Line Info Banner showing live birds count */}
-              <div className="flex items-center justify-between bg-white px-4 py-3 rounded-2xl border border-slate-200 shadow-2xs">
+              {/* Line Info Banner showing live birds count and direct Gender Selector */}
+              <div className="flex items-center justify-between bg-white px-4 py-3 rounded-2xl border border-slate-200 shadow-2xs flex-wrap gap-2">
                 <div>
-                  <h3 className="font-black text-sm text-slate-900">{activeLine.name} Weighing</h3>
-                  <p className="text-[11px] text-slate-500">{activeShed.name} › {activePart.name}</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-black text-sm text-slate-900">{activeLine.name} Weighing</h3>
+                    {/* Direct Female / Male Toggle on Weigh Pad */}
+                    <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (activeLineGender !== 'Female') handleToggleLineGender(activeLine.id, 'Female');
+                        }}
+                        className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
+                          activeLineGender === 'Female'
+                            ? 'bg-pink-600 text-white shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                        title="Set Line to Female"
+                      >
+                        ♀ F ({stdWeightFemale}g)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (activeLineGender !== 'Male') handleToggleLineGender(activeLine.id, 'Male');
+                        }}
+                        className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
+                          activeLineGender === 'Male'
+                            ? 'bg-blue-600 text-white shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                        title="Set Line to Male"
+                      >
+                        ♂ M ({stdWeightMale}g)
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5">{activeShed.name} › {activePart.name}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-mono font-black px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
                     {activeLine.weights.length} Birds Entered
                   </span>
-                  {!isFieldWorker && (
-                    <span className="text-[10px] font-mono font-bold px-2 py-1 rounded-lg bg-slate-100 text-slate-600 border border-slate-200">
-                      STD: {activeStd}g
-                    </span>
-                  )}
+                  <span className="text-[10px] font-mono font-bold px-2 py-1 rounded-lg bg-slate-100 text-slate-700 border border-slate-200">
+                    STD: {activeStd}g
+                  </span>
                 </div>
               </div>
 

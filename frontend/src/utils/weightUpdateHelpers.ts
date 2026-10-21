@@ -495,8 +495,11 @@ export function mergeServerShedsWithLocalDraft(
           weights = [];
         }
 
+        const preservedGender = localLine?.gender || (serverLine as any).gender || undefined;
+
         return {
           ...serverLine,
+          gender: preservedGender,
           weights,
           clearedAt,
           updatedAt: updatedAt || (serverLine as any).updatedAt,

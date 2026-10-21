@@ -49,6 +49,7 @@ export async function ensureFarmColumns(): Promise<void> {
       await prisma.$executeRawUnsafe('ALTER TABLE "Shed" ADD COLUMN IF NOT EXISTS "lastHeartbeatAt" TIMESTAMP(3)');
       await prisma.$executeRawUnsafe('ALTER TABLE "Shed" ADD COLUMN IF NOT EXISTS "recordedByUserId" TEXT');
       await prisma.$executeRawUnsafe('ALTER TABLE "Shed" ADD COLUMN IF NOT EXISTS "recordedByUserName" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE "Line" ADD COLUMN IF NOT EXISTS "gender" TEXT');
     } catch {
       await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
       await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
@@ -61,6 +62,7 @@ export async function ensureFarmColumns(): Promise<void> {
       await prisma.$executeRawUnsafe('ALTER TABLE shed ADD COLUMN IF NOT EXISTS "lastHeartbeatAt" TIMESTAMP(3)');
       await prisma.$executeRawUnsafe('ALTER TABLE shed ADD COLUMN IF NOT EXISTS "recordedByUserId" TEXT');
       await prisma.$executeRawUnsafe('ALTER TABLE shed ADD COLUMN IF NOT EXISTS "recordedByUserName" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE line ADD COLUMN IF NOT EXISTS "gender" TEXT');
     }
     columnsEnsured = true;
   } catch (err: any) {
@@ -93,6 +95,7 @@ export interface MemLine {
   partId: string;
   name: string;
   weights: number[];
+  gender?: 'MALE' | 'FEMALE';
 }
 
 export interface MemPart {
@@ -3596,6 +3599,56 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
   }
   return res.status(404).json({ error: 'Line not found' });
 });
+
+// --------------------------------------------------------------------------
+// 13b. PATCH /lines/:lineId/gender - Toggle Line Gender (MALE / FEMALE)
+// --------------------------------------------------------------------------
+const handleUpdateLineGender = async (req: Request, res: Response) => {
+  const lineId = req.params.lineId;
+  const { gender } = req.body;
+  const normalized = (gender || '').toUpperCase() === 'MALE' ? 'MALE' : 'FEMALE';
+
+  if (isPostgresConfigured()) {
+    try {
+      const line = await prisma.line.findUnique({
+        where: { id: lineId },
+        include: { part: { include: { shed: { include: { farm: true } } } } }
+      });
+      if (line) {
+        try {
+          await prisma.$executeRawUnsafe('UPDATE "Line" SET "gender" = $1 WHERE "id" = $2', normalized, lineId);
+        } catch {
+          try {
+            await prisma.$executeRawUnsafe('UPDATE line SET gender = $1 WHERE id = $2', normalized, lineId);
+          } catch {}
+        }
+        await touchFarm(line.part.shed.farmId);
+        return res.json({ success: true, lineId, gender: normalized });
+      }
+    } catch (err: any) {
+      console.warn('Line gender DB update warning:', err?.message || err);
+    }
+  }
+
+  // Memory fallback
+  for (const farm of memoryFarms) {
+    for (const shed of farm.sheds) {
+      for (const part of shed.parts) {
+        const line = part.lines.find(l => String(l.id) === String(lineId));
+        if (line) {
+          (line as any).gender = normalized;
+          farm.updatedAt = new Date();
+          return res.json({ success: true, lineId, gender: normalized });
+        }
+      }
+    }
+  }
+
+  return res.json({ success: true, lineId, gender: normalized });
+};
+
+farmRouter.patch('/lines/:lineId/gender', handleUpdateLineGender);
+farmRouter.patch('/api/lines/:lineId/gender', handleUpdateLineGender);
 
 // --------------------------------------------------------------------------
 // 14. POST /api/lines/:lineId/weight - Push bird weight entry
