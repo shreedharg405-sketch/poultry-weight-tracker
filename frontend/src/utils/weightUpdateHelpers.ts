@@ -517,8 +517,16 @@ export function mergeServerShedsWithLocalDraft(
       lp => !serverParts.some(sp => sp.id === lp.id)
     );
 
+    const matchedDraftShed = draftSheds.find(ds => ds.id === serverShed.id);
+    const isWeekSaved = (matchedDraftShed as any)?.savedStatus === 'SAVED' || (serverShed as any).savedStatus === 'SAVED';
+
     return {
       ...serverShed,
+      savedStatus: isWeekSaved ? 'SAVED' : 'PENDING',
+      savedByUserName: isWeekSaved ? ((matchedDraftShed as any)?.savedByUserName || (serverShed as any).savedByUserName) : undefined,
+      totalBirdCount: isWeekSaved ? ((matchedDraftShed as any)?.totalBirdCount || (serverShed as any).totalBirdCount || 0) : 0,
+      recordedByUserName: isWeekSaved ? ((matchedDraftShed as any)?.recordedByUserName || (serverShed as any).recordedByUserName) : null,
+      recordedByUserId: isWeekSaved ? ((matchedDraftShed as any)?.recordedByUserId || (serverShed as any).recordedByUserId) : null,
       type,
       parts: [...mergedParts, ...extraLocalParts]
     };

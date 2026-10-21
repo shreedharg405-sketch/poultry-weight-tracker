@@ -1196,14 +1196,19 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
 
       mappedSheds = (mappedSheds || []).map((s: any) => {
         const active = isShedLockActive(s);
+        const memEntry = memoryShedWeekStatus.get(shedWeekKey(farm.id, targetWeek, s.id));
+        const isMemSavedThisWeek = memEntry?.status === 'SAVED';
         return {
           ...s,
           lockedByUserId: active ? s.lockedByUserId : null,
           lockedByUserName: active ? s.lockedByUserName : null,
           lockedAt: active ? s.lockedAt : null,
           lastHeartbeatAt: active ? s.lastHeartbeatAt : null,
-          recordedByUserId: s.recordedByUserId || null,
-          recordedByUserName: s.recordedByUserName || null,
+          savedStatus: isMemSavedThisWeek ? 'SAVED' : (isCompleted ? 'SAVED' : 'PENDING'),
+          savedByUserName: isMemSavedThisWeek ? (memEntry?.savedByUserName || null) : (isCompleted ? audit?.lastSubmittedBy : null),
+          totalBirdCount: isMemSavedThisWeek ? (memEntry?.totalBirdCount || 0) : undefined,
+          recordedByUserId: isMemSavedThisWeek ? (memEntry?.savedByUserId || null) : (isCompleted ? s.recordedByUserId : null),
+          recordedByUserName: isMemSavedThisWeek ? (memEntry?.savedByUserName || null) : (isCompleted ? s.recordedByUserName : null),
         };
       });
 

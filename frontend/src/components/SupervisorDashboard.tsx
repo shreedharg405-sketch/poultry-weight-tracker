@@ -356,7 +356,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                           )}
                         </span>
                       ) : (
-                        <span>Weighing is open for this scheduled week only.</span>
+                        <span>Select any week (Week 1 to 24) to record weights or review flock status.</span>
                       )}
                     </p>
                   );
