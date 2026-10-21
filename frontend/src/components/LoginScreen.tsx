@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User, Lock, Eye, EyeOff, Loader2, AlertCircle, ShieldCheck, KeyRound, CheckCircle2, ArrowLeft, RotateCw } from 'lucide-react';
 import { cloudApi, AppUser } from '../services/cloudSyncService';
-import roosterLogo from '../assets/rooster-logo.jpg';
+import henLogo from '../assets/hen-logo.png';
 
 export interface LoginScreenProps {
   onLoginSuccess: (user: AppUser, token: string) => void;
@@ -130,7 +130,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onCanc
         <div className="text-center mb-6">
           <div className="flex justify-center mb-3">
             <img 
-              src={roosterLogo} 
+              src={henLogo} 
               alt="Poultry Flock Pro" 
               className="w-16 h-16 sm:w-20 sm:h-20 object-contain mix-blend-multiply pointer-events-none select-none transition-transform duration-300 hover:scale-105"
             />

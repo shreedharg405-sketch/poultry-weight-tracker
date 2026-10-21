@@ -7,6 +7,7 @@ export interface PenLine {
   id: number | string;
   name: string;
   weights: number[];
+  gender?: 'MALE' | 'FEMALE' | 'Male' | 'Female';
   clearedAt?: number;
   updatedAt?: number;
 }
@@ -23,6 +24,12 @@ export interface ShedData {
   sheetName?: string;
   type: 'Female' | 'Male';
   parts: ShedPart[];
+  lockedByUserId?: string | null;
+  lockedByUserName?: string | null;
+  lockedAt?: string | null;
+  lastHeartbeatAt?: string | null;
+  recordedByUserId?: string | null;
+  recordedByUserName?: string | null;
 }
 
 export interface GradingTolerance {
@@ -327,6 +334,7 @@ export function getColumnLetter(colIndex: number): string {
 
 export interface ExportWorkbookParams {
   farmName: string;
+  batchName?: string;
   dateStr: string;
   formattedDateTime: string;
   ageWeek: string;
@@ -345,6 +353,7 @@ export async function exportPoultryWorkbook(
 ): Promise<{ success: boolean; method: string; fileName: string; buffer?: ArrayBuffer }> {
   const {
     farmName,
+    batchName,
     dateStr,
     formattedDateTime,
     ageWeek,
@@ -376,17 +385,19 @@ export async function exportPoultryWorkbook(
     right: { style: 'thin', color: { argb: 'FF9CA3AF' } }
   };
 
-  // Combined female & male weights (all valid positive readings)
+  // Combined female & male weights calculated by Line-level gender
   const femaleWeights = filterValidWeights(
-    sheds
-      .filter(s => s.type === 'Female')
-      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights)))
+    sheds.flatMap(s => s.parts.flatMap(p => p.lines.filter(l => {
+      const g = (l.gender || (s.type === 'Male' ? 'MALE' : 'FEMALE')).toUpperCase();
+      return g === 'FEMALE';
+    }).flatMap(l => l.weights)))
   );
 
   const maleWeights = filterValidWeights(
-    sheds
-      .filter(s => s.type === 'Male')
-      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights)))
+    sheds.flatMap(s => s.parts.flatMap(p => p.lines.filter(l => {
+      const g = (l.gender || (s.type === 'Male' ? 'MALE' : 'FEMALE')).toUpperCase();
+      return g === 'MALE';
+    }).flatMap(l => l.weights)))
   );
 
   const fStats = calculateFlockStats(femaleWeights, stdWeightFemale, weekNum);
@@ -434,14 +445,14 @@ export async function exportPoultryWorkbook(
   // Header Title Row 1
   wsCons.mergeCells('B1:D1');
   const titleCell = wsCons.getCell('B1');
-  titleCell.value = `${farmName} - POULTRY BODY WEIGHT CONSOLIDATED REPORT`;
+  titleCell.value = `${farmName}${batchName ? ` (${batchName})` : ''} - POULTRY BODY WEIGHT CONSOLIDATED REPORT`;
   titleCell.font = { name: 'Cambria', size: 13, bold: true, color: { argb: 'FF1F2937' } };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
   // Subheader Info Row 2
   wsCons.mergeCells('B2:D2');
   const subCell = wsCons.getCell('B2');
-  subCell.value = `Date: ${formattedDateTime}  |  Age: ${ageWeek}  |  Season: ${season} Brooding`;
+  subCell.value = `${batchName ? `Batch: ${batchName}  |  ` : ''}Date: ${formattedDateTime}  |  Age: ${ageWeek}  |  Season: ${season} Brooding`;
   subCell.font = { name: 'Cambria', size: 10, italic: true, color: { argb: 'FF4B5563' } };
   subCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
@@ -616,10 +627,11 @@ export async function exportPoultryWorkbook(
 
   let currPLRow = plHeaderRow + 1;
   sheds.forEach(s => {
-    const std = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
     s.parts.forEach(p => {
       p.lines.forEach(l => {
-        const lStats = calculateFlockStats(l.weights, std, weekNum);
+        const lineGender = (l.gender || (s.type === 'Male' ? 'MALE' : 'FEMALE')).toUpperCase() === 'MALE' ? 'Male' : 'Female';
+        const lineStd = lineGender === 'Male' ? stdWeightMale : stdWeightFemale;
+        const lStats = calculateFlockStats(l.weights, lineStd, weekNum);
         const plData = [
           s.name,
           p.name,
@@ -654,30 +666,40 @@ export async function exportPoultryWorkbook(
   // 2. LINE-WISE SHED SHEETS ('Shed 1' through 'Shed 10')
   // =========================================================================
   sheds.forEach(shed => {
-    const std = shed.type === 'Male' ? stdWeightMale : stdWeightFemale;
-    const bands = getGradingBands(std, weekNum);
-
-    // Flatten all lines across parts
-    const flatLines: { colHeader: string; partName: string; lineName: string; weights: number[] }[] = [];
+    // Flatten all lines across parts with Line-level Gender & Standard Weights
+    const flatLines: { colHeader: string; partName: string; lineName: string; weights: number[]; gender: 'Male' | 'Female'; std: number; bands: GradingTolerance }[] = [];
     shed.parts.forEach(p => {
       p.lines.forEach(l => {
+        const lineGender = (l.gender || (shed.type === 'Male' ? 'MALE' : 'FEMALE')).toUpperCase() === 'MALE' ? 'Male' : 'Female';
+        const lineStd = lineGender === 'Male' ? stdWeightMale : stdWeightFemale;
+        const lineBands = getGradingBands(lineStd, weekNum);
         flatLines.push({
           colHeader: `${shed.name} - ${p.name} - ${l.name}`,
           partName: p.name,
           lineName: l.name,
-          weights: filterValidWeights(l.weights)
+          weights: filterValidWeights(l.weights),
+          gender: lineGender,
+          std: lineStd,
+          bands: lineBands,
         });
       });
     });
 
     if (flatLines.length === 0) {
+      const defaultStd = stdWeightFemale;
       flatLines.push({
         colHeader: `${shed.name} - Part A - Line 1`,
         partName: 'Part A',
         lineName: 'Line 1',
-        weights: []
+        weights: [],
+        gender: 'Female',
+        std: defaultStd,
+        bands: getGradingBands(defaultStd, weekNum),
       });
     }
+
+    const std = flatLines[0]?.std || (shed.type === 'Male' ? stdWeightMale : stdWeightFemale);
+    const bands = flatLines[0]?.bands || getGradingBands(std, weekNum);
 
     const sheetName = (shed.sheetName || shed.name).substring(0, 31);
     const ws = workbook.addWorksheet(sheetName, {
@@ -792,7 +814,7 @@ export async function exportPoultryWorkbook(
         gCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
         if (w !== undefined && typeof w === 'number' && Number.isFinite(w) && w > 0) {
-          const grade = getBirdGrade(w, bands);
+          const grade = getBirdGrade(w, fl.bands);
           wCell.value = w;
           wCell.font = { name: 'Cambria', size: 11, bold: true };
           gCell.value = grade;
@@ -1012,7 +1034,7 @@ export async function exportPoultryWorkbook(
         const grCol = 3 + flIdx * 2;
         const wtColLetter = getColumnLetter(wtCol);
 
-        const lineStats = calculateFlockStats(fl.weights, std, weekNum);
+        const lineStats = calculateFlockStats(fl.weights, fl.std, weekNum);
         const { formula, result } = def.buildFormulaAndResult(wtColLetter, lineStats, actualRow);
 
         // Beside each weight category count (MB, B, S, A, MA), add an adjacent percentage (%) column
@@ -1204,9 +1226,10 @@ export async function exportPoultryWorkbook(
     safeFarm = 'Poultry_Flock';
   }
   safeFarm = safeFarm.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeBatch = (batchName || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
   const safeDate = dateStr || new Date().toISOString().split('T')[0];
   const safeAge = ageWeek || 'W18';
-  const fileName = sanitizeFileName(`${safeFarm}_Conclusion_${safeAge}_${safeDate}.xlsx`);
+  const fileName = sanitizeFileName(`${safeFarm}${safeBatch ? `_${safeBatch}` : ''}_Conclusion_${safeAge}_${safeDate}.xlsx`);
 
   const downloadResult = await downloadExcelFile(buffer, fileName);
   return {

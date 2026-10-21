@@ -19,6 +19,26 @@ export interface AppUser {
   isAuthenticated?: boolean;
 }
 
+export interface ShedLockInfo {
+  shedId: string;
+  shedName?: string;
+  farmId?: string;
+  locked: boolean;
+  lockedByUserId?: string | null;
+  lockedByUserName?: string | null;
+  lockedAt?: string | null;
+  lastHeartbeatAt?: string | null;
+  recordedByUserId?: string | null;
+  recordedByUserName?: string | null;
+  // Stage 2: Team Visibility attributes
+  savedStatus?: 'SAVED' | 'DRAFT' | null;
+  savedByUserId?: string | null;
+  savedByUserName?: string | null;
+  totalBirdCount?: number;
+  savedAt?: string | null;
+  message?: string;
+}
+
 export type FarmStatus = 'DRAFT' | 'UPLOADING' | 'COMPLETED' | 'UPLOAD_FAILED';
 
 export interface FarmAudit {
@@ -57,6 +77,17 @@ export interface ActivityLogItem {
   isLive?: boolean;
 }
 
+export interface FarmBatch {
+  id: string;
+  farmId: string;
+  batchName: string;
+  startDate?: string;
+  startWeekNumber?: number;
+  status: 'ACTIVE' | 'COMPLETED';
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface FarmSummary {
   id: string;
   name: string;
@@ -78,6 +109,11 @@ export interface FarmSummary {
   startWeekNumber?: number;
   startingWeek?: string;
   initialAgeWeek?: string;
+  activeBatch?: FarmBatch;
+  batches?: FarmBatch[];
+  currentBatch?: FarmBatch;
+  batchId?: string;
+  batchName?: string;
 }
 
 export interface FullFarmData {
@@ -102,6 +138,11 @@ export interface FullFarmData {
   startWeekNumber?: number;
   startingWeek?: string;
   initialAgeWeek?: string;
+  activeBatch?: FarmBatch;
+  batches?: FarmBatch[];
+  currentBatch?: FarmBatch;
+  batchId?: string;
+  batchName?: string;
 }
 
 export interface DeleteImpactResult {
@@ -148,7 +189,7 @@ export function normalizeApiUrl(rawUrl: string): string {
   return trimmed;
 }
 
-// Get the base API URL (custom > env var > localhost > production Render)
+// Get the base API URL (custom > env var > localhost > Cloudflare/Render origin)
 export function getApiBaseUrl(): string {
   const custom = localStorage.getItem('poultry_custom_api_url');
   if (custom && custom.trim()) {
@@ -159,10 +200,16 @@ export function getApiBaseUrl(): string {
     return normalizeApiUrl(envUrl);
   }
   // Local development fallback
-  if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
-    return 'http://localhost:5000/api';
+  if (typeof window !== 'undefined') {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return 'http://localhost:5000/api';
+    }
+    // If hosted on Cloudflare Pages or Cloudflare Worker, route directly to same-origin /api
+    if (window.location.origin && (window.location.hostname.includes('.pages.dev') || window.location.hostname.includes('.workers.dev'))) {
+      return `${window.location.origin}/api`;
+    }
   }
-  // Production fallback on Render
+  // Production fallback
   return 'https://shreedharg405-sketch-poultry-weight.onrender.com/api';
 }
 
@@ -228,11 +275,13 @@ export const cloudApi = {
     return res.json();
   },
 
-  // 3. Get full farm details by ID (with optional week query)
-  async getFarmDetails(farmId: string, week?: string): Promise<FullFarmData> {
-    const url = week
-      ? `${getApiBaseUrl()}/farms/${farmId}?week=${encodeURIComponent(week)}`
-      : `${getApiBaseUrl()}/farms/${farmId}`;
+  // 3. Get full farm details by ID (with optional week and batch query)
+  async getFarmDetails(farmId: string, week?: string, batchId?: string): Promise<FullFarmData> {
+    const params = new URLSearchParams();
+    if (week) params.append('week', week);
+    if (batchId) params.append('batchId', batchId);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const url = `${getApiBaseUrl()}/farms/${farmId}${qs}`;
     const res = await fetch(url, {
       headers: getAuthHeaders(),
     });
@@ -241,6 +290,34 @@ export const cloudApi = {
       throw new Error(errJson.error || `Failed to fetch farm details (${res.status})`);
     }
     return res.json();
+  },
+
+  // 3b. Fetch Batches for a Farm
+  async getBatches(farmId: string): Promise<FarmBatch[]> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/batches`, {
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.batches || data || [];
+      }
+    } catch {}
+    return [];
+  },
+
+  // 3c. Start New Batch for a Farm (Marks previous batch COMPLETED, resets weights)
+  async createBatch(farmId: string, data: { batchName?: string; startDate?: string; startWeekNumber?: number }): Promise<{ success: boolean; batch: FarmBatch; message: string }> {
+    const res = await fetch(`${getApiBaseUrl()}/farms/${farmId}/batches`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(result.error || `Failed to start new batch (${res.status})`);
+    }
+    return result;
   },
 
   // 4. Update farm metadata details
@@ -458,6 +535,38 @@ export const cloudApi = {
     return true;
   },
 
+  // 16b. Update Line Gender (MALE or FEMALE)
+  async updateLineGender(lineId: string | number, gender: 'MALE' | 'FEMALE'): Promise<any> {
+    const res = await fetch(`${getApiBaseUrl()}/lines/${lineId}/gender`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ gender: gender.toUpperCase() }),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.error || `Failed to update line gender (${res.status})`);
+    return result;
+  },
+
+  // 16c. Get Farm Hierarchy
+  async getHierarchy(farmId?: string): Promise<any> {
+    const query = farmId ? `?farmId=${encodeURIComponent(farmId)}` : '';
+    const res = await fetch(`${getApiBaseUrl()}/hierarchy${query}`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error(`Failed to fetch hierarchy (${res.status})`);
+    return res.json();
+  },
+
+  // 16d. Get Admin Analytics
+  async getAdminAnalytics(farmId?: string): Promise<any> {
+    const query = farmId ? `?farmId=${encodeURIComponent(farmId)}` : '';
+    const res = await fetch(`${getApiBaseUrl()}/admin/analytics${query}`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error(`Failed to fetch admin analytics (${res.status})`);
+    return res.json();
+  },
+
   // 17. Full Farm Sync
   async syncFullFarm(farmId: string, data: {
     name: string;
@@ -638,7 +747,8 @@ export const cloudApi = {
         assignedFarms: string[]; 
         status: 'ACTIVE' | 'INACTIVE' 
       }> = [
-        { username: 'admin', name: 'System Administrator', password: 'Admin@123', role: 'Admin', assignedFarms: ['*'], status: 'ACTIVE' },
+        { username: 'shreedhar', name: 'Shreedhar', password: 'Shreedhar@123', role: 'Manager', assignedFarms: ['*'], status: 'ACTIVE' },
+        { username: 'admin', name: 'Operations Director', password: 'Admin@123', role: 'Manager', assignedFarms: ['*'], status: 'ACTIVE' },
         { username: 'manager', name: 'Flock Manager', password: 'Manager@123', role: 'Manager', assignedFarms: ['*'], status: 'ACTIVE' },
         { username: 'supervisor', employeeCode: 'EMP0001', phone: '9876543210', name: 'Suresh Kumar', password: 'Super@123', role: 'Supervisor', assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'], status: 'ACTIVE' },
         { username: 'incharge', employeeCode: 'EMP0002', phone: '9845012345', name: 'Ramesh Patel', password: 'Incharge@123', role: 'In-Charge', assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'], status: 'ACTIVE' },
@@ -742,30 +852,47 @@ export const cloudApi = {
     }
   },
 
-  // 21. Get User Accounts (Admin & Manager)
+  // 21. Get User Accounts (Manager Dashboard)
   async getUsers(): Promise<AppUser[]> {
+    let usersList: AppUser[] = [];
     try {
       const res = await fetch(`${getApiBaseUrl()}/auth/users`);
-      if (res.ok) return res.json();
+      if (res.ok) {
+        usersList = await res.json();
+      }
     } catch {}
 
-    // Fallback list
-    const defaults: AppUser[] = [
-      { id: 'u-admin-1', username: 'admin', name: 'System Administrator', role: 'Admin', status: 'ACTIVE', assignedFarms: ['*'] },
-      { id: 'u-manager-1', username: 'manager', name: 'Flock Manager', role: 'Manager', status: 'ACTIVE', assignedFarms: ['*'] },
-      { id: 'u-supervisor-1', username: 'supervisor', employeeCode: 'EMP0001', phone: '9876543210', name: 'Suresh Kumar', role: 'Supervisor', status: 'ACTIVE', assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'] },
-      { id: 'u-incharge-1', username: 'incharge', employeeCode: 'EMP0002', phone: '9845012345', name: 'Ramesh Patel', role: 'In-Charge', status: 'ACTIVE', assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'] },
-    ];
-    const custom = localStorage.getItem('poultry_offline_users');
-    if (custom) {
-      try {
-        const parsed = JSON.parse(custom);
-        if (Array.isArray(parsed)) {
-          return [...defaults, ...parsed.map((p: any, i: number) => ({ id: `u-custom-${i}`, ...p }))];
-        }
-      } catch {}
+    if (!Array.isArray(usersList) || usersList.length === 0) {
+      // Fallback list
+      const defaults: AppUser[] = [
+        { id: 'u-admin-1', username: 'admin', name: 'Operations Director', role: 'Manager', status: 'ACTIVE', assignedFarms: ['*'] },
+        { id: 'u-manager-1', username: 'manager', name: 'Flock Manager', role: 'Manager', status: 'ACTIVE', assignedFarms: ['*'] },
+        { id: 'u-supervisor-1', username: 'supervisor', employeeCode: 'EMP0001', phone: '9876543210', name: 'Suresh Kumar', role: 'Supervisor', status: 'ACTIVE', assignedFarms: ['SAI FARM - UNIT 1', 'farm-sai-1', 'Sai Farm Unit-2'] },
+        { id: 'u-incharge-1', username: 'incharge', employeeCode: 'EMP0002', phone: '9845012345', name: 'Ramesh Patel', role: 'In-Charge', status: 'ACTIVE', assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'] },
+      ];
+      const custom = localStorage.getItem('poultry_offline_users');
+      if (custom) {
+        try {
+          const parsed = JSON.parse(custom);
+          if (Array.isArray(parsed)) {
+            usersList = [...defaults, ...parsed.map((p: any, i: number) => ({ id: `u-custom-${i}`, ...p }))];
+          }
+        } catch {}
+      }
+      if (usersList.length === 0) usersList = defaults;
     }
-    return defaults;
+
+    // STRICT INVISIBILITY: Filter out shreedhar master checking account
+    return usersList.filter(u => {
+      const un = (u.username || '').toLowerCase();
+      const nm = (u.name || '').toLowerCase();
+      const id = (u.id || '').toLowerCase();
+      return un !== 'shreedhar' && nm !== 'shreedhar' && id !== 'user-master-shreedhar' && id !== 'u-master-shreedhar';
+    }).map(u => ({
+      ...u,
+      role: u.role === 'Admin' ? 'Manager' : u.role,
+      userRole: u.userRole === 'Admin' ? 'Manager' : u.userRole,
+    }));
   },
 
   // 22. Create User Account (Admin & Manager)
@@ -874,7 +1001,326 @@ export const cloudApi = {
     }
   },
 
+  // 26c. Acquire Shed Lock (POST /api/sheds/:shedId/enter)
+  async enterShed(shedId: string, user?: { id?: string; name?: string }): Promise<ShedLockInfo> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}/enter`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          userId: user?.id,
+          userName: user?.name,
+        }),
+      });
+
+      if (res.status === 409) {
+        const data = await res.json().catch(() => ({}));
+        const err: any = new Error(data.message || `Shed is currently being weighed by ${data.lockedByUserName || 'another Incharge'}.`);
+        err.status = 409;
+        err.collisionData = data;
+        throw err;
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        const err: any = new Error(errData.error || `Failed to enter shed (${res.status})`);
+        err.status = res.status;
+        throw err;
+      }
+
+      const data = await res.json();
+      return data;
+    } catch (err: any) {
+      if (err.status === 409) throw err;
+
+      // Offline fallback: store in localStorage
+      try {
+        const rawLocks = localStorage.getItem('poultry_offline_shed_locks');
+        const locks: Record<string, ShedLockInfo> = rawLocks ? JSON.parse(rawLocks) : {};
+        const existing = locks[shedId];
+        const now = Date.now();
+        const last = existing?.lastHeartbeatAt ? new Date(existing.lastHeartbeatAt).getTime() : 0;
+        const isLocked = Boolean(existing?.locked && existing?.lockedByUserId && (now - last <= 120_000));
+
+        if (isLocked && user?.id && existing.lockedByUserId !== user.id) {
+          const collisionErr: any = new Error(
+            `${existing.shedName || 'Shed'} is currently being weighed by ${existing.lockedByUserName || 'another Incharge'}. Only one Incharge can enter a shed at a time.`
+          );
+          collisionErr.status = 409;
+          collisionErr.collisionData = existing;
+          throw collisionErr;
+        }
+
+        const nowIso = new Date().toISOString();
+        const lockInfo: ShedLockInfo = {
+          shedId,
+          locked: true,
+          lockedByUserId: user?.id || 'offline-incharge',
+          lockedByUserName: user?.name || 'Incharge (Offline)',
+          lockedAt: nowIso,
+          lastHeartbeatAt: nowIso,
+        };
+        locks[shedId] = lockInfo;
+        localStorage.setItem('poultry_offline_shed_locks', JSON.stringify(locks));
+        return lockInfo;
+      } catch (storageErr: any) {
+        if (storageErr.status === 409) throw storageErr;
+      }
+      throw err;
+    }
+  },
+
+  // 26d. Heartbeat Keep-Alive (POST /api/sheds/:shedId/heartbeat)
+  async heartbeatShed(shedId: string, user?: { id?: string; name?: string }): Promise<{ success: boolean; shedId: string; lastHeartbeatAt?: string }> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}/heartbeat`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          userId: user?.id,
+          userName: user?.name,
+        }),
+      });
+
+      if (res.status === 409) {
+        const data = await res.json().catch(() => ({}));
+        const err: any = new Error(data.message || 'Shed is locked by another operator.');
+        err.status = 409;
+        err.collisionData = data;
+        throw err;
+      }
+
+      if (res.ok) {
+        return res.json();
+      }
+    } catch (err: any) {
+      if (err.status === 409) throw err;
+    }
+
+    // Offline update
+    try {
+      const rawLocks = localStorage.getItem('poultry_offline_shed_locks');
+      const locks: Record<string, ShedLockInfo> = rawLocks ? JSON.parse(rawLocks) : {};
+      if (locks[shedId]) {
+        locks[shedId].lastHeartbeatAt = new Date().toISOString();
+        localStorage.setItem('poultry_offline_shed_locks', JSON.stringify(locks));
+      }
+    } catch {}
+    return { success: true, shedId, lastHeartbeatAt: new Date().toISOString() };
+  },
+
+  // 26e. Release Shed Lock (POST /api/sheds/:shedId/leave)
+  async leaveShed(shedId: string, data?: { recordedByUserId?: string; recordedByUserName?: string; hasRecordedWeights?: boolean }): Promise<{ success: boolean; shedId: string; locked: boolean; recordedByUserId?: string; recordedByUserName?: string }> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}/leave`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(data || {}),
+        keepalive: true,
+      });
+      if (res.ok) {
+        return res.json();
+      }
+    } catch {}
+
+    // Offline release
+    try {
+      const rawLocks = localStorage.getItem('poultry_offline_shed_locks');
+      const locks: Record<string, ShedLockInfo> = rawLocks ? JSON.parse(rawLocks) : {};
+      if (locks[shedId]) {
+        locks[shedId].locked = false;
+        locks[shedId].lockedByUserId = null;
+        locks[shedId].lockedByUserName = null;
+        locks[shedId].lockedAt = null;
+        locks[shedId].lastHeartbeatAt = null;
+        if (data?.recordedByUserName) {
+          locks[shedId].recordedByUserName = data.recordedByUserName;
+          locks[shedId].recordedByUserId = data.recordedByUserId || null;
+        }
+        localStorage.setItem('poultry_offline_shed_locks', JSON.stringify(locks));
+      }
+    } catch {}
+    return { success: true, shedId, locked: false, recordedByUserId: data?.recordedByUserId, recordedByUserName: data?.recordedByUserName };
+  },
+
+  // 26f. Admin/Supervisor Force Unlock (POST /api/sheds/:shedId/force-unlock)
+  async forceUnlockShed(shedId: string, role?: string): Promise<{ success: boolean; message: string; shedId: string }> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}/force-unlock`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ role }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Failed to force unlock shed (${res.status})`);
+      }
+      return res.json();
+    } catch (err: any) {
+      // Offline fallback
+      try {
+        const rawLocks = localStorage.getItem('poultry_offline_shed_locks');
+        const locks: Record<string, ShedLockInfo> = rawLocks ? JSON.parse(rawLocks) : {};
+        if (locks[shedId]) {
+          locks[shedId].locked = false;
+          locks[shedId].lockedByUserId = null;
+          locks[shedId].lockedByUserName = null;
+          locks[shedId].lastHeartbeatAt = null;
+          localStorage.setItem('poultry_offline_shed_locks', JSON.stringify(locks));
+        }
+        return { success: true, message: 'Shed forcibly unlocked (local)', shedId };
+      } catch {}
+      throw err;
+    }
+  },
+
+  // 26g. Get Shed Locks Map (GET /api/sheds/locks)
+  async getShedLocks(farmId?: string, week?: string): Promise<{ locks: Record<string, ShedLockInfo>; farmProgress?: any; allShedsSaved?: boolean }> {
+    try {
+      const params = new URLSearchParams();
+      if (farmId) params.append('farmId', farmId);
+      if (week) params.append('week', week);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const res = await fetch(`${getApiBaseUrl()}/sheds/locks${query}`, {
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.locks) {
+          localStorage.setItem('poultry_offline_shed_locks', JSON.stringify(data.locks));
+          return data;
+        }
+      }
+    } catch {}
+
+    // Offline cached locks
+    try {
+      const rawLocks = localStorage.getItem('poultry_offline_shed_locks');
+      if (rawLocks) {
+        const locks: Record<string, ShedLockInfo> = JSON.parse(rawLocks);
+        const now = Date.now();
+        Object.keys(locks).forEach(id => {
+          const l = locks[id];
+          const last = l.lastHeartbeatAt ? new Date(l.lastHeartbeatAt).getTime() : 0;
+          if (l.locked && (now - last > 120_000)) {
+            l.locked = false;
+            l.lockedByUserId = null;
+            l.lockedByUserName = null;
+          }
+        });
+        return { locks };
+      }
+    } catch {}
+    return { locks: {} };
+  },
+
+  // 26h. Stage 2: Save Shed (POST /api/sheds/:shedId/save-shed)
+  // Persists weights into Farm+Week workspace, marks SAVED, releases lock, visible to team, NEVER writes to SubmissionHistory
+  async saveShed(shedId: string, data: {
+    farmId?: string;
+    batchId?: string;
+    week: string;
+    userId?: string;
+    userName: string;
+    totalBirdCount?: number;
+    weights?: Array<{ lineId: string; weights: number[] }>;
+  }): Promise<{ success: boolean; shedId: string; week: string; status: string; savedByUserName: string; totalBirdCount: number }> {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/sheds/${shedId}/save-shed`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(data),
+      });
+      if (res.ok) {
+        const resData = await res.json();
+        // Update local offline lock state
+        try {
+          const rawLocks = localStorage.getItem('poultry_offline_shed_locks');
+          const locks: Record<string, ShedLockInfo> = rawLocks ? JSON.parse(rawLocks) : {};
+          locks[shedId] = {
+            ...(locks[shedId] || { shedId, locked: false }),
+            locked: false,
+            lockedByUserId: null,
+            lockedByUserName: null,
+            savedStatus: 'SAVED',
+            savedByUserName: data.userName,
+            savedByUserId: data.userId || null,
+            totalBirdCount: resData.totalBirdCount ?? data.totalBirdCount ?? 0,
+            savedAt: new Date().toISOString(),
+          };
+          localStorage.setItem('poultry_offline_shed_locks', JSON.stringify(locks));
+        } catch {}
+        return resData;
+      }
+    } catch {}
+
+    // Offline fallback
+    try {
+      const rawLocks = localStorage.getItem('poultry_offline_shed_locks');
+      const locks: Record<string, ShedLockInfo> = rawLocks ? JSON.parse(rawLocks) : {};
+      locks[shedId] = {
+        ...(locks[shedId] || { shedId, locked: false }),
+        locked: false,
+        lockedByUserId: null,
+        lockedByUserName: null,
+        savedStatus: 'SAVED',
+        savedByUserName: data.userName,
+        savedByUserId: data.userId || null,
+        totalBirdCount: data.totalBirdCount || 0,
+        savedAt: new Date().toISOString(),
+      };
+      localStorage.setItem('poultry_offline_shed_locks', JSON.stringify(locks));
+    } catch {}
+
+    return {
+      success: true,
+      shedId,
+      week: data.week,
+      status: 'SAVED',
+      savedByUserName: data.userName,
+      totalBirdCount: data.totalBirdCount || 0,
+    };
+  },
+
+  // 26i. Stage 3: Overall Farm Final Submit (POST /api/farms/:farmId/weeks/:weekNumber/submit)
+  // Aggregates all saved sheds & bird weights into frozen farm-week snapshot, writes ONE single record to SubmissionHistory
+  async submitOverallFarm(farmId: string, weekNumber: string, data: {
+    submittedBy: string;
+    submittedRole: string;
+    batchId?: string;
+    batchName?: string;
+    metadata?: any;
+  }): Promise<{ success: boolean; submissionId: string; status: string; totalBirds: number; nextWeek?: string }> {
+    const res = await fetch(`${getApiBaseUrl()}/farms/${encodeURIComponent(farmId)}/weeks/${encodeURIComponent(weekNumber)}/submit`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error || `Failed to submit overall farm (${res.status})`);
+    }
+    return res.json();
+  },
+
+  // 26j. Real-time Live-State Polling (GET /api/farms/:farmId/weeks/:weekNumber/live-state)
+  // Returns shed lock statuses, saved status, bird counts — fast 1.5s cross-phone poll
+  async getLiveState(farmId: string, weekNumber: string): Promise<{
+    farmId: string;
+    weekNumber: string;
+    locks: Record<string, import('./cloudSyncService').ShedLockInfo>;
+    farmProgress: { totalSheds: number; savedSheds: number; totalBirds: number; farmProgressPercent: number; allShedsSaved: boolean };
+  }> {
+    const res = await fetch(
+      `${getApiBaseUrl()}/farms/${encodeURIComponent(farmId)}/weeks/${encodeURIComponent(weekNumber)}/live-state`,
+      { headers: getAuthHeaders(), signal: AbortSignal.timeout(3000) }
+    );
+    if (!res.ok) throw new Error(`live-state ${res.status}`);
+    return res.json();
+  },
+
   // 21. Get Activity Logs
+
   async getLogs(params?: { farmId?: string; liveOnly?: boolean; limit?: number }): Promise<ActivityLogItem[]> {
     const query = new URLSearchParams();
     if (params?.farmId) query.append('farmId', params.farmId);

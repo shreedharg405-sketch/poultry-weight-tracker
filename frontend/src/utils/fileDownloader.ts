@@ -1,9 +1,44 @@
 import FileSaver from 'file-saver';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+
+interface NativeDownloaderPlugin {
+  saveToDownloads(options: {
+    fileName: string;
+    base64Data: string;
+    mimeType?: string;
+    openImmediately?: boolean;
+    shareImmediately?: boolean;
+  }): Promise<{
+    success: boolean;
+    fileName: string;
+    path: string;
+    uri: string;
+    message: string;
+  }>;
+}
+
+const NativeDownloader = registerPlugin<NativeDownloaderPlugin>('NativeDownloader');
 
 const saveAs =
   (FileSaver as any)?.saveAs ||
   (FileSaver as any)?.default ||
   (typeof FileSaver === 'function' ? FileSaver : undefined);
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to convert Blob to Base64'));
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const commaIndex = dataUrl.indexOf(',');
+      resolve(commaIndex !== -1 ? dataUrl.slice(commaIndex + 1) : dataUrl);
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
 
 export interface DownloadResult {
   success: boolean;
@@ -181,7 +216,76 @@ export async function downloadExcelFile(
         : new Blob([urlOrData as any], { type: mimeType });
   }
 
-  // 4. Mobile Web Share API: Only on genuine mobile handhelds when canShare is supported
+  // 4. Native Android / iOS APK File Saving via NativeDownloader / MediaStore
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const base64Data = await blobToBase64(excelBlob);
+      
+      // A. Primary Native Method: Save directly into Android's public Downloads directory via NativeDownloader
+      try {
+        const nativeResult = await NativeDownloader.saveToDownloads({
+          fileName: cleanFileName,
+          base64Data,
+          mimeType,
+          openImmediately: false,
+          shareImmediately: true, // Also presents immediate share/open options while file is physically saved in Downloads
+        });
+        if (nativeResult?.success) {
+          console.log('✅ [Native Downloader] Successfully saved directly to device Downloads:', nativeResult);
+          return { success: true, method: 'download', fileName: cleanFileName };
+        }
+      } catch (downloaderErr) {
+        console.warn('NativeDownloader plugin encountered error, falling back to Filesystem:', downloaderErr);
+      }
+
+      // B. Secondary Fallback: Capacitor Filesystem Documents directory
+      try {
+        const writeResult = await Filesystem.writeFile({
+          path: cleanFileName,
+          data: base64Data,
+          directory: Directory.Documents,
+          recursive: true,
+        });
+
+        console.log('✅ [Capacitor Native] File saved via Filesystem:', writeResult.uri);
+
+        try {
+          await Share.share({
+            title: cleanFileName,
+            text: `Poultry Flock Pro Report: ${cleanFileName}`,
+            url: writeResult.uri,
+            dialogTitle: 'Save or Share Excel Report',
+          });
+          return { success: true, method: 'share', fileName: cleanFileName };
+        } catch (shareErr: any) {
+          return { success: true, method: 'download', fileName: cleanFileName };
+        }
+      } catch (nativeErr: any) {
+        console.error('❌ [Capacitor Native] Documents directory write error, attempting Cache directory:', nativeErr);
+        try {
+          const cacheResult = await Filesystem.writeFile({
+            path: cleanFileName,
+            data: base64Data,
+            directory: Directory.Cache,
+            recursive: true,
+          });
+          await Share.share({
+            title: cleanFileName,
+            text: `Poultry Flock Pro Report: ${cleanFileName}`,
+            url: cacheResult.uri,
+            dialogTitle: 'Save or Share Excel Report',
+          });
+          return { success: true, method: 'share', fileName: cleanFileName };
+        } catch (cacheErr) {
+          console.error('❌ [Capacitor Native] Cache write fallback also failed:', cacheErr);
+        }
+      }
+    } catch (outerErr) {
+      console.error('❌ [Capacitor Native] All native save attempts failed:', outerErr);
+    }
+  }
+
+  // 5. Mobile Web Share API: Only on genuine mobile handhelds when canShare is supported
   const isMobileDevice =
     typeof navigator !== 'undefined' &&
     /Android|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);

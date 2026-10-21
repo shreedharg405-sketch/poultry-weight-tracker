@@ -576,13 +576,8 @@ export const ExcelReplicaDashboard: React.FC = () => {
 
     const safeFarm = (farmName || 'Poultry_Flock_Report').trim();
     const cleanName = sanitizeFileName(`${safeFarm}_B_Weight_${date}.xlsx`);
-    try {
-      XLSX.writeFile(wb, cleanName);
-    } catch (e) {
-      console.warn('XLSX.writeFile fallback to downloadExcelFile:', e);
-      const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      await downloadExcelFile(buffer, cleanName);
-    }
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    await downloadExcelFile(buffer, cleanName);
   };
 
 

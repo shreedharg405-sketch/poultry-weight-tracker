@@ -14,18 +14,39 @@ model Farm {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   sheds     Shed[]
+  batches   Batch[]
+}
+
+model Batch {
+  id              String   @id @default(uuid())
+  farmId          String
+  farm            Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  batchName       String   // e.g. "Batch 1", "Batch 2"
+  startDate       String   // YYYY-MM-DD
+  startWeekNumber Int      @default(1)
+  status          String   @default("ACTIVE") // "ACTIVE" | "COMPLETED"
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  @@unique([farmId, batchName])
 }
 
 model Shed {
-  id        String   @id @default(uuid())
-  farmId    String
-  farm      Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  shedName  String   // "Shed 1", "Shed 2"
-  season    String   @default("WINTER_BROOD_SUMMER_LAY") // "WINTER_BROOD_SUMMER_LAY" | "SUMMER_BROOD_WINTER_LAY"
-  hatchDate DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  pens      Pen[]
+  id                 String    @id @default(uuid())
+  farmId             String
+  farm               Farm      @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  shedName           String   // "Shed 1", "Shed 2"
+  season             String    @default("WINTER_BROOD_SUMMER_LAY") // "WINTER_BROOD_SUMMER_LAY" | "SUMMER_BROOD_WINTER_LAY"
+  hatchDate          DateTime?
+  lockedByUserId     String?
+  lockedByUserName   String?
+  lockedAt           DateTime?
+  lastHeartbeatAt    DateTime?
+  recordedByUserId   String?
+  recordedByUserName String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  pens               Pen[]
 }
 
 model Pen {

@@ -48,11 +48,56 @@ export async function seedUsersIfEmpty(): Promise<void> {
         password: hashPassword('Incharge@123'),
         role: 'In-Charge',
         status: 'ACTIVE',
-        assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'],
+        assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+      },
+      {
+        username: 'incharge2',
+        name: 'Ravi Shankar',
+        email: 'ravi@farm.local',
+        password: hashPassword('Incharge@123'),
+        role: 'In-Charge',
+        status: 'ACTIVE',
+        assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+      },
+      {
+        username: 'incharge3',
+        name: 'Kumar Swamy',
+        email: 'kumar@farm.local',
+        password: hashPassword('Incharge@123'),
+        role: 'In-Charge',
+        status: 'ACTIVE',
+        assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+      },
+      {
+        username: 'incharge4',
+        name: 'Anand Verma',
+        email: 'anand@farm.local',
+        password: hashPassword('Incharge@123'),
+        role: 'In-Charge',
+        status: 'ACTIVE',
+        assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+      },
+      {
+        username: 'incharge5',
+        name: 'Priya Sharma',
+        email: 'priya@farm.local',
+        password: hashPassword('Incharge@123'),
+        role: 'In-Charge',
+        status: 'ACTIVE',
+        assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+      },
+      {
+        username: 'incharge6',
+        name: 'Manoj Tiwari',
+        email: 'manoj@farm.local',
+        password: hashPassword('Incharge@123'),
+        role: 'In-Charge',
+        status: 'ACTIVE',
+        assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
       },
     ],
   });
-  console.log('✅ [SEED] Initial accounts created: admin, manager, supervisor, incharge.');
+  console.log('✅ [SEED] Initial accounts created: admin, manager, supervisor, and incharges 1-6.');
 }
 
 export async function seedFarmsIfEmpty(): Promise<void> {

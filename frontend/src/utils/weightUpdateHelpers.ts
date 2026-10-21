@@ -113,6 +113,17 @@ export function createEmptyWeeklySheds(baseSheds: ShedData[]): ShedData[] {
   if (!Array.isArray(baseSheds)) return [];
   return baseSheds.map(s => ({
     ...s,
+    savedStatus: 'PENDING' as any,
+    savedByUserName: undefined,
+    savedByUserId: undefined,
+    savedAt: undefined,
+    totalBirdCount: 0,
+    recordedByUserId: null,
+    recordedByUserName: null,
+    lockedByUserId: null,
+    lockedByUserName: null,
+    lockedAt: null,
+    lastHeartbeatAt: null,
     parts: (s.parts || []).map(p => ({
       ...p,
       lines: (p.lines || []).map(l => ({
@@ -458,10 +469,10 @@ export function mergeServerShedsWithLocalDraft(
         const isLocallyCleared = Boolean(localLine?.clearedAt);
 
         // Priority 1: line-scoped draft weights (flock_draft_${farmId}_${week}_${shedId}_${partId}_${lineId})
-        // Priority 2: local in-memory weights if non-empty (and belong to scoped local shed)
+        // Priority 2: stored week draft weights (draftLineWeights strictly from poultry_draft_${farmId}_${week})
         // Priority 3: intentional local deletion/clear (weights = []) -> MUST NOT be resurrected by stale server weights!
-        // Priority 4: stored week draft weights (draftLineWeights)
-        // Priority 5: server weights for unweighed/untouched lines
+        // Priority 4: local in-memory weights if non-empty (strictly for same week)
+        // Priority 5: server weights for unweighed/untouched lines in this week
         let weights = serverWeights;
         let clearedAt = localLine?.clearedAt || (isDraftCleared ? Date.now() : undefined);
         let updatedAt = localLine?.updatedAt;
@@ -469,13 +480,13 @@ export function mergeServerShedsWithLocalDraft(
         if (lineScopedDraftWeights.length > 0) {
           weights = lineScopedDraftWeights;
           clearedAt = undefined;
-        } else if (localWeights.length > 0) {
-          weights = localWeights;
+        } else if (draftLineWeights.length > 0) {
+          weights = draftLineWeights;
           clearedAt = undefined;
         } else if (isLocallyCleared || isDraftCleared) {
           weights = [];
-        } else if (draftLineWeights.length > 0) {
-          weights = draftLineWeights;
+        } else if (localWeights.length > 0 && (!week || (localShed as any)?._week === week)) {
+          weights = localWeights;
           clearedAt = undefined;
         } else if (serverWeights.length > 0) {
           weights = serverWeights;

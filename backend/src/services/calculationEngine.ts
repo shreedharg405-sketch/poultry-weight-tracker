@@ -478,3 +478,193 @@ export function calculateShedAggregation(pensData: PenSampleData[]): ShedSummary
     compositeHistogram,
   };
 }
+
+export interface GradingTolerance {
+  tolerance: number;
+  sMin: number;
+  sMax: number;
+  bMin: number;
+  aMax: number;
+}
+
+export type BirdGrade = 'MB' | 'B' | 'S' | 'A' | 'MA';
+
+export function getToleranceForWeek(weekNum: number): number {
+  if (weekNum <= 3) return 25;
+  if (weekNum <= 8) return 50;
+  if (weekNum <= 14) return 75;
+  return 100;
+}
+
+export function getGradingBands(stdWeight: number, weekNum: number): GradingTolerance {
+  const tolerance = getToleranceForWeek(weekNum);
+  return {
+    tolerance,
+    sMin: stdWeight - tolerance,
+    sMax: stdWeight + tolerance,
+    bMin: stdWeight - 2 * tolerance,
+    aMax: stdWeight + 2 * tolerance,
+  };
+}
+
+export function getBirdGrade(weight: number, bands: GradingTolerance): BirdGrade {
+  if (weight < bands.bMin) return 'MB';
+  if (weight < bands.sMin) return 'B';
+  if (weight <= bands.sMax) return 'S';
+  if (weight <= bands.aMax) return 'A';
+  return 'MA';
+}
+
+export function filterValidWeights(weights: unknown[]): number[] {
+  if (!Array.isArray(weights)) return [];
+  return weights
+    .map(w => (typeof w === 'string' ? parseFloat(w) : Number(w)))
+    .filter((w): w is number => typeof w === 'number' && Number.isFinite(w) && w > 0);
+}
+
+export interface StatisticalSummary {
+  count: number;
+  totalWeight: number;
+  avg: number;
+  diff: number;
+  min: number;
+  max: number;
+  range: number;
+  variance: number;
+  stdDev: number;
+  fFactor: number | null;
+  cv: number | null;
+  mbCount: number;
+  bCount: number;
+  sCount: number;
+  aCount: number;
+  maCount: number;
+  mbPct: number;
+  bPct: number;
+  sPct: number;
+  aPct: number;
+  maPct: number;
+  unif: number;
+  uniformity10Pct: number;
+  status: 'EXCELLENT' | 'ACCEPTABLE' | 'POOR' | 'INCOMPLETE';
+  isComplete: boolean;
+  tolerance: number;
+  bands: GradingTolerance;
+}
+
+export function calculateFlockStats(
+  weights: number[],
+  stdWeight: number = 0,
+  weekNum: number = 1
+): StatisticalSummary {
+  const validWeights = filterValidWeights(weights);
+  const count = validWeights.length;
+  const bands = getGradingBands(stdWeight, weekNum);
+
+  if (count === 0) {
+    return {
+      count: 0,
+      totalWeight: 0,
+      avg: 0,
+      diff: 0,
+      min: 0,
+      max: 0,
+      range: 0,
+      variance: 0,
+      stdDev: 0,
+      fFactor: null,
+      cv: null,
+      mbCount: 0,
+      bCount: 0,
+      sCount: 0,
+      aCount: 0,
+      maCount: 0,
+      mbPct: 0,
+      bPct: 0,
+      sPct: 0,
+      aPct: 0,
+      maPct: 0,
+      unif: 0,
+      uniformity10Pct: 0,
+      status: 'INCOMPLETE',
+      isComplete: false,
+      tolerance: bands.tolerance,
+      bands,
+    };
+  }
+
+  const totalWeight = validWeights.reduce((acc, w) => acc + w, 0);
+  const avg = Number((totalWeight / count).toFixed(1));
+  const diff = Number((avg - stdWeight).toFixed(1));
+  const min = Math.min(...validWeights);
+  const max = Math.max(...validWeights);
+  const range = max - min;
+
+  const verifiedF = getVerifiedFFactor(count);
+  const fFactor = verifiedF !== null ? verifiedF : getFFactor(count);
+  const cv = avg > 0 && fFactor > 0 ? Number(((range * 100) / (avg * fFactor)).toFixed(2)) : null;
+
+  let mbCount = 0;
+  let bCount = 0;
+  let sCount = 0;
+  let aCount = 0;
+  let maCount = 0;
+
+  for (const w of validWeights) {
+    const grade = getBirdGrade(w, bands);
+    if (grade === 'MB') mbCount++;
+    else if (grade === 'B') bCount++;
+    else if (grade === 'S') sCount++;
+    else if (grade === 'A') aCount++;
+    else if (grade === 'MA') maCount++;
+  }
+
+  const sumSqDiff = validWeights.reduce((acc, w) => acc + Math.pow(w - avg, 2), 0);
+  const variance = count > 1 ? Number((sumSqDiff / (count - 1)).toFixed(2)) : 0;
+  const stdDev = Number(Math.sqrt(variance).toFixed(1));
+
+  const sPct = Number(((sCount / count) * 100).toFixed(1));
+  const lower10Pct = avg * 0.90;
+  const upper10Pct = avg * 1.10;
+  const birdsIn10Pct = validWeights.filter(w => w >= lower10Pct && w <= upper10Pct).length;
+  const uniformity10Pct = Number(((birdsIn10Pct / count) * 100).toFixed(1));
+
+  let status: 'EXCELLENT' | 'ACCEPTABLE' | 'POOR' | 'INCOMPLETE' = 'POOR';
+  if (sPct >= 80 || uniformity10Pct >= 80) {
+    status = 'EXCELLENT';
+  } else if (sPct >= 70 || uniformity10Pct >= 70) {
+    status = 'ACCEPTABLE';
+  } else {
+    status = 'POOR';
+  }
+
+  return {
+    count,
+    totalWeight,
+    avg,
+    diff,
+    min,
+    max,
+    range,
+    variance,
+    stdDev,
+    fFactor,
+    cv,
+    mbCount,
+    bCount,
+    sCount,
+    aCount,
+    maCount,
+    mbPct: Number(((mbCount / count) * 100).toFixed(1)),
+    bPct: Number(((bCount / count) * 100).toFixed(1)),
+    sPct,
+    aPct: Number(((aCount / count) * 100).toFixed(1)),
+    maPct: Number(((maCount / count) * 100).toFixed(1)),
+    unif: sPct,
+    uniformity10Pct,
+    status,
+    isComplete: true,
+    tolerance: bands.tolerance,
+    bands,
+  };
+}

@@ -5,7 +5,15 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   base: './',
   plugins: [react()],
+  oxc: false,
+  esbuild: {
+    drop: ['console', 'debugger'],
+    legalComments: 'none',
+  },
   build: {
     sourcemap: false,
+    minify: 'esbuild',
+    target: 'es2020',
+    cssMinify: true,
   },
 })

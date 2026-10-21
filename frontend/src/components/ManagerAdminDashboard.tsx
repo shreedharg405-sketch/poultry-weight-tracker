@@ -34,7 +34,7 @@ import {
   History,
   Search
 } from 'lucide-react';
-import { FarmSummary, AppUser, UserRole, cloudApi, FullFarmData, DeleteImpactResult, sanitizeErrorMessage } from '../services/cloudSyncService';
+import { FarmSummary, FarmBatch, AppUser, UserRole, cloudApi, FullFarmData, DeleteImpactResult, sanitizeErrorMessage } from '../services/cloudSyncService';
 import { formatDateTimeIST } from '../utils/dateFormatter';
 
 export interface ManagerAdminDashboardProps {
@@ -52,6 +52,10 @@ export interface ManagerAdminDashboardProps {
   onRefreshFarms?: () => Promise<void>;
   onDeleteFarm?: (farmId: string, options?: { mode?: 'archive' | 'permanent'; confirmFarmName?: string }) => Promise<void>;
   onRenameFarm?: (farmId: string, newName: string) => Promise<void>;
+  activeBatchId?: string;
+  onSelectBatch?: (batchId: string) => void;
+  currentWeek?: string;
+  onSwitchWeek?: (newWeek: string) => void;
 }
 
 export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
@@ -69,10 +73,15 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   onRefreshFarms,
   onDeleteFarm,
   onRenameFarm,
+  activeBatchId,
+  onSelectBatch,
+  currentWeek,
+  onSwitchWeek,
 }) => {
   const userRole = currentUser?.role || 'Manager';
-  const isAdmin = userRole === 'Admin';
-  const userDisplayName = currentUser?.userName || currentUser?.name || 'Executive User';
+  const isAdmin = true; // Consolidated: Manager has full permissions across all dashboard controls
+  const canManage = true;
+  const userDisplayName = currentUser?.userName || currentUser?.name || 'Manager';
 
   // 1. View Farm Details & Submissions Modal State (Req 2)
   const [viewingFarm, setViewingFarm] = useState<FarmSummary | null>(null);
@@ -101,13 +110,98 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   const [renameFarmError, setRenameFarmError] = useState<string | null>(null);
   const [renameFarmSuccess, setRenameFarmSuccess] = useState<string | null>(null);
 
-  const canEditFarm = (farm: FarmSummary) => {
-    if (isAdmin) return true;
-    if (userRole === 'Manager') {
-      const assigned = currentUser?.assignedFarms || [];
-      return assigned.includes('*') || assigned.includes(farm.id) || assigned.includes(farm.name);
+  const canEditFarm = (_farm: FarmSummary) => true;
+
+  // 5. Batch Management State (Farm -> Batch -> Week Hierarchy)
+  const [farmBatchesMap, setFarmBatchesMap] = useState<Record<string, FarmBatch[]>>({});
+  const [showStartBatchModal, setShowStartBatchModal] = useState<boolean>(false);
+  const [startBatchFarm, setStartBatchFarm] = useState<FarmSummary | null>(null);
+  const [newBatchNameInput, setNewBatchNameInput] = useState<string>('');
+  const [newBatchStartDateInput, setNewBatchStartDateInput] = useState<string>('');
+  const [newBatchStartWeekInput, setNewBatchStartWeekInput] = useState<number>(1);
+  const [isStartingBatch, setIsStartingBatch] = useState<boolean>(false);
+  const [startBatchError, setStartBatchError] = useState<string | null>(null);
+  const [startBatchSuccess, setStartBatchSuccess] = useState<string | null>(null);
+
+  const loadBatchesForFarm = async (farmId: string) => {
+    if (!farmId) return;
+    try {
+      const res = await cloudApi.getBatches(farmId);
+      const list = Array.isArray(res) ? res : ((res as any)?.batches || []);
+      if (list && list.length > 0) {
+        setFarmBatchesMap(prev => ({ ...prev, [farmId]: list }));
+      }
+    } catch (err) {
+      console.warn('Failed to load batches for farm', farmId, err);
     }
-    return false;
+  };
+
+  useEffect(() => {
+    if (activeFarmId) {
+      loadBatchesForFarm(activeFarmId);
+    }
+    farms.forEach(f => {
+      if (f.batches && f.batches.length > 0) {
+        setFarmBatchesMap(prev => ({ ...prev, [f.id]: f.batches! }));
+      } else if (f.activeBatch) {
+        setFarmBatchesMap(prev => ({
+          ...prev,
+          [f.id]: prev[f.id] || [f.activeBatch!]
+        }));
+      }
+    });
+  }, [activeFarmId, farms]);
+
+  const handleOpenStartBatch = (farm: FarmSummary) => {
+    setStartBatchFarm(farm);
+    const existing = farmBatchesMap[farm.id] || farm.batches || [];
+    const nextNum = existing.length + 1;
+    setNewBatchNameInput(`Batch ${nextNum}`);
+    setNewBatchStartDateInput(new Date().toISOString().split('T')[0]);
+    setNewBatchStartWeekInput(farm.startWeekNumber || 1);
+    setStartBatchError(null);
+    setStartBatchSuccess(null);
+    setShowStartBatchModal(true);
+  };
+
+  const handleStartBatchSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!startBatchFarm) return;
+    const bName = newBatchNameInput.trim() || 'Batch 1';
+    setIsStartingBatch(true);
+    setStartBatchError(null);
+    setStartBatchSuccess(null);
+    try {
+      const res = await cloudApi.createBatch(startBatchFarm.id, {
+        batchName: bName,
+        startDate: newBatchStartDateInput || new Date().toISOString().split('T')[0],
+        startWeekNumber: newBatchStartWeekInput || 1
+      });
+      if (res?.batch) {
+        setFarmBatchesMap(prev => {
+          const prevList = (prev[startBatchFarm.id] || []).map(b => ({ ...b, status: 'COMPLETED' as const }));
+          return {
+            ...prev,
+            [startBatchFarm.id]: [res.batch, ...prevList]
+          };
+        });
+        if (onSelectBatch) {
+          onSelectBatch(res.batch.id);
+        }
+      }
+      if (onRefreshFarms) {
+        await onRefreshFarms();
+      }
+      setStartBatchSuccess(`Successfully started ${bName} for ${startBatchFarm.name}!`);
+      setTimeout(() => {
+        setShowStartBatchModal(false);
+        setStartBatchFarm(null);
+      }, 700);
+    } catch (err: any) {
+      setStartBatchError(err.message || 'Failed to start new batch. Please try again.');
+    } finally {
+      setIsStartingBatch(false);
+    }
   };
 
   const handleOpenRenameFarm = (farm: FarmSummary) => {
@@ -155,7 +249,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     }
   };
 
-  // Assignment Modal State (Req 5: Real Database Field Operators)
+  // Assignment Modal State (Real Database Field Operators)
   const [assigningFarmId, setAssigningFarmId] = useState<string | null>(null);
   const [eligibleOperators, setEligibleOperators] = useState<AppUser[]>([]);
   const [selectedOperatorIds, setSelectedOperatorIds] = useState<string[]>([]);
@@ -166,9 +260,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   const [operatorSearchQuery, setOperatorSearchQuery] = useState('');
 
   const filteredOperators = useMemo(() => {
+    const cleanList = eligibleOperators.filter(u => u.username?.toLowerCase() !== 'shreedhar' && u.id !== 'user-master-shreedhar');
     const q = operatorSearchQuery.trim().toLowerCase();
-    if (!q) return eligibleOperators;
-    return eligibleOperators.filter(u => 
+    if (!q) return cleanList;
+    return cleanList.filter(u => 
       (u.name && u.name.toLowerCase().includes(q)) ||
       (u.username && u.username.toLowerCase().includes(q)) ||
       (u.role && u.role.toLowerCase().includes(q)) ||
@@ -176,7 +271,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     );
   }, [eligibleOperators, operatorSearchQuery]);
 
-  // User Account Management State (Admin Only)
+  // User Account Management State (Manager)
   const [showUserMgmtModal, setShowUserMgmtModal] = useState(false);
   const [systemUsers, setSystemUsers] = useState<AppUser[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
@@ -184,9 +279,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   const [accountSearchQuery, setAccountSearchQuery] = useState('');
 
   const filteredAccounts = useMemo(() => {
+    const cleanUsers = systemUsers.filter(u => u.username?.toLowerCase() !== 'shreedhar' && u.id !== 'user-master-shreedhar');
     const q = accountSearchQuery.trim().toLowerCase();
-    if (!q) return systemUsers;
-    return systemUsers.filter(u => {
+    if (!q) return cleanUsers;
+    return cleanUsers.filter(u => {
       const nameMatch = Boolean(u.name && u.name.toLowerCase().includes(q));
       const codeMatch = Boolean(
         (u.employeeCode && u.employeeCode.toLowerCase().includes(q)) ||
@@ -217,7 +313,8 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     setIsLoadingUsers(true);
     try {
       const users = await cloudApi.getUsers();
-      setSystemUsers(users);
+      const cleanUsers = users.filter(u => u.username?.toLowerCase() !== 'shreedhar' && u.id !== 'user-master-shreedhar');
+      setSystemUsers(cleanUsers);
       const nextCodeRes = await cloudApi.getNextEmployeeCode().catch(() => null);
       if (nextCodeRes?.nextEmployeeCode) {
         setNextEmpCode(nextCodeRes.nextEmployeeCode);
@@ -298,6 +395,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   };
 
   const handleToggleUserStatus = async (user: AppUser) => {
+    if (user.username?.toLowerCase() === 'shreedhar' || user.id === 'user-master-shreedhar') {
+      setUserMgmtFeedback('This account is protected.');
+      return;
+    }
     const newStatus = user.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
     try {
       await cloudApi.updateUser(user.id, { status: newStatus });
@@ -311,6 +412,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
   const handleResetPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!resetTargetUser || !resetPasswordInput.trim()) return;
+    if (resetTargetUser.username?.toLowerCase() === 'shreedhar' || resetTargetUser.id === 'user-master-shreedhar') {
+      setUserMgmtFeedback('This account is protected.');
+      return;
+    }
     try {
       await cloudApi.resetUserPassword(resetTargetUser.id, resetPasswordInput.trim());
       setUserMgmtFeedback(`Password reset for @${resetTargetUser.username}`);
@@ -321,14 +426,14 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
     }
   };
 
-  // User Deletion State (Admin Only Confirmation Modal)
+  // User Deletion State (Manager Only Confirmation Modal)
   const [deletingUser, setDeletingUser] = useState<AppUser | null>(null);
   const [isDeletingUser, setIsDeletingUser] = useState<boolean>(false);
   const [deleteUserError, setDeleteUserError] = useState<string | null>(null);
 
   const handlePromptDeleteUser = (user: AppUser) => {
-    if (!isAdmin) {
-      setUserMgmtFeedback('Unauthorized: Only Administrators can delete user accounts.');
+    if (user.username?.toLowerCase() === 'shreedhar' || user.id === 'user-master-shreedhar') {
+      setUserMgmtFeedback('This account is protected and cannot be deleted.');
       return;
     }
     const isSelf = 
@@ -336,15 +441,15 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       (currentUser?.userName && user.username.toLowerCase() === currentUser.userName.toLowerCase()) ||
       (currentUser?.username && user.username.toLowerCase() === currentUser.username.toLowerCase());
     if (isSelf) {
-      setUserMgmtFeedback('Cannot delete your own currently logged-in Administrator account.');
+      setUserMgmtFeedback('Cannot delete your own currently logged-in account.');
       return;
     }
     if (user.id === 'u-admin-1' || user.username.toLowerCase() === 'admin') {
-      setUserMgmtFeedback('The primary system Administrator account (@admin) is protected and cannot be deleted.');
+      setUserMgmtFeedback('This account is protected and cannot be deleted.');
       return;
     }
-    if (user.role === 'Admin' && systemUsers.filter(u => u.role === 'Admin').length <= 1) {
-      setUserMgmtFeedback('Cannot delete the sole Administrator account.');
+    if ((user.role === 'Admin' || user.role === 'Manager') && systemUsers.filter(u => u.role === 'Admin' || u.role === 'Manager').length <= 1) {
+      setUserMgmtFeedback('Cannot delete the sole Manager account.');
       return;
     }
 
@@ -390,8 +495,12 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
     try {
       const users = await cloudApi.getUsers();
-      // Eligible field operators: Supervisor and In-Charge / Incharge
-      const eligible = users.filter(u => u.role === 'Supervisor' || u.role === 'In-Charge' || u.role === 'Incharge');
+      // Eligible field operators: Supervisor and In-Charge / Incharge (strictly excluding master account)
+      const eligible = users.filter(u => 
+        (u.role === 'Supervisor' || u.role === 'In-Charge' || u.role === 'Incharge') &&
+        u.username?.toLowerCase() !== 'shreedhar' &&
+        u.id !== 'user-master-shreedhar'
+      );
       setEligibleOperators(eligible);
 
       // Determine operators already assigned to this farm (strictly matching farm id or name, excluding wildcard '*')
@@ -591,9 +700,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
             className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition bg-white px-3 py-2 rounded-xl border border-slate-200/90 shadow-2xs min-w-0"
             title="View Session Details"
           >
-            <div className={`w-8 h-8 rounded-lg text-white flex items-center justify-center font-black text-xs shadow-xs shrink-0 ${
-              isAdmin ? 'bg-purple-600' : 'bg-sky-600'
-            }`}>
+            <div className="w-8 h-8 rounded-lg text-white flex items-center justify-center font-black text-xs shadow-xs shrink-0 bg-sky-600">
               {userDisplayName.charAt(0).toUpperCase()}
             </div>
             <div className="min-w-0">
@@ -607,10 +714,8 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                   </span>
                 )}
               </div>
-              <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border mt-0.5 ${
-                isAdmin ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-sky-50 text-sky-700 border-sky-200'
-              }`}>
-                {userRole}
+              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border mt-0.5 bg-sky-50 text-sky-700 border-sky-200">
+                {userRole === 'Admin' ? 'Manager' : userRole}
               </span>
             </div>
           </div>
@@ -643,18 +748,12 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       </div>
 
       {/* Role Banner */}
-      <div className={`text-white p-4 md:p-6 rounded-2xl md:rounded-3xl border mb-4 md:mb-6 shadow-md ${
-        isAdmin 
-          ? 'bg-gradient-to-r from-purple-950 via-slate-900 to-indigo-950 border-purple-700/60' 
-          : 'bg-gradient-to-r from-sky-950 via-slate-900 to-indigo-950 border-sky-700/60'
-      }`}>
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-4 md:p-6 rounded-2xl md:rounded-3xl border border-indigo-700/60 mb-4 md:mb-6 shadow-md">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <span className={`text-[10px] md:text-xs font-black uppercase tracking-wider block ${
-                isAdmin ? 'text-purple-300' : 'text-sky-300'
-              }`}>
-                {isAdmin ? 'System Administrator Suite' : 'Supervisory Management Suite'}
+              <span className="text-[10px] md:text-xs font-black uppercase tracking-wider block text-indigo-300">
+                Manager Operations Suite
               </span>
               <span className="hidden md:inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
               <span className="hidden md:inline-block text-[10px] text-slate-300 font-medium">
@@ -662,31 +761,112 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               </span>
             </div>
             <h2 className="text-base sm:text-lg md:text-2xl font-black text-white mt-1">
-              {isAdmin ? 'Admin Master Control Center' : 'Manager Operations Portal'}
+              Manager Dashboard
             </h2>
             <p className="text-xs text-slate-300 mt-0.5 hidden sm:block">
-              {isAdmin 
-                ? 'Manage enterprise farm units, provision user credentials, enforce field operator assignments, and review flock metrics.'
-                : 'Monitor real-time flock drafts, inspect weighing conclusions, and manage field operator assignments across farm units.'}
+              Manage enterprise farm units, configure active flock batches, provision user credentials, assign field operators, and review flock metrics.
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {isAdmin && (
-              <button
-                type="button"
-                onClick={handleOpenUserManagement}
-                className="bg-purple-600 hover:bg-purple-500 text-white font-black text-xs px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 active:scale-95 transition cursor-pointer shadow-lg shadow-purple-950/40 border border-purple-400/40"
-              >
-                <Users className="w-4 h-4" />
-                <span>User Accounts ({systemUsers.length > 0 ? systemUsers.length : 'Manage'})</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={handleOpenUserManagement}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 active:scale-95 transition cursor-pointer shadow-lg shadow-indigo-950/40 border border-indigo-400/40"
+            >
+              <Users className="w-4 h-4" />
+              <span>User Accounts ({systemUsers.length > 0 ? systemUsers.length : 'Manage'})</span>
+            </button>
             <button
               onClick={onNewFarm}
               className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 active:scale-95 transition cursor-pointer shadow-lg shadow-emerald-950/40 border border-emerald-400/40"
             >
               <Plus className="w-4 h-4" />
               <span>Create New Farm</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Farm -> Batch -> Week Operational Scope Bar */}
+      <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200/90 shadow-2xs mb-4 md:mb-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-wrap flex-1 min-w-0">
+            {/* Farm Selector */}
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl min-w-[170px]">
+              <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <div className="flex flex-col min-w-0 flex-1">
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider leading-none">Farm Unit</span>
+                <select
+                  value={activeFarmId}
+                  onChange={(e) => onSelectFarm(e.target.value)}
+                  className="bg-transparent text-xs font-black text-slate-900 focus:outline-none cursor-pointer truncate mt-0.5"
+                >
+                  {farms.map(f => (
+                    <option key={f.id} value={f.id}>{f.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Batch Selector */}
+            {(() => {
+              const currentBatches = farmBatchesMap[activeFarmId] || farms.find(f => f.id === activeFarmId)?.batches || [];
+              const activeBatch = farms.find(f => f.id === activeFarmId)?.activeBatch;
+              const displayBatches = currentBatches.length > 0 ? currentBatches : (activeBatch ? [activeBatch] : [{ id: 'batch-1', farmId: activeFarmId, batchName: 'Batch 1', status: 'ACTIVE' as const }]);
+              const selectedBId = activeBatchId || displayBatches.find(b => b.status === 'ACTIVE')?.id || displayBatches[0]?.id;
+
+              return (
+                <div className="flex items-center gap-1.5 bg-purple-50/80 border border-purple-200 px-3 py-1.5 rounded-xl min-w-[170px]">
+                  <Layers className="w-4 h-4 text-purple-600 shrink-0" />
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-[9px] font-bold text-purple-600 uppercase tracking-wider leading-none">Flock Batch</span>
+                    <select
+                      value={selectedBId}
+                      onChange={(e) => onSelectBatch && onSelectBatch(e.target.value)}
+                      className="bg-transparent text-xs font-black text-purple-900 focus:outline-none cursor-pointer truncate mt-0.5"
+                    >
+                      {displayBatches.map(b => (
+                        <option key={b.id} value={b.id}>
+                          {b.batchName} {b.status === 'ACTIVE' ? '(Active)' : '(Completed)'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Week Selector */}
+            <div className="flex items-center gap-1.5 bg-sky-50/80 border border-sky-200 px-3 py-1.5 rounded-xl min-w-[130px]">
+              <Calendar className="w-4 h-4 text-sky-600 shrink-0" />
+              <div className="flex flex-col min-w-0 flex-1">
+                <span className="text-[9px] font-bold text-sky-600 uppercase tracking-wider leading-none">Recording Week</span>
+                <select
+                  value={currentWeek || 'W18'}
+                  onChange={(e) => onSwitchWeek && onSwitchWeek(e.target.value)}
+                  className="bg-transparent text-xs font-black text-sky-900 focus:outline-none cursor-pointer truncate mt-0.5"
+                >
+                  {Array.from({ length: 24 }, (_, i) => `W${i + 1}`).map(w => (
+                    <option key={w} value={w}>{w}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* + Start New Batch Button */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                const target = farms.find(f => f.id === activeFarmId) || farms[0];
+                if (target) handleOpenStartBatch(target);
+              }}
+              className="bg-purple-600 hover:bg-purple-500 text-white font-black text-xs px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 active:scale-95 transition cursor-pointer shadow-sm hover:shadow"
+              title="Start a new batch for this farm (marks previous completed and starts empty weights)"
+            >
+              <Plus className="w-4 h-4" />
+              <span>+ Start New Batch</span>
             </button>
           </div>
         </div>
@@ -937,6 +1117,10 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                     )}
                   </div>
                   <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500 flex-wrap">
+                    <span className="bg-purple-50 text-purple-800 px-2 py-0.5 rounded font-black text-[10px] border border-purple-200 flex items-center gap-1">
+                      <Layers className="w-3 h-3 text-purple-600" />
+                      {farm.activeBatch?.batchName || farm.batchName || 'Batch 1'}
+                    </span>
                     <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-bold text-[10px] border border-slate-200">
                       {farm.ageWeek}
                     </span>
@@ -1058,6 +1242,19 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                     }`}
                   >
                     {activeFarmId === farm.id ? 'Active Unit' : 'Select Farm'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenStartBatch(farm);
+                    }}
+                    className="px-2.5 py-1.5 text-purple-700 hover:text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 shrink-0"
+                    title={`Start New Batch for ${farm.name}`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>New Batch</span>
                   </button>
 
                   {canEditFarm(farm) && (
@@ -1410,9 +1607,8 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 filteredAccounts.map((user) => {
                   const isUserActive = user.status !== 'INACTIVE';
                   const roleColor = 
-                    user.role === 'Admin' ? 'bg-purple-500/20 text-purple-300 border-purple-500/40' :
-                    user.role === 'Manager' ? 'bg-sky-500/20 text-sky-300 border-sky-500/40' :
-                    user.role === 'In-Charge' ? 'bg-teal-500/20 text-teal-300 border-teal-500/40' :
+                    (user.role === 'Admin' || user.role === 'Manager') ? 'bg-sky-500/20 text-sky-300 border-sky-500/40' :
+                    (user.role === 'In-Charge' || user.role === 'Incharge') ? 'bg-teal-500/20 text-teal-300 border-teal-500/40' :
                     'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
 
                   return (
@@ -1441,7 +1637,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                           </div>
                           <div className="flex items-center gap-2 mt-1.5">
                             <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${roleColor}`}>
-                              {user.role}
+                              {user.role === 'Admin' ? 'Manager' : (user.role === 'In-Charge' ? 'Incharge' : user.role)}
                             </span>
                             <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
                               isUserActive 
@@ -1499,7 +1695,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                                 (currentUser?.id && user.id === currentUser.id) ||
                                 (currentUser?.userName && user.username.toLowerCase() === currentUser.userName.toLowerCase()) ||
                                 (currentUser?.username && user.username.toLowerCase() === currentUser.username.toLowerCase())
-                                  ? "Cannot delete your own logged-in Administrator account"
+                                  ? "Cannot delete your own logged-in account"
                                   : user.id === 'u-admin-1' || user.username.toLowerCase() === 'admin'
                                   ? "Protected primary system account cannot be deleted"
                                   : "Delete user account"
@@ -1639,10 +1835,9 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 onChange={(e) => setCreateRole(e.target.value as UserRole)}
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold focus:outline-none focus:border-emerald-500 cursor-pointer"
               >
-                <option value="Admin">Admin (Executive Master Dashboard & All Privileges)</option>
-                <option value="Manager">Manager (Executive Master Dashboard & Farm Assignments)</option>
+                <option value="Manager">Manager (Full Management Privileges & Assignments)</option>
                 <option value="Supervisor">Supervisor (Field Weighing & Draft Submissions)</option>
-                <option value="In-Charge">In-Charge (Field Weighing & Draft Submissions)</option>
+                <option value="In-Charge">Incharge (Field Weighing & Draft Submissions)</option>
               </select>
             </div>
 
@@ -1843,7 +2038,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                     Confirm Delete User Account
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Administrator authorization required
+                    Manager authorization required
                   </p>
                 </div>
               </div>
@@ -2024,44 +2219,101 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 </div>
               ) : (
                 <>
-                  {/* Summary Metric Cards */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                    <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                        Sheds
-                      </span>
-                      <span className="text-base font-black text-white font-mono mt-0.5 block">
-                        {viewingFarmDetails?.sheds?.length ?? viewingFarm._count?.sheds ?? 0}
-                      </span>
-                    </div>
+                  {/* Dynamic Calculation of true Gender-based Avg Weights */}
+                  {(() => {
+                    let femaleBirdWeights: number[] = [];
+                    let maleBirdWeights: number[] = [];
 
-                    <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                        Submissions
-                      </span>
-                      <span className="text-base font-black text-emerald-400 font-mono mt-0.5 block">
-                        {viewingFarmDetails?.submissions?.length ?? viewingFarm.submissionCount ?? (viewingFarm.status === 'COMPLETED' ? 1 : 0)}
-                      </span>
-                    </div>
+                    const modalSheds = (viewingFarmDetails?.sheds && viewingFarmDetails.sheds.length > 0)
+                      ? viewingFarmDetails.sheds
+                      : ((viewingFarm as any).sheds && (viewingFarm as any).sheds.length > 0)
+                        ? (viewingFarm as any).sheds
+                        : [];
 
-                    <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                        Total Birds
-                      </span>
-                      <span className="text-base font-black text-white font-mono mt-0.5 block">
-                        {viewingFarmDetails?.audit?.totalBirdsSubmitted ?? viewingFarm.audit?.totalBirdsSubmitted ?? '—'}
-                      </span>
-                    </div>
+                    modalSheds.forEach((s: any) => {
+                      const parts = s.parts || [];
+                      parts.forEach((p: any) => {
+                        const lines = p.lines || [];
+                        lines.forEach((l: any) => {
+                          const effGender = (l.gender && (l.gender.toUpperCase() === 'FEMALE' || l.gender.toUpperCase() === 'MALE'))
+                            ? l.gender
+                            : (s.gender || s.type || 'Female');
+                          const isFem = effGender.toLowerCase() === 'female' || effGender.toUpperCase() === 'F';
+                          const wList: number[] = Array.isArray(l.weights) ? l.weights : [];
+                          if (isFem) femaleBirdWeights.push(...wList);
+                          else maleBirdWeights.push(...wList);
+                        });
+                      });
+                    });
 
-                    <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                        Avg Weights
-                      </span>
-                      <span className="text-xs font-bold text-sky-400 font-mono mt-1 block">
-                        ♀ {viewingFarmDetails?.audit?.femaleAvgWeight ?? viewingFarm.audit?.femaleAvgWeight ?? '—'}g / ♂ {viewingFarmDetails?.audit?.maleAvgWeight ?? viewingFarm.audit?.maleAvgWeight ?? '—'}g
-                      </span>
-                    </div>
-                  </div>
+                    // If not found on raw sheds, check latest submission
+                    if (femaleBirdWeights.length === 0 && maleBirdWeights.length === 0 && viewingFarmDetails?.submissions?.length) {
+                      const latestSub = viewingFarmDetails.submissions[0];
+                      (latestSub.sheds || []).forEach((s: any) => {
+                        (s.parts || []).forEach((p: any) => {
+                          (p.lines || []).forEach((l: any) => {
+                            const effGender = (l.gender && (l.gender.toUpperCase() === 'FEMALE' || l.gender.toUpperCase() === 'MALE'))
+                              ? l.gender
+                              : (s.gender || s.type || 'Female');
+                            const isFem = effGender.toLowerCase() === 'female' || effGender.toUpperCase() === 'F';
+                            const wList: number[] = Array.isArray(l.weights) ? l.weights : [];
+                            if (isFem) femaleBirdWeights.push(...wList);
+                            else maleBirdWeights.push(...wList);
+                          });
+                        });
+                      });
+                    }
+
+                    const calcFemAvg = femaleBirdWeights.length > 0
+                      ? Math.round((femaleBirdWeights.reduce((a, b) => a + b, 0) / femaleBirdWeights.length) * 10) / 10
+                      : (viewingFarmDetails?.audit?.femaleAvgWeight ?? viewingFarm.audit?.femaleAvgWeight ?? null);
+
+                    const calcMaleAvg = maleBirdWeights.length > 0
+                      ? Math.round((maleBirdWeights.reduce((a, b) => a + b, 0) / maleBirdWeights.length) * 10) / 10
+                      : (viewingFarmDetails?.audit?.maleAvgWeight ?? viewingFarm.audit?.maleAvgWeight ?? null);
+
+                    return (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                        <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                            Sheds
+                          </span>
+                          <span className="text-base font-black text-white font-mono mt-0.5 block">
+                            {viewingFarmDetails?.sheds?.length ?? viewingFarm._count?.sheds ?? 0}
+                          </span>
+                        </div>
+
+                        <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                            Submissions
+                          </span>
+                          <span className="text-base font-black text-emerald-400 font-mono mt-0.5 block">
+                            {viewingFarmDetails?.submissions?.length ?? viewingFarm.submissionCount ?? (viewingFarm.status === 'COMPLETED' ? 1 : 0)}
+                          </span>
+                        </div>
+
+                        <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                            Total Birds
+                          </span>
+                          <span className="text-base font-black text-white font-mono mt-0.5 block">
+                            {femaleBirdWeights.length + maleBirdWeights.length > 0
+                              ? (femaleBirdWeights.length + maleBirdWeights.length).toLocaleString()
+                              : (viewingFarmDetails?.audit?.totalBirdsSubmitted ?? viewingFarm.audit?.totalBirdsSubmitted ?? '—')}
+                          </span>
+                        </div>
+
+                        <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-center">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                            Avg Weights
+                          </span>
+                          <span className="text-xs font-bold text-sky-400 font-mono mt-1 block">
+                            ♀ {calcFemAvg !== null ? `${calcFemAvg}g` : '—'} / ♂ {calcMaleAvg !== null ? `${calcMaleAvg}g` : '—'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Helper fallback datasets for resilient cloud display */}
                   {(() => {
@@ -2184,9 +2436,24 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                                           const lUnif = lCount > 0 ? Math.round((lIn / lCount) * 1000) / 10 : 0;
                                           const lStatus = lCount === 0 ? 'PENDING' : (lUnif >= 80 ? 'EXCELLENT' : (lUnif >= 70 ? 'ACCEPTABLE' : 'POOR'));
 
+                                          // Dynamically bind each line's gender: inherit parent shed's gender unless explicitly configured
+                                          const effectiveLineGender = (line.gender && (line.gender.toUpperCase() === 'FEMALE' || line.gender.toUpperCase() === 'MALE'))
+                                            ? line.gender
+                                            : (shed.gender || shed.type || 'Female');
+                                          const isLineFemale = effectiveLineGender.toLowerCase() === 'female' || effectiveLineGender.toUpperCase() === 'F';
+
                                           return (
                                             <div key={line.id || lIdx} className="bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 flex items-center justify-between text-[11px]">
-                                              <span className="font-bold text-slate-300 truncate max-w-[120px]">{line.name}</span>
+                                              <div className="flex items-center gap-1.5 min-w-0">
+                                                <span className="font-bold text-slate-300 truncate max-w-[120px]">{line.name}</span>
+                                                <span className={`text-[9px] px-1.5 py-0.2 rounded font-black ${
+                                                  isLineFemale 
+                                                    ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30' 
+                                                    : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                                                }`}>
+                                                  {isLineFemale ? '♀ F' : '♂ M'}
+                                                </span>
+                                              </div>
                                               <div className="flex items-center gap-1.5 font-mono">
                                                 <span className="text-slate-400">{lCount > 0 ? `${lCount}b` : '0b'}</span>
                                                 <span className="text-emerald-400 font-semibold">{lCount > 0 ? `${lAvg}g` : '—'}</span>
@@ -2665,6 +2932,145 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                     </>
                   ) : (
                     <span>Save Changes</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL: START NEW BATCH (Farm -> Batch -> Week)            */}
+      {/* ========================================================= */}
+      {showStartBatchModal && startBatchFarm && (
+        <div 
+          className="fixed inset-0 bg-black/75 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-slate-900 border border-slate-700 text-slate-100 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-purple-500/20 text-purple-400 rounded-xl border border-purple-500/30">
+                  <Layers className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-sm sm:text-base text-white">
+                    Start New Batch
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Farm Unit: <strong className="text-white">{startBatchFarm.name}</strong>
+                  </p>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => {
+                  if (!isStartingBatch) {
+                    setShowStartBatchModal(false);
+                    setStartBatchFarm(null);
+                  }
+                }}
+                disabled={isStartingBatch}
+                className="text-slate-400 hover:text-white p-1 rounded-lg disabled:opacity-50 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {startBatchError && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{startBatchError}</span>
+              </div>
+            )}
+
+            {startBatchSuccess && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
+                <Check className="w-4 h-4 shrink-0" />
+                <span>{startBatchSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleStartBatchSubmit} className="space-y-3.5">
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                  Batch Name *
+                </label>
+                <input
+                  type="text"
+                  value={newBatchNameInput}
+                  onChange={(e) => setNewBatchNameInput(e.target.value)}
+                  placeholder="e.g. Batch 2"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold focus:outline-none focus:border-purple-500"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                    Placement Date *
+                  </label>
+                  <input
+                    type="date"
+                    value={newBatchStartDateInput}
+                    onChange={(e) => setNewBatchStartDateInput(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold focus:outline-none focus:border-purple-500"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                    Start Week *
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={24}
+                    value={newBatchStartWeekInput}
+                    onChange={(e) => setNewBatchStartWeekInput(parseInt(e.target.value, 10) || 1)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold focus:outline-none focus:border-purple-500"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 bg-purple-950/40 border border-purple-800/40 rounded-xl text-[11px] text-purple-300/90 leading-relaxed">
+                <p>
+                  <strong>Note:</strong> Starting a new batch marks the current batch as <em>COMPLETED</em> (read-only). All existing physical sheds, parts, lines, and operator assignments are preserved with a fresh slate of empty weights for the new batch.
+                </p>
+              </div>
+
+              <div className="flex gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowStartBatchModal(false);
+                    setStartBatchFarm(null);
+                  }}
+                  disabled={isStartingBatch}
+                  className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl font-bold text-xs transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isStartingBatch || !newBatchNameInput.trim()}
+                  className="flex-1 bg-purple-600 hover:bg-purple-500 text-white py-2.5 rounded-xl font-black text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-purple-950/50 disabled:opacity-50"
+                >
+                  {isStartingBatch ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Starting Batch...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-4 h-4" />
+                      <span>Start New Batch</span>
+                    </>
                   )}
                 </button>
               </div>

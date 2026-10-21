@@ -489,21 +489,28 @@ export const SubmissionUpdateScreen: React.FC<SubmissionUpdateScreenProps> = ({
         </div>
       </div>
 
-      {/* Live Calculated Stats Summary Card */}
-      <div className="grid grid-cols-3 gap-1.5 bg-gradient-to-r from-slate-900 to-emerald-950 text-white p-3 rounded-2xl mb-3.5 shadow-md">
-        <div className="text-center min-w-0">
-          <span className="text-[9px] uppercase font-bold text-emerald-300 block truncate">Total Sampled</span>
-          <span className="text-base font-black font-mono block truncate">{liveStats.count} Birds</span>
+      {/* Live Calculated Stats Summary Card: Restricted for Field Workers (Supervisor & In-Charge) */}
+      {(currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') ? (
+        <div className="bg-gradient-to-r from-slate-900 to-emerald-950 text-white p-3.5 rounded-2xl mb-3.5 shadow-md flex items-center justify-between">
+          <span className="text-xs uppercase font-bold text-emerald-300">Total Birds Sampled</span>
+          <span className="text-base font-black font-mono text-white">{liveStats.count} Birds</span>
         </div>
-        <div className="text-center min-w-0">
-          <span className="text-[9px] uppercase font-bold text-emerald-300 block truncate">Overall Avg Wt</span>
-          <span className="text-base font-black font-mono text-emerald-400 block truncate">{liveStats.avg}g</span>
+      ) : (
+        <div className="grid grid-cols-3 gap-1.5 bg-gradient-to-r from-slate-900 to-emerald-950 text-white p-3 rounded-2xl mb-3.5 shadow-md">
+          <div className="text-center min-w-0">
+            <span className="text-[9px] uppercase font-bold text-emerald-300 block truncate">Total Sampled</span>
+            <span className="text-base font-black font-mono block truncate">{liveStats.count} Birds</span>
+          </div>
+          <div className="text-center min-w-0">
+            <span className="text-[9px] uppercase font-bold text-emerald-300 block truncate">Overall Avg Wt</span>
+            <span className="text-base font-black font-mono text-emerald-400 block truncate">{liveStats.avg}g</span>
+          </div>
+          <div className="text-center min-w-0">
+            <span className="text-[9px] uppercase font-bold text-emerald-300 block truncate">Uniformity (S%)</span>
+            <span className="text-base font-black font-mono text-amber-300 block truncate">{liveStats.uniformity}%</span>
+          </div>
         </div>
-        <div className="text-center min-w-0">
-          <span className="text-[9px] uppercase font-bold text-emerald-300 block truncate">Uniformity (S%)</span>
-          <span className="text-base font-black font-mono text-amber-300 block truncate">{liveStats.uniformity}%</span>
-        </div>
-      </div>
+      )}
 
       {/* Editable Fields Section */}
       <div className="bg-white p-3.5 rounded-2xl border border-slate-200 mb-3 shadow-xs space-y-3">

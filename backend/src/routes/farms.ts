@@ -43,12 +43,24 @@ export async function ensureFarmColumns(): Promise<void> {
       await prisma.$executeRawUnsafe('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "employeeCode" TEXT');
       await prisma.$executeRawUnsafe('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "phone" TEXT');
       await prisma.$executeRawUnsafe('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "requiresPasswordChange" BOOLEAN NOT NULL DEFAULT false');
+      await prisma.$executeRawUnsafe('ALTER TABLE "Shed" ADD COLUMN IF NOT EXISTS "lockedByUserId" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE "Shed" ADD COLUMN IF NOT EXISTS "lockedByUserName" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE "Shed" ADD COLUMN IF NOT EXISTS "lockedAt" TIMESTAMP(3)');
+      await prisma.$executeRawUnsafe('ALTER TABLE "Shed" ADD COLUMN IF NOT EXISTS "lastHeartbeatAt" TIMESTAMP(3)');
+      await prisma.$executeRawUnsafe('ALTER TABLE "Shed" ADD COLUMN IF NOT EXISTS "recordedByUserId" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE "Shed" ADD COLUMN IF NOT EXISTS "recordedByUserName" TEXT');
     } catch {
       await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
       await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
       await prisma.$executeRawUnsafe('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "employeeCode" TEXT');
       await prisma.$executeRawUnsafe('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "phone" TEXT');
       await prisma.$executeRawUnsafe('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "requiresPasswordChange" BOOLEAN NOT NULL DEFAULT false');
+      await prisma.$executeRawUnsafe('ALTER TABLE shed ADD COLUMN IF NOT EXISTS "lockedByUserId" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE shed ADD COLUMN IF NOT EXISTS "lockedByUserName" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE shed ADD COLUMN IF NOT EXISTS "lockedAt" TIMESTAMP(3)');
+      await prisma.$executeRawUnsafe('ALTER TABLE shed ADD COLUMN IF NOT EXISTS "lastHeartbeatAt" TIMESTAMP(3)');
+      await prisma.$executeRawUnsafe('ALTER TABLE shed ADD COLUMN IF NOT EXISTS "recordedByUserId" TEXT');
+      await prisma.$executeRawUnsafe('ALTER TABLE shed ADD COLUMN IF NOT EXISTS "recordedByUserName" TEXT');
     }
     columnsEnsured = true;
   } catch (err: any) {
@@ -98,6 +110,19 @@ export interface MemShed {
   type: 'Female' | 'Male';
   order: number;
   parts: MemPart[];
+  lockedByUserId?: string | null;
+  lockedByUserName?: string | null;
+  lockedAt?: Date | null;
+  lastHeartbeatAt?: Date | null;
+  recordedByUserId?: string | null;
+  recordedByUserName?: string | null;
+}
+
+export function isShedLockActive(shed: { lockedByUserId?: string | null; lastHeartbeatAt?: Date | string | null }): boolean {
+  if (!shed?.lockedByUserId || !shed?.lastHeartbeatAt) return false;
+  const last = new Date(shed.lastHeartbeatAt).getTime();
+  if (isNaN(last)) return false;
+  return (Date.now() - last) <= 120_000; // 2 minutes (120,000ms) inactivity timeout
 }
 
 export interface MemFarm {
@@ -154,6 +179,17 @@ export const memoryFarms: MemFarm[] = [];
 
 export const memoryUsers: MemUser[] = [
   {
+    id: 'u-master-shreedhar',
+    username: 'shreedhar',
+    name: 'Shreedhar',
+    email: 'shreedhar@poultry.internal',
+    password: hashPassword('Shreedhar@123'),
+    role: 'Manager',
+    status: 'ACTIVE',
+    assignedFarms: ['*'],
+    createdAt: new Date(),
+  },
+  {
     id: 'u-admin-1',
     username: 'admin',
     name: 'System Administrator',
@@ -200,7 +236,77 @@ export const memoryUsers: MemUser[] = [
     role: 'In-Charge',
     status: 'ACTIVE',
     requiresPasswordChange: false,
-    assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1'],
+    assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+    createdAt: new Date(),
+  },
+  {
+    id: 'u-incharge-2',
+    username: 'incharge2',
+    employeeCode: 'EMP0003',
+    phone: '9845012346',
+    name: 'Ravi Shankar',
+    email: 'ravi@farm.local',
+    password: hashPassword('Incharge@123'),
+    role: 'In-Charge',
+    status: 'ACTIVE',
+    requiresPasswordChange: false,
+    assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+    createdAt: new Date(),
+  },
+  {
+    id: 'u-incharge-3',
+    username: 'incharge3',
+    employeeCode: 'EMP0004',
+    phone: '9845012347',
+    name: 'Kumar Swamy',
+    email: 'kumar@farm.local',
+    password: hashPassword('Incharge@123'),
+    role: 'In-Charge',
+    status: 'ACTIVE',
+    requiresPasswordChange: false,
+    assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+    createdAt: new Date(),
+  },
+  {
+    id: 'u-incharge-4',
+    username: 'incharge4',
+    employeeCode: 'EMP0005',
+    phone: '9845012348',
+    name: 'Anand Verma',
+    email: 'anand@farm.local',
+    password: hashPassword('Incharge@123'),
+    role: 'In-Charge',
+    status: 'ACTIVE',
+    requiresPasswordChange: false,
+    assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+    createdAt: new Date(),
+  },
+  {
+    id: 'u-incharge-5',
+    username: 'incharge5',
+    employeeCode: 'EMP0006',
+    phone: '9845012349',
+    name: 'Priya Sharma',
+    email: 'priya@farm.local',
+    password: hashPassword('Incharge@123'),
+    role: 'In-Charge',
+    status: 'ACTIVE',
+    requiresPasswordChange: false,
+    assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
+    createdAt: new Date(),
+  },
+  {
+    id: 'u-incharge-6',
+    username: 'incharge6',
+    employeeCode: 'EMP0007',
+    phone: '9845012350',
+    name: 'Manoj Tiwari',
+    email: 'manoj@farm.local',
+    password: hashPassword('Incharge@123'),
+    role: 'In-Charge',
+    status: 'ACTIVE',
+    requiresPasswordChange: false,
+    assignedFarms: ['GREEN VALLEY FARM', 'farm-green-valley', 'Zara Unit-I', 'farm-zara-1', 'SAI FARM - UNIT 1', 'farm-sai-1'],
     createdAt: new Date(),
   },
 ];
@@ -319,7 +425,7 @@ export function checkFarmAuthorization(
   }
 
   if (role === 'SUPERVISOR' || role === 'INCHARGE') {
-    if (isAssigned) return { authorized: true };
+    if (assigned.length === 0 || isAssigned) return { authorized: true };
     return { authorized: false, error: 'Access denied to unassigned farm.' };
   }
 
@@ -589,7 +695,7 @@ farmRouter.get('/farms', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 farmRouter.post('/farms/:farmId/assign-operators', async (req: Request, res: Response) => {
   const { farmId } = req.params;
-  const { operatorUserIds } = req.body;
+  const operatorUserIds = req.body.operatorUserIds || req.body.operatorIds;
   if (!Array.isArray(operatorUserIds)) {
     return res.status(400).json({ error: 'operatorUserIds must be an array of user IDs' });
   }
@@ -1008,7 +1114,7 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
       }
 
       const queryWeek = (req.query.week || req.query.flockAge) as string | undefined;
-      const targetWeek = queryWeek ? queryWeek.trim().toUpperCase() : (farm.ageWeek ? farm.ageWeek.trim().toUpperCase() : 'W18');
+      const targetWeek = queryWeek ? queryWeek.trim().toUpperCase() : (farm.ageWeek ? farm.ageWeek.trim().toUpperCase() : 'W1');
 
       // Match submission strictly for the requested recording week with status COMPLETED
       const matchedSub = farm.submissions?.find((s: any) => s.flockAge?.trim().toUpperCase() === targetWeek && s.status === 'COMPLETED');
@@ -1033,34 +1139,31 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
         if (mappedSheds.length === 0) {
           mappedSheds = matchedSub.sheds as any;
         } else {
-          mappedSheds = farm.sheds.map((s: any, sIdx: number) => {
-            const matchingSubShed = matchedSub.sheds.find((ss: any) => 
-              (ss.shedId && ss.shedId === s.id) || 
+          mappedSheds = farm.sheds.map((s: any) => {
+            // Match strictly by shedId first, then name, then order (1-indexed). Never use sIdx.
+            const matchingSubShed = matchedSub.sheds.find((ss: any) =>
+              (ss.shedId && ss.shedId === s.id) ||
               (ss.name && s.name && ss.name.trim().toLowerCase() === s.name.trim().toLowerCase()) ||
-              ss.order === sIdx ||
-              ss.order === sIdx + 1 ||
-              (s.order !== undefined && ss.order === s.order)
+              (s.order !== undefined && ss.order !== undefined && ss.order === s.order)
             );
             if (matchingSubShed && matchingSubShed.parts && matchingSubShed.parts.length > 0) {
               return {
                 ...s,
                 type: s.type || matchingSubShed.type || 'Female',
-                parts: s.parts.map((p: any, pIdx: number) => {
-                  const matchingPart = matchingSubShed.parts.find((sp: any) => 
-                    (sp.partId && sp.partId === p.id) || 
+                parts: s.parts.map((p: any) => {
+                  const matchingPart = matchingSubShed.parts.find((sp: any) =>
+                    (sp.partId && sp.partId === p.id) ||
                     (sp.name && p.name && sp.name.trim().toLowerCase() === p.name.trim().toLowerCase()) ||
-                    sp.order === pIdx ||
-                    sp.order === pIdx + 1 ||
-                    (p.order !== undefined && sp.order === p.order)
+                    (p.order !== undefined && sp.order !== undefined && sp.order === p.order)
                   );
                   if (matchingPart && matchingPart.lines && matchingPart.lines.length > 0) {
                     return {
                       ...p,
-                      lines: p.lines.map((l: any, lIdx: number) => {
-                        const matchingLine = matchingPart.lines.find((sl: any) => 
-                          (sl.lineId && sl.lineId === l.id) || 
-                          (sl.name && l.name && sl.name.trim().toLowerCase() === l.name.trim().toLowerCase()) ||
-                          lIdx === 0
+                      lines: p.lines.map((l: any) => {
+                        // Match strictly by lineId or name only — never fallback to lIdx===0
+                        const matchingLine = matchingPart.lines.find((sl: any) =>
+                          (sl.lineId && sl.lineId === l.id) ||
+                          (sl.name && l.name && sl.name.trim().toLowerCase() === l.name.trim().toLowerCase())
                         );
                         const subWeights = matchingLine && Array.isArray(matchingLine.weights) && matchingLine.weights.length > 0 ? matchingLine.weights : [];
                         return {
@@ -1090,6 +1193,19 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
           }))
         }));
       }
+
+      mappedSheds = (mappedSheds || []).map((s: any) => {
+        const active = isShedLockActive(s);
+        return {
+          ...s,
+          lockedByUserId: active ? s.lockedByUserId : null,
+          lockedByUserName: active ? s.lockedByUserName : null,
+          lockedAt: active ? s.lockedAt : null,
+          lastHeartbeatAt: active ? s.lastHeartbeatAt : null,
+          recordedByUserId: s.recordedByUserId || null,
+          recordedByUserName: s.recordedByUserName || null,
+        };
+      });
 
       const formattedSubmissions = (farm.submissions || []).map((s: any) => {
         const snapName = (s.metadata as any)?.snapshotData?.farmName || (s.metadata as any)?.farmName || farm.name;
@@ -1148,7 +1264,7 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
   }
 
   const queryWeekMem = (req.query.week || req.query.flockAge) as string | undefined;
-  const targetWeekMem = queryWeekMem ? queryWeekMem.trim().toUpperCase() : (memFarm.ageWeek ? memFarm.ageWeek.trim().toUpperCase() : 'W18');
+  const targetWeekMem = queryWeekMem ? queryWeekMem.trim().toUpperCase() : (memFarm.ageWeek ? memFarm.ageWeek.trim().toUpperCase() : 'W1');
 
   const farmSubs = memorySubmissions.filter(s => s.farmId === farmId || (memFarm.name && s.farmName?.trim().toLowerCase() === memFarm.name.trim().toLowerCase()));
   const matchedMemSub = farmSubs.find(s => s.flockAge?.trim().toUpperCase() === targetWeekMem && s.status === 'COMPLETED');
@@ -1223,6 +1339,19 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
       }))
     }));
   }
+
+  mappedMemSheds = mappedMemSheds.map((s: any) => {
+    const active = isShedLockActive(s);
+    return {
+      ...s,
+      lockedByUserId: active ? s.lockedByUserId : null,
+      lockedByUserName: active ? s.lockedByUserName : null,
+      lockedAt: active ? s.lockedAt : null,
+      lastHeartbeatAt: active ? s.lastHeartbeatAt : null,
+      recordedByUserId: s.recordedByUserId || null,
+      recordedByUserName: s.recordedByUserName || null,
+    };
+  });
 
   const formattedFarmSubs = farmSubs.map((s: any) => {
     const snapName = s.snapshotData?.farmName || s.metadata?.snapshotData?.farmName || s.metadata?.farmName || s.farmName || memFarm.name;
@@ -1846,18 +1975,7 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
 
   if (isPostgresConfigured()) {
     try {
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot add shed: ${queryWeek} has already been submitted.` });
-        }
-      }
+
 
       const existing = await prisma.shed.findFirst({
         where: {
@@ -1892,12 +2010,7 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
   const memFarm = memoryFarms.find(f => f.id === farmId);
   if (!memFarm) return res.status(404).json({ error: 'Farm not found' });
 
-  if (queryWeek) {
-    const memCompleted = memorySubmissions.find(s => s.farmId === farmId && s.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && s.status === 'COMPLETED');
-    if (memCompleted) {
-      return res.status(400).json({ error: `Cannot add shed: ${queryWeek} has already been submitted.` });
-    }
-  }
+
 
   const dupMem = memFarm.sheds.find(s => s.name.toLowerCase() === trimmedName.toLowerCase());
   if (dupMem) {
@@ -1944,18 +2057,7 @@ farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
       }
 
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: shed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot delete shed: ${queryWeek} has already been submitted.` });
-        }
-      }
+
 
       // Prisma cascade deletion cleanly deletes parts and lines belonging strictly to this shed
       await prisma.shed.delete({ where: { id: shedId } });
@@ -1974,12 +2076,7 @@ farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
       if (!authCheck.authorized) {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
       }
-      if (queryWeek) {
-        const memCompleted = memorySubmissions.find(s => s.farmId === farm.id && s.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && s.status === 'COMPLETED');
-        if (memCompleted) {
-          return res.status(400).json({ error: `Cannot delete shed: ${queryWeek} has already been submitted.` });
-        }
-      }
+
       farm.sheds.splice(sIdx, 1);
       farm.updatedAt = new Date();
       return res.json({ success: true, deletedShedId: shedId });
@@ -2022,18 +2119,7 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
       }
 
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: currentShed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot rename shed: ${queryWeek} has already been submitted.` });
-        }
-      }
+
 
       if (trimmedName && trimmedName.toLowerCase() !== currentShed.name.toLowerCase()) {
         const dup = await prisma.shed.findFirst({
@@ -2073,12 +2159,7 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
       if (!authCheck.authorized) {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
       }
-      if (queryWeek) {
-        const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
-        if (memCompleted) {
-          return res.status(400).json({ error: `Cannot rename shed: ${queryWeek} has already been submitted.` });
-        }
-      }
+
       if (trimmedName && trimmedName.toLowerCase() !== s.name.toLowerCase()) {
         const dup = farm.sheds.find(other => other.id !== shedId && other.name.toLowerCase() === trimmedName.toLowerCase());
         if (dup) {
@@ -2092,6 +2173,995 @@ farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
     }
   }
   return res.status(404).json({ error: 'Shed not found' });
+});
+
+// --------------------------------------------------------------------------
+// 8b. Shed Concurrency Locking, Heartbeat, Leave & Force-Unlock Endpoints
+// --------------------------------------------------------------------------
+
+// A. GET /api/sheds/locks or GET /api/farms/:farmId/shed-locks - Live Locks Map
+const handleGetShedLocks = async (req: Request, res: Response) => {
+  const farmId = (req.params.farmId || req.query.farmId) as string | undefined;
+  const queryWeek = (req.query.week || req.query.flockAge) as string | undefined;
+  const locks: Record<string, any> = {};
+
+  if (isPostgresConfigured()) {
+    try {
+      const sheds = await prisma.shed.findMany({
+        where: farmId ? { farmId } : {},
+        select: {
+          id: true,
+          farmId: true,
+          name: true,
+          lockedByUserId: true,
+          lockedByUserName: true,
+          lockedAt: true,
+          lastHeartbeatAt: true,
+          recordedByUserId: true,
+          recordedByUserName: true,
+        }
+      });
+
+      for (const s of sheds) {
+        const active = isShedLockActive(s);
+        const resolvedWeek = queryWeek ? queryWeek.trim().toUpperCase() : 'W1';
+        const key = shedWeekKey(s.farmId, resolvedWeek, s.id);
+        const saved = memoryShedWeekStatus.get(key);
+        const isSavedThisWeek = saved?.status === 'SAVED';
+
+        locks[s.id] = {
+          shedId: s.id,
+          shedName: s.name,
+          farmId: s.farmId,
+          locked: active,
+          lockedByUserId: active ? s.lockedByUserId : null,
+          lockedByUserName: active ? s.lockedByUserName : null,
+          lockedAt: active ? s.lockedAt : null,
+          lastHeartbeatAt: active ? s.lastHeartbeatAt : null,
+          recordedByUserId: isSavedThisWeek ? (saved?.savedByUserId || null) : null,
+          recordedByUserName: isSavedThisWeek ? (saved?.savedByUserName || null) : null,
+          savedStatus: isSavedThisWeek ? 'SAVED' : 'PENDING',
+          savedByUserName: isSavedThisWeek ? (saved?.savedByUserName || null) : null,
+          totalBirdCount: isSavedThisWeek ? (saved?.totalBirdCount ?? 0) : 0,
+        };
+      }
+      return res.json({ locks });
+    } catch (err: any) {
+      console.warn('Postgres get shed locks error, falling back to memory:', err?.message || err);
+    }
+  }
+
+  // Memory fallback
+  for (const farm of memoryFarms) {
+    if (farmId && farm.id !== farmId) continue;
+    for (const s of farm.sheds) {
+      const active = isShedLockActive(s);
+      const resolvedWeek = queryWeek ? queryWeek.trim().toUpperCase() : (farm.ageWeek || 'W1');
+      const key = shedWeekKey(farm.id, resolvedWeek, s.id);
+      const saved = memoryShedWeekStatus.get(key);
+      const isSavedThisWeek = saved?.status === 'SAVED';
+
+      locks[s.id] = {
+        shedId: s.id,
+        shedName: s.name,
+        farmId: farm.id,
+        locked: active,
+        lockedByUserId: active ? s.lockedByUserId : null,
+        lockedByUserName: active ? s.lockedByUserName : null,
+        lockedAt: active ? s.lockedAt : null,
+        lastHeartbeatAt: active ? s.lastHeartbeatAt : null,
+        recordedByUserId: isSavedThisWeek ? (saved?.savedByUserId || null) : null,
+        recordedByUserName: isSavedThisWeek ? (saved?.savedByUserName || null) : null,
+        savedStatus: isSavedThisWeek ? 'SAVED' : 'PENDING',
+        savedByUserName: isSavedThisWeek ? (saved?.savedByUserName || null) : null,
+        totalBirdCount: isSavedThisWeek ? (saved?.totalBirdCount ?? 0) : 0,
+      };
+    }
+  }
+  return res.json({ locks });
+};
+
+farmRouter.get('/sheds/locks', handleGetShedLocks);
+farmRouter.get('/farms/:farmId/shed-locks', handleGetShedLocks);
+
+// B. POST /api/sheds/:shedId/enter - Acquire Shed Lock
+farmRouter.post('/sheds/:shedId/enter', async (req: Request, res: Response) => {
+  const { shedId } = req.params;
+  const authUser = await getAuthUserFromRequest(req);
+  const userId = authUser?.id || req.body?.userId || req.body?.lockedByUserId || (req.headers['x-user-id'] as string);
+  const userName = authUser?.name || req.body?.userName || req.body?.lockedByUserName || (req.headers['x-user-username'] as string) || 'Incharge';
+
+  if (!userId) {
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+  }
+
+  const now = new Date();
+
+  if (isPostgresConfigured()) {
+    try {
+      const shed = await prisma.shed.findUnique({
+        where: { id: shedId },
+        include: { farm: true }
+      });
+      if (!shed) {
+        return res.status(404).json({ error: 'Shed not found in database' });
+      }
+
+      if (authUser) {
+        const authCheck = checkFarmAuthorization(authUser, shed.farmId, shed.farm?.name);
+        if (!authCheck.authorized) {
+          return res.status(403).json({ error: authCheck.error || 'Access denied: You are not assigned to this farm.' });
+        }
+      }
+
+      // Check collision
+      if (shed.lockedByUserId && shed.lockedByUserId !== userId) {
+        if (isShedLockActive(shed)) {
+          return res.status(409).json({
+            locked: true,
+            lockedByUserId: shed.lockedByUserId,
+            lockedByUserName: shed.lockedByUserName || 'Another Incharge',
+            message: `${shed.name} is currently being weighed by ${shed.lockedByUserName || 'another Incharge'}. Only one Incharge can enter a shed at a time.`
+          });
+        }
+      }
+
+      // Lock acquired or re-entered by same user or expired takeover
+      const updated = await prisma.shed.update({
+        where: { id: shedId },
+        data: {
+          lockedByUserId: userId,
+          lockedByUserName: userName,
+          lockedAt: now,
+          lastHeartbeatAt: now,
+        }
+      });
+
+      return res.json({
+        success: true,
+        locked: true,
+        shedId: updated.id,
+        shedName: updated.name,
+        lockedByUserId: updated.lockedByUserId,
+        lockedByUserName: updated.lockedByUserName,
+        lockedAt: updated.lockedAt,
+        lastHeartbeatAt: updated.lastHeartbeatAt,
+      });
+    } catch (err: any) {
+      console.error('❌ [DB] Error entering shed:', err?.message || err);
+    }
+  }
+
+  // Memory fallback
+  for (const farm of memoryFarms) {
+    const shed = farm.sheds.find(s => s.id === shedId);
+    if (shed) {
+      if (authUser) {
+        const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
+        if (!authCheck.authorized) {
+          return res.status(403).json({ error: authCheck.error || 'Access denied: You are not assigned to this farm.' });
+        }
+      }
+
+      if (shed.lockedByUserId && shed.lockedByUserId !== userId) {
+        if (isShedLockActive(shed)) {
+          return res.status(409).json({
+            locked: true,
+            lockedByUserId: shed.lockedByUserId,
+            lockedByUserName: shed.lockedByUserName || 'Another Incharge',
+            message: `${shed.name} is currently being weighed by ${shed.lockedByUserName || 'another Incharge'}. Only one Incharge can enter a shed at a time.`
+          });
+        }
+      }
+
+      shed.lockedByUserId = userId;
+      shed.lockedByUserName = userName;
+      shed.lockedAt = now;
+      shed.lastHeartbeatAt = now;
+
+      return res.json({
+        success: true,
+        locked: true,
+        shedId: shed.id,
+        shedName: shed.name,
+        lockedByUserId: shed.lockedByUserId,
+        lockedByUserName: shed.lockedByUserName,
+        lockedAt: shed.lockedAt,
+        lastHeartbeatAt: shed.lastHeartbeatAt,
+      });
+    }
+  }
+
+  return res.status(404).json({ error: 'Shed not found' });
+});
+
+// C. POST /api/sheds/:shedId/heartbeat - Heartbeat Keep-Alive (every 30s)
+farmRouter.post('/sheds/:shedId/heartbeat', async (req: Request, res: Response) => {
+  const { shedId } = req.params;
+  const authUser = await getAuthUserFromRequest(req);
+  const userId = authUser?.id || req.body?.userId || req.body?.lockedByUserId || (req.headers['x-user-id'] as string);
+  const userName = authUser?.name || req.body?.userName || req.body?.lockedByUserName || (req.headers['x-user-username'] as string) || 'Incharge';
+  const now = new Date();
+
+  if (isPostgresConfigured()) {
+    try {
+      const shed = await prisma.shed.findUnique({ where: { id: shedId } });
+      if (!shed) return res.status(404).json({ error: 'Shed not found' });
+
+      // If actively locked by someone else, notify collision
+      if (userId && shed.lockedByUserId && shed.lockedByUserId !== userId && isShedLockActive(shed)) {
+        return res.status(409).json({
+          locked: true,
+          lockedByUserId: shed.lockedByUserId,
+          lockedByUserName: shed.lockedByUserName || 'Another Incharge',
+          message: `${shed.name} is currently being weighed by ${shed.lockedByUserName || 'another Incharge'}. Only one Incharge can enter a shed at a time.`
+        });
+      }
+
+      const updated = await prisma.shed.update({
+        where: { id: shedId },
+        data: {
+          lastHeartbeatAt: now,
+          ...(userId && !shed.lockedByUserId ? {
+            lockedByUserId: userId,
+            lockedByUserName: userName,
+            lockedAt: now,
+          } : {})
+        }
+      });
+
+      return res.json({
+        success: true,
+        shedId: updated.id,
+        lastHeartbeatAt: updated.lastHeartbeatAt
+      });
+    } catch (err: any) {
+      console.error('❌ [DB] Error in heartbeat:', err?.message || err);
+    }
+  }
+
+  // Memory fallback
+  for (const farm of memoryFarms) {
+    const shed = farm.sheds.find(s => s.id === shedId);
+    if (shed) {
+      if (userId && shed.lockedByUserId && shed.lockedByUserId !== userId && isShedLockActive(shed)) {
+        return res.status(409).json({
+          locked: true,
+          lockedByUserId: shed.lockedByUserId,
+          lockedByUserName: shed.lockedByUserName || 'Another Incharge',
+          message: `${shed.name} is currently being weighed by ${shed.lockedByUserName || 'another Incharge'}. Only one Incharge can enter a shed at a time.`
+        });
+      }
+
+      shed.lastHeartbeatAt = now;
+      if (userId && !shed.lockedByUserId) {
+        shed.lockedByUserId = userId;
+        shed.lockedByUserName = userName;
+        shed.lockedAt = now;
+      }
+
+      return res.json({
+        success: true,
+        shedId: shed.id,
+        lastHeartbeatAt: shed.lastHeartbeatAt
+      });
+    }
+  }
+
+  return res.status(404).json({ error: 'Shed not found' });
+});
+
+// D. POST /api/sheds/:shedId/leave - Release Shed Lock
+farmRouter.post('/sheds/:shedId/leave', async (req: Request, res: Response) => {
+  const { shedId } = req.params;
+  const authUser = await getAuthUserFromRequest(req);
+  const recordedByUserId = req.body?.recordedByUserId || authUser?.id || req.body?.userId;
+  const recordedByUserName = req.body?.recordedByUserName || authUser?.name || req.body?.userName;
+  const hasRecordedWeights = Boolean(req.body?.hasRecordedWeights || req.body?.recordedWeightsCount > 0);
+
+  if (isPostgresConfigured()) {
+    try {
+      const shed = await prisma.shed.findUnique({
+        where: { id: shedId },
+        include: { parts: { include: { lines: true } } }
+      });
+      if (!shed) return res.status(404).json({ error: 'Shed not found' });
+
+      const totalWeightsCount = (shed.parts || []).reduce((acc, p) => 
+        acc + (p.lines || []).reduce((lAcc, l) => lAcc + (l.weights?.length || 0), 0), 0
+      );
+      const shouldSaveAttribution = hasRecordedWeights || totalWeightsCount > 0 || Boolean(req.body?.recordedByUserName);
+
+      const updateData: any = {
+        lockedByUserId: null,
+        lockedByUserName: null,
+        lockedAt: null,
+        lastHeartbeatAt: null,
+      };
+
+      if (shouldSaveAttribution && recordedByUserName) {
+        updateData.recordedByUserId = recordedByUserId || shed.lockedByUserId || null;
+        updateData.recordedByUserName = recordedByUserName || shed.lockedByUserName || null;
+      }
+
+      const updated = await prisma.shed.update({
+        where: { id: shedId },
+        data: updateData
+      });
+
+      return res.json({
+        success: true,
+        shedId: updated.id,
+        locked: false,
+        recordedByUserId: updated.recordedByUserId,
+        recordedByUserName: updated.recordedByUserName
+      });
+    } catch (err: any) {
+      console.error('❌ [DB] Error leaving shed:', err?.message || err);
+    }
+  }
+
+  // Memory fallback
+  for (const farm of memoryFarms) {
+    const shed = farm.sheds.find(s => s.id === shedId);
+    if (shed) {
+      const totalWeightsCount = (shed.parts || []).reduce((acc, p) => 
+        acc + (p.lines || []).reduce((lAcc, l) => lAcc + (l.weights?.length || 0), 0), 0
+      );
+      const shouldSaveAttribution = hasRecordedWeights || totalWeightsCount > 0 || Boolean(req.body?.recordedByUserName);
+
+      if (shouldSaveAttribution && recordedByUserName) {
+        shed.recordedByUserId = recordedByUserId || shed.lockedByUserId || null;
+        shed.recordedByUserName = recordedByUserName || shed.lockedByUserName || null;
+      }
+
+      shed.lockedByUserId = null;
+      shed.lockedByUserName = null;
+      shed.lockedAt = null;
+      shed.lastHeartbeatAt = null;
+
+      return res.json({
+        success: true,
+        shedId: shed.id,
+        locked: false,
+        recordedByUserId: shed.recordedByUserId,
+        recordedByUserName: shed.recordedByUserName
+      });
+    }
+  }
+
+  return res.status(404).json({ error: 'Shed not found' });
+});
+
+// E. POST /api/sheds/:shedId/force-unlock - Admin/Supervisor Override
+farmRouter.post('/sheds/:shedId/force-unlock', async (req: Request, res: Response) => {
+  const { shedId } = req.params;
+  const authUser = await getAuthUserFromRequest(req);
+  const userRole = (authUser?.role || req.body?.role || (req.headers['x-user-role'] as string) || '').toLowerCase();
+
+  // Permitted roles: Admin, Manager, Supervisor
+  const isAuthorized = userRole === 'admin' || userRole === 'manager' || userRole === 'supervisor';
+  if (!isAuthorized) {
+    return res.status(403).json({
+      error: 'Permission denied: Only Admin, Manager, or Supervisor can force-unlock sheds.'
+    });
+  }
+
+  if (isPostgresConfigured()) {
+    try {
+      const shed = await prisma.shed.findUnique({ where: { id: shedId } });
+      if (!shed) return res.status(404).json({ error: 'Shed not found' });
+
+      const updated = await prisma.shed.update({
+        where: { id: shedId },
+        data: {
+          lockedByUserId: null,
+          lockedByUserName: null,
+          lockedAt: null,
+          lastHeartbeatAt: null,
+        }
+      });
+
+      return res.json({
+        success: true,
+        message: `Shed "${updated.name}" has been forcibly unlocked.`,
+        shedId: updated.id,
+        locked: false
+      });
+    } catch (err: any) {
+      console.error('❌ [DB] Error force-unlocking shed:', err?.message || err);
+    }
+  }
+
+  // Memory fallback
+  for (const farm of memoryFarms) {
+    const shed = farm.sheds.find(s => s.id === shedId);
+    if (shed) {
+      shed.lockedByUserId = null;
+      shed.lockedByUserName = null;
+      shed.lockedAt = null;
+      shed.lastHeartbeatAt = null;
+
+      return res.json({
+        success: true,
+        message: `Shed "${shed.name}" has been forcibly unlocked.`,
+        shedId: shed.id,
+        locked: false
+      });
+    }
+  }
+
+  return res.status(404).json({ error: 'Shed not found' });
+});
+
+// --------------------------------------------------------------------------
+// F. In-Memory ShedWeekStatus store (for cross-phone real-time save visibility)
+// --------------------------------------------------------------------------
+interface ShedWeekStatusEntry {
+  shedId: string;
+  shedName: string;
+  farmId: string;
+  weekNumber: string;
+  status: 'SAVED' | 'DRAFT';
+  savedByUserId?: string | null;
+  savedByUserName?: string | null;
+  totalBirdCount: number;
+  savedAt: string;
+  weights?: Array<{ lineId: string; weights: number[] }>;
+}
+const memoryShedWeekStatus: Map<string, ShedWeekStatusEntry> = new Map();
+
+function shedWeekKey(farmId: string, weekNumber: string, shedId: string): string {
+  return `${farmId}__${weekNumber}__${shedId}`;
+}
+
+// --------------------------------------------------------------------------
+// F1. POST /api/sheds/:shedId/save-shed
+//     Stage 2: Save shed weights to team workspace (DOES NOT write to Submission history)
+// --------------------------------------------------------------------------
+farmRouter.post('/sheds/:shedId/save-shed', async (req: Request, res: Response) => {
+  const { shedId } = req.params;
+  const authUser = await getAuthUserFromRequest(req);
+  const { farmId, week, batchId: _batchId, userId, userName, totalBirdCount, weights } = req.body || {};
+
+  const resolvedFarmId = farmId || '';
+  const resolvedWeek = (week || 'W1').trim().toUpperCase();
+  const resolvedUserId = authUser?.id || userId || null;
+  const resolvedUserName = authUser?.name || userName || 'Incharge';
+  const resolvedBirdCount: number = typeof totalBirdCount === 'number' ? totalBirdCount : (Array.isArray(weights) ? weights.reduce((acc: number, w: any) => acc + (Array.isArray(w?.weights) ? w.weights.length : 0), 0) : 0);
+  const now = new Date();
+
+  // 1. Release shed lock in PostgreSQL and update line weights if provided
+  if (isPostgresConfigured()) {
+    try {
+      // a. Release the shed concurrency lock
+      await prisma.shed.update({
+        where: { id: shedId },
+        data: {
+          lockedByUserId: null,
+          lockedByUserName: null,
+          lockedAt: null,
+          lastHeartbeatAt: null,
+          recordedByUserId: resolvedUserId,
+          recordedByUserName: resolvedUserName,
+        }
+      });
+
+      // b. Persist line weights into DB (overwrite live weights per line)
+      if (Array.isArray(weights) && weights.length > 0) {
+        for (const lineEntry of weights) {
+          const lineId = lineEntry?.lineId;
+          const lineWeights = Array.isArray(lineEntry?.weights) ? lineEntry.weights : [];
+          if (!lineId) continue;
+          try {
+            await prisma.line.update({
+              where: { id: lineId },
+              data: { weights: lineWeights }
+            });
+          } catch (lineErr: any) {
+            console.warn(`[save-shed] Could not update line ${lineId}:`, lineErr?.message);
+          }
+        }
+      }
+
+      // c. Touch farm
+      if (resolvedFarmId) await touchFarm(resolvedFarmId);
+
+      // d. Store in memory status map for live-state polling
+      const key = shedWeekKey(resolvedFarmId, resolvedWeek, shedId);
+      memoryShedWeekStatus.set(key, {
+        shedId,
+        shedName: '',
+        farmId: resolvedFarmId,
+        weekNumber: resolvedWeek,
+        status: 'SAVED',
+        savedByUserId: resolvedUserId,
+        savedByUserName: resolvedUserName,
+        totalBirdCount: resolvedBirdCount,
+        savedAt: now.toISOString(),
+        weights: Array.isArray(weights) ? weights : [],
+      });
+
+      return res.json({
+        success: true,
+        shedId,
+        week: resolvedWeek,
+        status: 'SAVED',
+        savedByUserName: resolvedUserName,
+        totalBirdCount: resolvedBirdCount,
+        savedAt: now.toISOString(),
+      });
+    } catch (err: any) {
+      console.error('❌ [DB] save-shed error:', err?.message || err);
+      // Fall through to memory fallback
+    }
+  }
+
+  // Memory fallback
+  const key = shedWeekKey(resolvedFarmId, resolvedWeek, shedId);
+  memoryShedWeekStatus.set(key, {
+    shedId,
+    shedName: '',
+    farmId: resolvedFarmId,
+    weekNumber: resolvedWeek,
+    status: 'SAVED',
+    savedByUserId: resolvedUserId,
+    savedByUserName: resolvedUserName,
+    totalBirdCount: resolvedBirdCount,
+    savedAt: now.toISOString(),
+    weights: Array.isArray(weights) ? weights : [],
+  });
+
+  // Also update in-memory shed weights and release lock
+  for (const farm of memoryFarms) {
+    const shed = farm.sheds.find(s => s.id === shedId);
+    if (shed) {
+      shed.lockedByUserId = null;
+      shed.lockedByUserName = null;
+      shed.lockedAt = null;
+      shed.lastHeartbeatAt = null;
+      shed.recordedByUserId = resolvedUserId;
+      shed.recordedByUserName = resolvedUserName;
+      if (Array.isArray(weights)) {
+        for (const lineEntry of weights) {
+          for (const part of shed.parts) {
+            const line = part.lines.find(l => l.id === lineEntry?.lineId);
+            if (line && Array.isArray(lineEntry?.weights)) {
+              line.weights = lineEntry.weights;
+            }
+          }
+        }
+      }
+      break;
+    }
+  }
+
+  return res.json({
+    success: true,
+    shedId,
+    week: resolvedWeek,
+    status: 'SAVED',
+    savedByUserName: resolvedUserName,
+    totalBirdCount: resolvedBirdCount,
+    savedAt: now.toISOString(),
+  });
+});
+
+// Also register the week-scoped alias
+farmRouter.post('/farms/:farmId/weeks/:weekNumber/sheds/:shedId/save', async (req: Request, res: Response) => {
+  req.body.farmId = req.params.farmId;
+  req.body.week = req.params.weekNumber;
+  // Re-use the shedId from params
+  const { shedId } = req.params;
+  const authUser = await getAuthUserFromRequest(req);
+  const { farmId, week, userId, userName, totalBirdCount, weights } = req.body || {};
+
+  const resolvedFarmId = farmId || '';
+  const resolvedWeek = (week || 'W1').trim().toUpperCase();
+  const resolvedUserId = authUser?.id || userId || null;
+  const resolvedUserName = authUser?.name || userName || 'Incharge';
+  const resolvedBirdCount: number = typeof totalBirdCount === 'number' ? totalBirdCount : (Array.isArray(weights) ? weights.reduce((acc: number, w: any) => acc + (Array.isArray(w?.weights) ? w.weights.length : 0), 0) : 0);
+  const now = new Date();
+
+  if (isPostgresConfigured()) {
+    try {
+      await prisma.shed.update({
+        where: { id: shedId },
+        data: {
+          lockedByUserId: null,
+          lockedByUserName: null,
+          lockedAt: null,
+          lastHeartbeatAt: null,
+          recordedByUserId: resolvedUserId,
+          recordedByUserName: resolvedUserName,
+        }
+      });
+      if (Array.isArray(weights) && weights.length > 0) {
+        for (const lineEntry of weights) {
+          const lineId = lineEntry?.lineId;
+          const lineWeights = Array.isArray(lineEntry?.weights) ? lineEntry.weights : [];
+          if (!lineId) continue;
+          try {
+            await prisma.line.update({ where: { id: lineId }, data: { weights: lineWeights } });
+          } catch {}
+        }
+      }
+      if (resolvedFarmId) await touchFarm(resolvedFarmId);
+    } catch {}
+  }
+
+  const key = shedWeekKey(resolvedFarmId, resolvedWeek, shedId);
+  memoryShedWeekStatus.set(key, {
+    shedId, shedName: '', farmId: resolvedFarmId, weekNumber: resolvedWeek,
+    status: 'SAVED', savedByUserId: resolvedUserId, savedByUserName: resolvedUserName,
+    totalBirdCount: resolvedBirdCount, savedAt: now.toISOString(),
+    weights: Array.isArray(weights) ? weights : [],
+  });
+
+  return res.json({
+    success: true, shedId, week: resolvedWeek, status: 'SAVED',
+    savedByUserName: resolvedUserName, totalBirdCount: resolvedBirdCount, savedAt: now.toISOString(),
+  });
+});
+
+// --------------------------------------------------------------------------
+// F2. GET /api/farms/:farmId/weeks/:weekNumber/live-state
+//     Real-time cross-phone polling: returns shed statuses, locks, farm progress
+// --------------------------------------------------------------------------
+farmRouter.get('/farms/:farmId/weeks/:weekNumber/live-state', async (req: Request, res: Response) => {
+  const { farmId, weekNumber } = req.params;
+  const resolvedWeek = (weekNumber || 'W1').trim().toUpperCase();
+  const locks: Record<string, any> = {};
+
+  // Fetch sheds from DB or memory
+  let shedList: Array<{ id: string; name: string; type: string }> = [];
+
+  if (isPostgresConfigured()) {
+    try {
+      const sheds = await prisma.shed.findMany({
+        where: { farmId },
+        select: {
+          id: true, name: true, type: true,
+          lockedByUserId: true, lockedByUserName: true,
+          lockedAt: true, lastHeartbeatAt: true,
+          recordedByUserId: true, recordedByUserName: true,
+        },
+        orderBy: { order: 'asc' },
+      });
+
+      for (const s of sheds) {
+        const active = isShedLockActive(s);
+        const key = shedWeekKey(farmId, resolvedWeek, s.id);
+        const saved = memoryShedWeekStatus.get(key);
+        const isSavedThisWeek = saved?.status === 'SAVED';
+        locks[s.id] = {
+          shedId: s.id,
+          shedName: s.name,
+          farmId,
+          locked: active,
+          lockedByUserId: active ? s.lockedByUserId : null,
+          lockedByUserName: active ? s.lockedByUserName : null,
+          lockedAt: active ? s.lockedAt : null,
+          lastHeartbeatAt: active ? s.lastHeartbeatAt : null,
+          recordedByUserId: isSavedThisWeek ? (saved?.savedByUserId || null) : null,
+          recordedByUserName: isSavedThisWeek ? (saved?.savedByUserName || null) : null,
+          savedStatus: isSavedThisWeek ? 'SAVED' : 'PENDING',
+          savedByUserName: isSavedThisWeek ? (saved?.savedByUserName || null) : null,
+          totalBirdCount: isSavedThisWeek ? (saved?.totalBirdCount ?? 0) : 0,
+          savedAt: isSavedThisWeek ? (saved?.savedAt || null) : null,
+        };
+        shedList.push({ id: s.id, name: s.name, type: s.type });
+      }
+    } catch (err: any) {
+      console.warn('[live-state] DB error, falling back to memory:', err?.message);
+    }
+  }
+
+  if (shedList.length === 0) {
+    for (const farm of memoryFarms) {
+      if (farm.id !== farmId) continue;
+      for (const s of farm.sheds) {
+        const active = isShedLockActive(s);
+        const key = shedWeekKey(farmId, resolvedWeek, s.id);
+        const saved = memoryShedWeekStatus.get(key);
+        const isSavedThisWeek = saved?.status === 'SAVED';
+        locks[s.id] = {
+          shedId: s.id, shedName: s.name, farmId,
+          locked: active,
+          lockedByUserId: active ? s.lockedByUserId : null,
+          lockedByUserName: active ? s.lockedByUserName : null,
+          lockedAt: active ? s.lockedAt : null,
+          lastHeartbeatAt: active ? s.lastHeartbeatAt : null,
+          recordedByUserId: isSavedThisWeek ? (saved?.savedByUserId || null) : null,
+          recordedByUserName: isSavedThisWeek ? (saved?.savedByUserName || null) : null,
+          savedStatus: isSavedThisWeek ? 'SAVED' : 'PENDING',
+          savedByUserName: isSavedThisWeek ? (saved?.savedByUserName || null) : null,
+          totalBirdCount: isSavedThisWeek ? (saved?.totalBirdCount ?? 0) : 0,
+          savedAt: isSavedThisWeek ? (saved?.savedAt || null) : null,
+        };
+        shedList.push({ id: s.id, name: s.name, type: s.type });
+      }
+      break;
+    }
+  }
+
+  const totalSheds = shedList.length;
+  const savedSheds = Object.values(locks).filter(l => l.savedStatus === 'SAVED').length;
+  const totalBirds = Object.values(locks).reduce((acc, l) => acc + (l.totalBirdCount || 0), 0);
+  const farmProgressPercent = totalSheds > 0 ? Math.round((savedSheds / totalSheds) * 100) : 0;
+
+  return res.json({
+    farmId,
+    weekNumber: resolvedWeek,
+    locks,
+    farmProgress: {
+      totalSheds,
+      savedSheds,
+      totalBirds,
+      farmProgressPercent,
+      allShedsSaved: totalSheds > 0 && savedSheds >= totalSheds,
+    },
+  });
+});
+
+// --------------------------------------------------------------------------
+// F3. POST /api/farms/:farmId/weeks/:weekNumber/submit
+//     Stage 3: Aggregates all saved sheds into ONE Submission record (writes history)
+// --------------------------------------------------------------------------
+farmRouter.post('/farms/:farmId/weeks/:weekNumber/submit', async (req: Request, res: Response) => {
+  const { farmId, weekNumber } = req.params;
+  const resolvedWeek = (weekNumber || 'W1').trim().toUpperCase();
+  const authUser = await getAuthUserFromRequest(req);
+  const { submittedBy, submittedRole, batchId, batchName, metadata } = req.body || {};
+  const submitterName = authUser?.name || submittedBy || 'Supervisor';
+  const submitterRole = authUser?.role || submittedRole || 'Supervisor';
+
+  // Gather all saved sheds for this farm+week from memory status + DB weights
+  let farmSheds: any[] = [];
+
+  if (isPostgresConfigured()) {
+    try {
+      const farm = await prisma.farm.findUnique({
+        where: { id: farmId },
+        include: {
+          sheds: {
+            orderBy: { order: 'asc' },
+            include: { parts: { orderBy: { order: 'asc' }, include: { lines: true } } }
+          }
+        }
+      });
+      if (farm) farmSheds = farm.sheds;
+    } catch (err: any) {
+      console.warn('[submit] DB error fetching sheds:', err?.message);
+    }
+  }
+
+  if (farmSheds.length === 0) {
+    const memFarm = memoryFarms.find(f => f.id === farmId);
+    if (memFarm) farmSheds = memFarm.sheds;
+  }
+
+  // Build submission shed snapshot
+  const submissionSheds: any[] = [];
+  let totalBirds = 0;
+  const allFemaleWeights: number[] = [];
+  const allMaleWeights: number[] = [];
+
+  for (const s of farmSheds) {
+    const key = shedWeekKey(farmId, resolvedWeek, s.id);
+    const savedEntry = memoryShedWeekStatus.get(key);
+    const shedWeightsMap: Record<string, number[]> = {};
+
+    if (savedEntry?.weights) {
+      for (const lw of savedEntry.weights) {
+        if (lw?.lineId) shedWeightsMap[lw.lineId] = lw.weights || [];
+      }
+    }
+
+    const shedType = (s.type || 'Female') as string;
+    const parts: any[] = [];
+    for (const p of s.parts || []) {
+      const lines: any[] = [];
+      for (const l of p.lines || []) {
+        const lineWeights = shedWeightsMap[l.id] || l.weights || [];
+        totalBirds += lineWeights.length;
+        const lineAvg = lineWeights.length > 0 ? lineWeights.reduce((a: number, b: number) => a + b, 0) / lineWeights.length : 0;
+        lines.push({ lineId: l.id, name: l.name, weights: lineWeights, birdCount: lineWeights.length, avgWeight: Math.round(lineAvg) });
+        if (shedType === 'Female') allFemaleWeights.push(...lineWeights);
+        else allMaleWeights.push(...lineWeights);
+      }
+      parts.push({ partId: p.id, name: p.name, order: p.order, lines });
+    }
+    submissionSheds.push({ shedId: s.id, name: s.name, type: shedType, order: s.order, parts });
+  }
+
+  const femaleAvg = allFemaleWeights.length > 0 ? Math.round(allFemaleWeights.reduce((a, b) => a + b, 0) / allFemaleWeights.length) : null;
+  const maleAvg = allMaleWeights.length > 0 ? Math.round(allMaleWeights.reduce((a, b) => a + b, 0) / allMaleWeights.length) : null;
+  const allWeights = [...allFemaleWeights, ...allMaleWeights];
+  const overallAvg = allWeights.length > 0 ? Math.round(allWeights.reduce((a, b) => a + b, 0) / allWeights.length) : null;
+
+  // Determine farm season
+  let season = 'Summer';
+  if (isPostgresConfigured()) {
+    try {
+      const farm = await prisma.farm.findUnique({ where: { id: farmId }, select: { season: true } });
+      if (farm?.season) season = farm.season;
+    } catch {}
+  } else {
+    const memFarm = memoryFarms.find(f => f.id === farmId);
+    if (memFarm?.season) season = memFarm.season;
+  }
+
+  const idempotencyKey = `${farmId}-${resolvedWeek}-${Date.now()}`;
+
+  if (isPostgresConfigured()) {
+    try {
+      // Create submission with nested shed/part/line records
+      const submission = await prisma.submission.create({
+        data: {
+          idempotencyKey,
+          farmId,
+          submitterName,
+          submitterRole,
+          flockAge: resolvedWeek,
+          season,
+          status: 'COMPLETED',
+          totalBirds,
+          femaleAvgWeight: femaleAvg,
+          maleAvgWeight: maleAvg,
+          overallAvgWeight: overallAvg,
+          metadata: metadata || null,
+          sheds: {
+            create: submissionSheds.map(s => ({
+              shedId: s.shedId,
+              name: s.name,
+              type: s.type,
+              order: s.order || 0,
+              parts: {
+                create: (s.parts || []).map((p: any) => ({
+                  partId: p.partId,
+                  name: p.name,
+                  order: p.order || 0,
+                  lines: {
+                    create: (p.lines || []).map((l: any) => ({
+                      lineId: l.lineId,
+                      name: l.name,
+                      weights: l.weights || [],
+                      birdCount: l.birdCount || 0,
+                      avgWeight: l.avgWeight || null,
+                    }))
+                  }
+                }))
+              }
+            }))
+          }
+        }
+      });
+
+      // Update farm ageWeek to next week
+      const weekNum = parseInt(resolvedWeek.replace(/\D/g, ''), 10) || 1;
+      const nextWeek = `W${weekNum + 1}`;
+      await prisma.farm.update({ where: { id: farmId }, data: { ageWeek: nextWeek } });
+
+      return res.json({
+        success: true,
+        submissionId: submission.id,
+        status: 'COMPLETED',
+        totalBirds,
+        femaleAvgWeight: femaleAvg,
+        maleAvgWeight: maleAvg,
+        overallAvgWeight: overallAvg,
+        nextWeek,
+        week: resolvedWeek,
+      });
+    } catch (err: any) {
+      console.error('❌ [DB] submit overall farm error:', err?.message || err);
+      return res.status(500).json({ error: err?.message || 'Failed to submit farm week' });
+    }
+  }
+
+  // Memory fallback
+  const { memorySubmissions: memSubs } = await import('./submissions.js');
+  const weekNum2 = parseInt(resolvedWeek.replace(/\D/g, ''), 10) || 1;
+  const nextWeek2 = `W${weekNum2 + 1}`;
+  const fakeSubmission = {
+    id: `sub-${Date.now()}`,
+    idempotencyKey,
+    farmId,
+    submitterName,
+    submitterRole,
+    flockAge: resolvedWeek,
+    season,
+    status: 'COMPLETED',
+    totalBirds,
+    femaleAvgWeight: femaleAvg,
+    maleAvgWeight: maleAvg,
+    overallAvgWeight: overallAvg,
+    submittedAt: new Date(),
+    sheds: submissionSheds,
+  };
+  memSubs.push(fakeSubmission as any);
+
+  // Update memory farm ageWeek
+  const memFarm2 = memoryFarms.find(f => f.id === farmId);
+  if (memFarm2) memFarm2.ageWeek = nextWeek2;
+
+  return res.json({
+    success: true,
+    submissionId: fakeSubmission.id,
+    status: 'COMPLETED',
+    totalBirds,
+    femaleAvgWeight: femaleAvg,
+    maleAvgWeight: maleAvg,
+    overallAvgWeight: overallAvg,
+    nextWeek: nextWeek2,
+    week: resolvedWeek,
+  });
+});
+
+// --------------------------------------------------------------------------
+// F4. GET /api/farms/:farmId/batches  +  POST /api/farms/:farmId/batches
+// --------------------------------------------------------------------------
+farmRouter.get('/farms/:farmId/batches', async (req: Request, res: Response) => {
+  const { farmId } = req.params;
+  if (isPostgresConfigured()) {
+    try {
+      const batches = await (prisma as any).batch.findMany({
+        where: { farmId },
+        orderBy: { createdAt: 'asc' },
+      });
+      return res.json(batches);
+    } catch (err: any) {
+      console.warn('[batches] DB error:', err?.message);
+    }
+  }
+  return res.json([]);
+});
+
+farmRouter.post('/farms/:farmId/batches', async (req: Request, res: Response) => {
+  const { farmId } = req.params;
+  const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required.' });
+
+  const { batchName, startDate, startWeekNumber } = req.body || {};
+  if (!batchName) return res.status(400).json({ error: 'batchName is required' });
+
+  if (isPostgresConfigured()) {
+    try {
+      const batch = await (prisma as any).batch.create({
+        data: {
+          farmId,
+          batchName: batchName.trim(),
+          startDate: startDate || new Date().toISOString().split('T')[0],
+          startWeekNumber: typeof startWeekNumber === 'number' ? startWeekNumber : parseInt(String(startWeekNumber || '1'), 10) || 1,
+          status: 'ACTIVE',
+        }
+      });
+      // Optionally update farm ageWeek to match startWeekNumber
+      if (batch.startWeekNumber && batch.startWeekNumber > 0) {
+        await prisma.farm.update({
+          where: { id: farmId },
+          data: { ageWeek: `W${batch.startWeekNumber}` }
+        });
+      }
+      return res.status(201).json(batch);
+    } catch (err: any) {
+      if (err?.code === 'P2002') return res.status(409).json({ error: `Batch "${batchName}" already exists for this farm.` });
+      return res.status(500).json({ error: err?.message || 'Failed to create batch' });
+    }
+  }
+
+  const fakeBatch = {
+    id: `batch-${Date.now()}`,
+    farmId,
+    batchName: batchName.trim(),
+    startDate: startDate || new Date().toISOString().split('T')[0],
+    startWeekNumber: typeof startWeekNumber === 'number' ? startWeekNumber : parseInt(String(startWeekNumber || '1'), 10) || 1,
+    status: 'ACTIVE' as const,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  return res.status(201).json(fakeBatch);
 });
 
 // --------------------------------------------------------------------------
@@ -2188,19 +3258,6 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
       }
 
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: shed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot modify parts: ${queryWeek} has already been submitted.` });
-        }
-      }
-
       if (shed.parts.length >= 4) {
         return res.status(400).json({ error: 'Maximum limit reached: A shed can have at most 4 parts (Parts A–D).' });
       }
@@ -2238,13 +3295,6 @@ farmRouter.post('/parts', async (req: Request, res: Response) => {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
       }
 
-      if (queryWeek) {
-        const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
-        if (memCompleted) {
-          return res.status(400).json({ error: `Cannot modify parts: ${queryWeek} has already been submitted.` });
-        }
-      }
-
       if (s.parts.length >= 4) {
         return res.status(400).json({ error: 'Maximum limit reached: A shed can have at most 4 parts (Parts A–D).' });
       }
@@ -2279,8 +3329,6 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Authentication required. Please log in.' });
   }
 
-  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
-
   if (isPostgresConfigured()) {
     try {
       const part = await prisma.part.findUnique({
@@ -2294,19 +3342,6 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
       const authCheck = checkFarmAuthorization(authUser, part.shed.farmId, part.shed.farm?.name);
       if (!authCheck.authorized) {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-      }
-
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: part.shed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot delete part: ${queryWeek} has already been submitted.` });
-        }
       }
 
       if (part.shed.parts.length <= 1) {
@@ -2329,13 +3364,6 @@ farmRouter.delete('/parts/:partId', async (req: Request, res: Response) => {
         const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
         if (!authCheck.authorized) {
           return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-        }
-
-        if (queryWeek) {
-          const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
-          if (memCompleted) {
-            return res.status(400).json({ error: `Cannot delete part: ${queryWeek} has already been submitted.` });
-          }
         }
 
         if (shed.parts.length <= 1) {
@@ -2362,7 +3390,6 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Authentication required. Please log in.' });
   }
 
-  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
   const partVal = validatePartLetter(name);
   if (partVal.error || !partVal.letter) {
     return res.status(400).json({ error: partVal.error || 'Only Parts A, B, C, and D are allowed. Part E or higher is prohibited.' });
@@ -2380,19 +3407,6 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
       const authCheck = checkFarmAuthorization(authUser, part.shed.farmId, part.shed.farm?.name);
       if (!authCheck.authorized) {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-      }
-
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: part.shed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot rename part: ${queryWeek} has already been submitted.` });
-        }
       }
 
       const duplicate = part.shed.parts.some(p => p.id !== partId && p.name.trim().toLowerCase() === formattedPartName.toLowerCase());
@@ -2420,13 +3434,6 @@ farmRouter.put('/parts/:partId', async (req: Request, res: Response) => {
         const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
         if (!authCheck.authorized) {
           return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-        }
-
-        if (queryWeek) {
-          const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
-          if (memCompleted) {
-            return res.status(400).json({ error: `Cannot rename part: ${queryWeek} has already been submitted.` });
-          }
         }
 
         const duplicate = shed.parts.some(other => other.id !== partId && other.name.trim().toLowerCase() === formattedPartName.toLowerCase());
@@ -2470,19 +3477,6 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
       }
 
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: part.shed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot modify lines: ${queryWeek} has already been submitted.` });
-        }
-      }
-
       const lineValidation = validateLineNumber(name, part.lines);
       if (lineValidation.error) {
         return res.status(400).json({ error: lineValidation.error });
@@ -2513,13 +3507,6 @@ farmRouter.post('/lines', async (req: Request, res: Response) => {
         const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
         if (!authCheck.authorized) {
           return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-        }
-
-        if (queryWeek) {
-          const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
-          if (memCompleted) {
-            return res.status(400).json({ error: `Cannot modify lines: ${queryWeek} has already been submitted.` });
-          }
         }
 
         const lineValidation = validateLineNumber(name, p.lines);
@@ -2553,8 +3540,6 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Authentication required. Please log in.' });
   }
 
-  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
-
   if (isPostgresConfigured()) {
     try {
       const line = await prisma.line.findUnique({
@@ -2568,19 +3553,6 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
       const authCheck = checkFarmAuthorization(authUser, line.part.shed.farmId, line.part.shed.farm?.name);
       if (!authCheck.authorized) {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-      }
-
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: line.part.shed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot delete line: ${queryWeek} has already been submitted.` });
-        }
       }
 
       if (line.part.lines.length <= 1) {
@@ -2604,13 +3576,6 @@ farmRouter.delete('/lines/:lineId', async (req: Request, res: Response) => {
           const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
           if (!authCheck.authorized) {
             return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-          }
-
-          if (queryWeek) {
-            const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
-            if (memCompleted) {
-              return res.status(400).json({ error: `Cannot delete line: ${queryWeek} has already been submitted.` });
-            }
           }
 
           if (part.lines.length <= 1) {
@@ -2661,24 +3626,23 @@ farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => 
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
       }
 
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: line.part.shed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot add weights: ${queryWeek} has already been submitted.` });
-        }
-      }
-
       const updated = await prisma.line.update({
         where: { id: lineId },
         data: { weights: { push: weight } },
       });
       await touchFarm(line.part.shed.farmId);
+
+      try {
+        await prisma.shed.update({
+          where: { id: line.part.shed.id },
+          data: {
+            recordedByUserId: userId,
+            recordedByUserName: userName,
+          }
+        });
+      } catch (shedErr) {
+        console.warn('Prisma shed operator attribution update error:', shedErr);
+      }
 
       const newWeights = [...line.weights, weight];
       const sampleCount = newWeights.length;
@@ -2720,14 +3684,9 @@ farmRouter.post('/lines/:lineId/weight', async (req: Request, res: Response) => 
             return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
           }
 
-          if (queryWeek) {
-            const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
-            if (memCompleted) {
-              return res.status(400).json({ error: `Cannot add weights: ${queryWeek} has already been submitted.` });
-            }
-          }
-
           l.weights.push(weight);
+          shed.recordedByUserId = userId;
+          shed.recordedByUserName = userName;
           farm.updatedAt = new Date();
 
           const sampleCount = l.weights.length;
@@ -2770,7 +3729,6 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
   }
 
   const index = parseInt(req.params.index, 10);
-  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
 
   if (isNaN(index) || index < 0) {
     return res.status(400).json({ error: 'Valid index required' });
@@ -2789,19 +3747,6 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
       const authCheck = checkFarmAuthorization(authUser, line.part.shed.farmId, line.part.shed.farm?.name);
       if (!authCheck.authorized) {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-      }
-
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: line.part.shed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot delete weight: ${queryWeek} has already been submitted.` });
-        }
       }
 
       if (index < line.weights.length) {
@@ -2831,13 +3776,6 @@ farmRouter.delete('/lines/:lineId/weight/:index', async (req: Request, res: Resp
             return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
           }
 
-          if (queryWeek) {
-            const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
-            if (memCompleted) {
-              return res.status(400).json({ error: `Cannot delete weight: ${queryWeek} has already been submitted.` });
-            }
-          }
-
           if (index < l.weights.length) {
             l.weights.splice(index, 1);
             farm.updatedAt = new Date();
@@ -2861,8 +3799,6 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Authentication required. Please log in.' });
   }
 
-  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
-
   if (isPostgresConfigured()) {
     try {
       const line = await prisma.line.findUnique({
@@ -2876,19 +3812,6 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
       const authCheck = checkFarmAuthorization(authUser, line.part.shed.farmId, line.part.shed.farm?.name);
       if (!authCheck.authorized) {
         return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-      }
-
-      if (queryWeek) {
-        const completedSub = await prisma.submission.findFirst({
-          where: {
-            farmId: line.part.shed.farmId,
-            flockAge: queryWeek.trim().toUpperCase(),
-            status: 'COMPLETED'
-          }
-        });
-        if (completedSub) {
-          return res.status(400).json({ error: `Cannot clear line weights: ${queryWeek} has already been submitted.` });
-        }
       }
 
       const updated = await prisma.line.update({
@@ -2911,13 +3834,6 @@ farmRouter.post('/lines/:lineId/clear', async (req: Request, res: Response) => {
           const authCheck = checkFarmAuthorization(authUser, farm.id, farm.name);
           if (!authCheck.authorized) {
             return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-          }
-
-          if (queryWeek) {
-            const memCompleted = memorySubmissions.find(sub => sub.farmId === farm.id && sub.flockAge?.trim().toUpperCase() === queryWeek.trim().toUpperCase() && sub.status === 'COMPLETED');
-            if (memCompleted) {
-              return res.status(400).json({ error: `Cannot clear line weights: ${queryWeek} has already been submitted.` });
-            }
           }
 
           l.weights = [];
@@ -2991,6 +3907,13 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
                 name: s.name,
                 type: s.type || existingShed.type || 'Female',
                 order: sIdx + 1,
+                ...(s.recordedByUserId ? { recordedByUserId: s.recordedByUserId, recordedByUserName: s.recordedByUserName } : {}),
+                ...(s.lockedByUserId !== undefined ? {
+                  lockedByUserId: s.lockedByUserId,
+                  lockedByUserName: s.lockedByUserName,
+                  lockedAt: s.lockedAt ? new Date(s.lockedAt) : null,
+                  lastHeartbeatAt: s.lastHeartbeatAt ? new Date(s.lastHeartbeatAt) : null,
+                } : {}),
               },
             });
           } else {
@@ -3001,6 +3924,8 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
                 name: s.name,
                 type: s.type || 'Female',
                 order: sIdx + 1,
+                recordedByUserId: s.recordedByUserId || null,
+                recordedByUserName: s.recordedByUserName || null,
               },
             });
             shedId = createdShed.id;
@@ -3146,7 +4071,12 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
           });
           return { ...p, lines: mergedLines };
         });
-        return { ...s, parts: mergedParts };
+        return {
+          ...s,
+          parts: mergedParts,
+          recordedByUserId: s.recordedByUserId || exShed.recordedByUserId || null,
+          recordedByUserName: s.recordedByUserName || exShed.recordedByUserName || null,
+        };
       });
     }
     if (audit) (memFarm as any).audit = audit;
@@ -4016,3 +4946,68 @@ farmRouter.post('/logs', async (req: Request, res: Response) => {
     isLive: true,
   });
 });
+
+// --------------------------------------------------------------------------
+// 21. POST /api/calculations/flock-stats & /api/calculations/uniformity
+// Backend-executed proprietary poultry calculations (IP Protection)
+// --------------------------------------------------------------------------
+farmRouter.post('/calculations/flock-stats', async (req: Request, res: Response) => {
+  try {
+    const {
+      calculateFlockStats,
+      calculateUniformity,
+      calculatePerformanceAlerts,
+      calculateShedAggregation,
+    } = await import('../services/calculationEngine.js');
+
+    const { weights = [], stdWeight = 0, weekNum = 1, pensData, tallies } = req.body;
+
+    if (pensData && Array.isArray(pensData)) {
+      const shedSummary = calculateShedAggregation(pensData);
+      return res.json(shedSummary);
+    }
+
+    if (tallies && Array.isArray(tallies)) {
+      const uniformityResult = calculateUniformity(tallies);
+      const alerts = calculatePerformanceAlerts({
+        actualAvgWeight: uniformityResult.averageWeight,
+        targetWeight: Number(stdWeight) || uniformityResult.averageWeight,
+        standardFeedGrams: Number(req.body.standardFeedGrams) || 100,
+        uniformityPercent: uniformityResult.uniformityPercent,
+        ageWeeks: Number(weekNum) || 1,
+      });
+      return res.json({ ...uniformityResult, alerts });
+    }
+
+    const numWeights = Array.isArray(weights)
+      ? weights.map(Number).filter(n => Number.isFinite(n) && n > 0)
+      : [];
+    const stats = calculateFlockStats(numWeights, Number(stdWeight) || 0, Number(weekNum) || 1);
+    return res.json(stats);
+  } catch (err: any) {
+    console.error('Calculation error:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to compute calculations' });
+  }
+});
+
+farmRouter.post('/calculations/uniformity', async (req: Request, res: Response) => {
+  try {
+    const { calculateUniformity, calculatePerformanceAlerts } = await import(
+      '../services/calculationEngine.js'
+    );
+    const { tallies = [], targetWeight = 0, standardFeedGrams = 100, ageWeeks = 1 } = req.body;
+    const uniformityResult = calculateUniformity(tallies);
+    const alerts = calculatePerformanceAlerts({
+      actualAvgWeight: uniformityResult.averageWeight,
+      targetWeight: Number(targetWeight) || uniformityResult.averageWeight,
+      standardFeedGrams: Number(standardFeedGrams) || 100,
+      uniformityPercent: uniformityResult.uniformityPercent,
+      ageWeeks: Number(ageWeeks) || 1,
+    });
+    return res.json({ ...uniformityResult, alerts });
+  } catch (err: any) {
+    console.error('Uniformity calculation error:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to compute uniformity' });
+  }
+});
+

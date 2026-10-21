@@ -35,19 +35,42 @@ model Farm {
   createdAt   DateTime      @default(now())
 
   sheds       Shed[]
+  batches     Batch[]
   logs        ActivityLog[]
   submissions Submission[]
 }
 
-model Shed {
-  id        String   @id @default(uuid())
-  farmId    String
-  farm      Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
-  name      String
-  type      String   // "Female" | "Male"
-  order     Int      @default(0)
+model Batch {
+  id              String   @id @default(uuid())
+  farmId          String
+  farm            Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  batchName       String   // e.g. "Batch 1", "Batch 2"
+  startDate       String   // YYYY-MM-DD
+  startWeekNumber Int      @default(1)
+  status          String   @default("ACTIVE") // "ACTIVE" | "COMPLETED"
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
 
-  parts     Part[]
+  @@unique([farmId, batchName])
+}
+
+model Shed {
+  id                 String    @id @default(uuid())
+  farmId             String
+  farm               Farm      @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  name               String
+  type               String    // "Female" | "Male"
+  order              Int       @default(0)
+
+  // Shed Concurrency Locking & Operator Attribution
+  lockedByUserId     String?
+  lockedByUserName   String?
+  lockedAt           DateTime?
+  lastHeartbeatAt    DateTime?
+  recordedByUserId   String?
+  recordedByUserName String?
+
+  parts              Part[]
 
   @@unique([farmId, name])
 }

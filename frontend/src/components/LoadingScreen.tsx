@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import roosterLogo from '../assets/rooster-logo.jpg';
+import henLogo from '../assets/hen-logo.png';
 
 interface LoadingScreenProps {
   message?: string;
@@ -39,11 +39,11 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({
         {/* Subtle Orbiting Dashed Ring */}
         <div className="absolute -inset-1 rounded-full border border-dashed border-emerald-500/40 animate-spin [animation-duration:14s]" />
         
-        {/* Inner Glowing Badge with Rooster Emblem */}
+        {/* Inner Glowing Badge with Hen Emblem */}
         <div className="relative z-10 w-44 h-44 rounded-full bg-white border-2 border-emerald-300 shadow-2xl shadow-emerald-500/20 flex items-center justify-center overflow-hidden p-2">
           <img 
-            src={roosterLogo} 
-            alt="Poultry Flock Pro Rooster Emblem" 
+            src={henLogo} 
+            alt="Poultry Flock Pro Hen Emblem" 
             className="w-36 h-36 object-contain select-none pointer-events-none drop-shadow-sm transition-transform duration-700 hover:scale-105"
             onError={(e) => {
               (e.currentTarget as HTMLElement).style.display = 'none';

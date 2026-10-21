@@ -111,18 +111,16 @@ export const SharedLoginScreen: React.FC<SharedLoginProps> = ({
           Your Position / Role
         </label>
         <select
-          value={role}
+          value={role === 'Admin' ? 'Manager' : role}
           onChange={(e) => setRole(e.target.value as UserRole)}
           className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-bold focus:outline-none focus:border-emerald-500 transition cursor-pointer"
         >
-          <option value="Admin">Admin (All Controls & Cloud Settings)</option>
-          <option value="Manager">Manager (Read-Only Cloud Link)</option>
+          <option value="Manager">Manager (Full Management Privileges & Reports)</option>
           <option value="Supervisor">Supervisor (Field Weighing & Drafts)</option>
           <option value="Incharge">Incharge (Field Weighing & Drafts)</option>
         </select>
         <div className="mt-1 text-[10px] text-slate-400">
-          {role === 'Admin' && '🟣 Full authority: Master overview, farm assignment & cloud integration.'}
-          {role === 'Manager' && '🔵 Supervisory oversight: Master roster, user assignments & conclusions.'}
+          {(role === 'Manager' || role === 'Admin') && '🔵 Full management authority: Master overview, batch controls, operator assignments & reports.'}
           {role === 'Supervisor' && '🟢 Field operations: Assigned farm weighing, draft staging & submissions.'}
           {role === 'Incharge' && '🟢 Field operations: Assigned farm weighing, draft staging & submissions.'}
         </div>

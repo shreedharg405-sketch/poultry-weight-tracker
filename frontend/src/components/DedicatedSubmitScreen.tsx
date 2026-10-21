@@ -42,6 +42,7 @@ export interface CompletionStats {
 
 export interface DedicatedSubmitScreenProps {
   farm: FarmSummary | null;
+  batchName?: string;
   completionStats: CompletionStats;
   farmStatus: FarmStatus;
   farmAudit: FarmAudit | null;
@@ -64,6 +65,7 @@ export interface DedicatedSubmitScreenProps {
 
 export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
   farm,
+  batchName,
   completionStats,
   farmStatus,
   farmAudit,
@@ -169,6 +171,11 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
               <span className="truncate">{farm?.name || 'Active Farm'}</span>
             </h1>
             <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-slate-600">
+              {batchName && (
+                <span className="bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-md font-bold text-[10px] border border-emerald-200">
+                  📦 {batchName}
+                </span>
+              )}
               <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-bold text-[10px] border border-slate-200">
                 {farm?.ageWeek || 'W18'}
               </span>

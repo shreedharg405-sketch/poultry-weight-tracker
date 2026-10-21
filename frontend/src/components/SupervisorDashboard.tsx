@@ -53,6 +53,11 @@ export interface SupervisorDashboardProps {
   currentWeek?: string;
   onSwitchWeek?: (newWeek: string) => void;
   weekStatusMap?: Record<string, 'COMPLETED' | 'DRAFT'>;
+  savedShedsCount?: number;
+  totalShedsCount?: number;
+  totalFarmBirdsCount?: number;
+  isAllShedsSaved?: boolean;
+  onSubmitOverallFarm?: () => void;
 }
 
 export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
@@ -72,6 +77,11 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   currentWeek,
   onSwitchWeek,
   weekStatusMap,
+  savedShedsCount = 0,
+  totalShedsCount = 0,
+  totalFarmBirdsCount = 0,
+  isAllShedsSaved = false,
+  onSubmitOverallFarm,
 }) => {
   const userDisplayName = currentUser?.userName || currentUser?.name || 'Field Operator';
   const userRole = currentUser?.role || 'Supervisor';
@@ -170,23 +180,6 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
         </div>
       </div>
 
-      {/* Role Banner */}
-      <div className="bg-gradient-to-r from-emerald-900 to-slate-900 text-white p-3.5 sm:p-5 rounded-2xl border border-emerald-700/60 mb-4 shadow-md">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-          <div className="min-w-0">
-            <span className="text-[10px] sm:text-xs font-black uppercase tracking-wider text-emerald-300 block">
-              Field Operations Workspace
-            </span>
-            <h2 className="text-sm sm:text-base md:text-lg font-black text-white mt-0.5 truncate">
-              {(userRole === 'In-Charge' || userRole === 'Incharge') ? 'In-Charge Operations Dashboard' : 'Supervisor Operations Dashboard'}
-            </h2>
-          </div>
-          <span className="text-[11px] sm:text-xs font-mono font-bold text-emerald-200 bg-emerald-950/60 px-2.5 py-1 rounded-xl border border-emerald-600/40 shrink-0 self-start sm:self-auto">
-            {formattedDateTime}
-          </span>
-        </div>
-      </div>
-
       {/* Farm Access Isolation (Enforce Assigned Farm Only - Req 8) */}
       {assignedFarms.length === 0 || !activeFarm ? (
         <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-10 text-center space-y-4 shadow-sm my-4 max-w-xl mx-auto w-full">
@@ -196,7 +189,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
           <div className="space-y-1">
             <h3 className="text-base font-black text-slate-900">No Assigned Farm</h3>
             <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-              You do not have any assigned farm units yet. Weight recording and field operations are locked until your Farm Manager or Admin grants you access.
+              You do not have any assigned farm units yet. Weight recording and field operations are locked until your Farm Manager grants you access.
             </p>
           </div>
           <div className="pt-2">
@@ -258,7 +251,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   {activeFarm.name}
                 </span>
                 <span className="text-xs text-slate-400 font-mono">
-                  {activeFarm.ageWeek} • {activeFarm.season}
+                  {activeFarm.activeBatch?.batchName || activeFarm.batchName || 'Batch 1'} • {activeFarm.ageWeek} • {activeFarm.season}
                 </span>
               </div>
             </div>
@@ -297,38 +290,77 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 </div>
               </div>
 
-              {/* Editable Recording Week Selector (Step 2) */}
+              {/* Active Recording Week Display (Locked to this week only for Field Operators) */}
               <div className="mt-3.5 pt-3 border-t border-slate-100">
                 <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
                   <label className="text-[11px] font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                     <Calendar className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Select Recording Week</span>
+                    <span>Active Recording Week</span>
                   </label>
                   <span className="text-[10px] font-mono font-bold text-slate-500">
                     Week 1 to 24
                   </span>
                 </div>
-                <select
-                  value={currentWeek || activeFarm.ageWeek || 'W18'}
-                  onChange={(e) => onSwitchWeek && onSwitchWeek(e.target.value)}
-                  className="w-full bg-slate-50 hover:bg-slate-100/90 border border-slate-300 rounded-xl px-3 py-2 text-xs font-black text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition cursor-pointer"
-                  title="Select recording period for this farm"
-                >
-                  {Array.from({ length: 24 }, (_, i) => `W${i + 1}`).map((w) => {
-                    const wStatus = weekStatusMap?.[w];
-                    const label = formatRecordingWeekLabel(
-                      w,
-                      activeFarm,
-                      activeFarm.startWeekNumber || activeFarm.initialAgeWeek || activeFarm.startingWeek || activeFarm.ageWeek
-                    );
-                    const statusText = wStatus === 'COMPLETED' ? '🟢 COMPLETED' : '🟡 DRAFT';
-                    return (
-                      <option key={w} value={w}>
-                        {label} — {statusText}
-                      </option>
-                    );
-                  })}
-                </select>
+                <div className="flex items-center justify-between bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5">
+                  {onSwitchWeek ? (
+                    <select
+                      value={currentWeek || activeFarm.ageWeek}
+                      onChange={(e) => onSwitchWeek(e.target.value)}
+                      className="bg-transparent text-xs font-black text-slate-900 focus:outline-none cursor-pointer flex-1 truncate pr-2"
+                      title="Switch Active Recording Week"
+                    >
+                      {Array.from({ length: 24 }, (_, i) => `W${i + 1}`).map((w) => {
+                        const startNum = activeFarm.startWeekNumber || parseInt((activeFarm.initialAgeWeek || activeFarm.startingWeek || activeFarm.ageWeek || '1').replace(/\D/g, ''), 10) || 1;
+                        const wStatus = weekStatusMap?.[w];
+                        const statusText = wStatus === 'COMPLETED' ? '🟢 Completed' : (w === (currentWeek || activeFarm.ageWeek) ? '🟡 Active' : '⚪ Open');
+                        return (
+                          <option key={w} value={w} className="text-slate-900 bg-white">
+                            {w} — {statusText} ({formatRecordingWeekLabel(w, activeFarm, startNum)})
+                          </option>
+                        );
+                      })}
+                    </select>
+                  ) : (
+                    <span className="text-xs font-black text-slate-900 truncate">
+                      {formatRecordingWeekLabel(
+                        currentWeek || activeFarm.ageWeek,
+                        activeFarm,
+                        activeFarm.startWeekNumber || activeFarm.initialAgeWeek || activeFarm.startingWeek || activeFarm.ageWeek
+                      )}
+                    </span>
+                  )}
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                    farmStatus === 'COMPLETED'
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                      : 'bg-amber-100 text-amber-800 border border-amber-300'
+                  }`}>
+                    {farmStatus === 'COMPLETED' ? '🟢 Completed' : '🟡 In-Progress'}
+                  </span>
+                </div>
+                {(() => {
+                  const currentNum = parseInt((currentWeek || activeFarm.ageWeek || 'W1').replace(/\D/g, '') || '1', 10);
+                  const nextWeekStr = `W${currentNum + 1}`;
+                  return (
+                    <p className="text-[10px] text-slate-500 mt-1 flex items-center justify-between flex-wrap gap-1">
+                      {farmStatus === 'COMPLETED' ? (
+                        <span>
+                          ✓ This week is completed & committed. Next week ({nextWeekStr}) is now open for recording.
+                          {onSwitchWeek && (
+                            <button
+                              type="button"
+                              onClick={() => onSwitchWeek(nextWeekStr)}
+                              className="ml-1 text-emerald-700 hover:text-emerald-800 font-bold underline cursor-pointer"
+                            >
+                              Open {nextWeekStr} &rarr;
+                            </button>
+                          )}
+                        </span>
+                      ) : (
+                        <span>Weighing is open for this scheduled week only.</span>
+                      )}
+                    </p>
+                  );
+                })()}
               </div>
 
               {/* Progress Strip */}
@@ -365,8 +397,14 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   <Scale className="w-6 h-6 sm:w-7 sm:h-7" />
                 </div>
                 <div className="min-w-0">
-                  <h2 className="font-black text-base sm:text-lg text-white truncate">Enter Bird Weights</h2>
-                  <p className="text-xs sm:text-sm text-emerald-100 truncate">Select Shed › Part › Line cards</p>
+                  <h2 className="font-black text-base sm:text-lg text-white truncate">
+                    {farmStatus === 'COMPLETED' ? 'View Recorded Weights' : 'Enter Bird Weights'}
+                  </h2>
+                  <p className="text-xs sm:text-sm text-emerald-100 truncate">
+                    {farmStatus === 'COMPLETED'
+                      ? `${currentWeek || activeFarm.ageWeek} Finalized • View sheds & lines`
+                      : 'Select Shed › Part › Line cards'}
+                  </p>
                 </div>
               </div>
               <ChevronRight className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-200 group-hover:translate-x-1 transition shrink-0 ml-2" />
@@ -376,32 +414,40 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             <button
               onClick={onOpenSubmitPage}
               className={`w-full active:scale-[0.98] transition p-4 sm:p-5 rounded-2xl flex items-center justify-between text-left border shadow-xs group cursor-pointer ${
-                completionStats.isFarm100PercentWeighed
-                  ? 'bg-emerald-50 border-emerald-300 hover:bg-emerald-100/60 text-emerald-950'
-                  : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-900'
+                farmStatus === 'COMPLETED'
+                  ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950'
+                  : completionStats.isFarm100PercentWeighed
+                    ? 'bg-emerald-50 border-emerald-300 hover:bg-emerald-100/60 text-emerald-950'
+                    : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-900'
               }`}
             >
               <div className="flex items-center gap-3 sm:gap-4 min-w-0">
                 <div className={`p-3 rounded-xl shrink-0 ${
-                  completionStats.isFarm100PercentWeighed 
-                    ? 'bg-emerald-600 text-white' 
-                    : 'bg-amber-100 text-amber-700'
+                  farmStatus === 'COMPLETED'
+                    ? 'bg-emerald-700 text-white'
+                    : completionStats.isFarm100PercentWeighed 
+                      ? 'bg-emerald-600 text-white' 
+                      : 'bg-amber-100 text-amber-700'
                 }`}>
                   <UploadCloud className="w-6 h-6 sm:w-7 sm:h-7" />
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h2 className="font-black text-sm sm:text-base text-slate-900">Dedicated Submit Screen</h2>
+                    <h2 className="font-black text-sm sm:text-base text-slate-900">
+                      {farmStatus === 'COMPLETED' ? 'Submission Summary' : 'Dedicated Submit Screen'}
+                    </h2>
                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ${
-                      completionStats.isFarm100PercentWeighed
+                      farmStatus === 'COMPLETED'
                         ? 'bg-emerald-200 text-emerald-900'
-                        : 'bg-amber-200 text-amber-900'
+                        : completionStats.isFarm100PercentWeighed
+                          ? 'bg-emerald-200 text-emerald-900'
+                          : 'bg-amber-200 text-amber-900'
                     }`}>
-                      {completionStats.isFarm100PercentWeighed ? 'Ready to Submit' : `${completionStats.incompleteLines.length} Pending`}
+                      {farmStatus === 'COMPLETED' ? '✓ Submitted' : completionStats.isFarm100PercentWeighed ? 'Ready to Submit' : `${completionStats.incompleteLines.length} Pending`}
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5 truncate">
-                    Verify 100% completion & finalize farm batch
+                    {farmStatus === 'COMPLETED' ? 'Worksheet finalized & verified on cloud' : 'Verify 100% completion & finalize farm batch'}
                   </p>
                 </div>
               </div>
@@ -424,6 +470,65 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               </div>
               <ChevronRight className="w-6 h-6 text-slate-400 group-hover:translate-x-1 transition" />
             </button>
+
+            {/* STAGE 2 & 3: LIVE TOTAL FARM PROGRESS BANNER & MASTER SUBMIT OVERALL FARM BUTTON (Page Bottom) */}
+            <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white p-4 rounded-2xl border border-emerald-500/30 shadow-md">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] sm:text-xs font-black uppercase tracking-wider text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded-md border border-emerald-500/40">
+                      Shared Team Workspace
+                    </span>
+                    <span className="text-xs font-bold text-slate-300">
+                      Week: <strong className="text-white">{currentWeek || activeFarm.ageWeek}</strong>
+                    </span>
+                  </div>
+                  <h3 className="text-sm sm:text-base font-black text-white mt-1.5 flex items-center gap-2 flex-wrap">
+                    <span>Total Farm Progress:</span>
+                    <span className="text-emerald-400 font-mono font-black">
+                      {savedShedsCount} of {totalShedsCount} Sheds Saved ({totalShedsCount > 0 ? Math.round((savedShedsCount / totalShedsCount) * 100) : 0}%)
+                    </span>
+                    <span className="text-slate-400">•</span>
+                    <span className="text-amber-300 font-mono font-black">
+                      {totalFarmBirdsCount.toLocaleString()} Total Birds Counted
+                    </span>
+                  </h3>
+                </div>
+
+                {/* Master Submit Overall Farm Button */}
+                <div className="shrink-0 flex items-center gap-2">
+                  {farmStatus === 'COMPLETED' ? (
+                    <span className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded-xl text-xs font-black shadow-xs">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      <span>Week Finalized & Submitted</span>
+                    </span>
+                  ) : (savedShedsCount > 0 || totalFarmBirdsCount > 0) && onSubmitOverallFarm ? (
+                    <button
+                      type="button"
+                      onClick={onSubmitOverallFarm}
+                      className="px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black rounded-xl text-xs shadow-lg shadow-emerald-500/25 active:scale-95 transition cursor-pointer flex items-center gap-2"
+                      title="Submit overall farm to Submission History"
+                    >
+                      <UploadCloud className="w-4 h-4 text-slate-950" />
+                      <span>Submit Overall Farm ({savedShedsCount}/{totalShedsCount} Saved)</span>
+                    </button>
+                  ) : (
+                    <div className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-800/90 text-slate-400 border border-slate-700/80 rounded-xl text-[11px] font-bold">
+                      <Lock className="w-3.5 h-3.5 text-slate-500" />
+                      <span>Submit Overall Farm ({savedShedsCount}/{totalShedsCount} Saved)</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Visual Progress Bar */}
+              <div className="w-full bg-slate-800 rounded-full h-2 mt-3 overflow-hidden border border-slate-700/60">
+                <div
+                  className="bg-gradient-to-r from-emerald-500 to-teal-400 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${totalShedsCount > 0 ? Math.round((savedShedsCount / totalShedsCount) * 100) : 0}%` }}
+                />
+              </div>
+            </div>
           </div>
         </div>
       )}

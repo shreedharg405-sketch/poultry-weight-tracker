@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { App as CapApp } from '@capacitor/app';
 import { 
   Building2, 
   Calendar, 
@@ -24,6 +25,7 @@ import {
   Cloud,
   CloudOff,
   Lock,
+  Unlock,
   Loader2,
   Check,
   History,
@@ -69,10 +71,12 @@ import {
 import { 
   cloudApi, 
   FarmSummary, 
+  FarmBatch,
   FullFarmData,
   FarmAudit,
   FarmStatus,
   UserRole,
+  ShedLockInfo,
   getApiBaseUrl, 
   normalizeApiUrl, 
   offlineQueue, 
@@ -217,14 +221,14 @@ export default function App() {
       const savedWeek = localStorage.getItem(`poultry_active_week_${activeId}`);
       if (savedWeek) return savedWeek;
     }
-    return 'W18';
+    return 'W1';
   });
   const [season, setSeason] = useState<'Summer' | 'Winter'>('Summer');
 
   // Week number extraction for exact tolerance calculation
   const weekNum = useMemo(() => {
     const num = parseInt(ageWeek.replace(/\D/g, ''), 10);
-    return isNaN(num) ? 18 : num;
+    return isNaN(num) ? 1 : num;
   }, [ageWeek]);
 
   const liveDateFormatted = useMemo(() => formatDateDMY(liveTime), [liveTime]);
@@ -271,17 +275,22 @@ export default function App() {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   });
-  const [newFarmAgeWeek, setNewFarmAgeWeek] = useState<string>('W18');
+  const [newFarmAgeWeek, setNewFarmAgeWeek] = useState<string>('W1');
   const [newFarmSeason, setNewFarmSeason] = useState<'Summer' | 'Winter'>('Summer');
   const [newFarmShedCount, setNewFarmShedCount] = useState<number | string>(10);
   const [newFarmShedCountError, setNewFarmShedCountError] = useState<string | null>(null);
   const [isCreatingFarm, setIsCreatingFarm] = useState<boolean>(false);
 
+  // Farm -> Batch -> Week Hierarchy State
+  const [activeBatchId, setActiveBatchId] = useState<string>('');
+  const [activeBatchName, setActiveBatchName] = useState<string>('Batch 1');
+  const [batchesList, setBatchesList] = useState<FarmBatch[]>([]);
+
   // Farm Audit, Draft Status & Batch Submission State
   const [farmStatus, setFarmStatus] = useState<FarmStatus>(() => {
     const activeId = localStorage.getItem('poultry_active_farm_id') || '';
     if (activeId) {
-      const activeWeek = localStorage.getItem(`poultry_active_week_${activeId}`) || 'W18';
+      const activeWeek = localStorage.getItem(`poultry_active_week_${activeId}`) || 'W1';
       try {
         const savedWeekStatus = localStorage.getItem(`poultry_status_${activeId}_${activeWeek}`);
         if (savedWeekStatus === 'DRAFT' || savedWeekStatus === 'UPLOADING' || savedWeekStatus === 'COMPLETED' || savedWeekStatus === 'UPLOAD_FAILED') {
@@ -369,6 +378,9 @@ export default function App() {
     if (r === 'In-Charge' || r === 'Incharge') return 'In-Charge';
     return 'Supervisor';
   }, [currentUser]);
+
+  const isFieldWorker = currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge';
+
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     try {
@@ -489,16 +501,21 @@ export default function App() {
       base = accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
     }
     if (!base) return null;
-    const initialWeekStr = base.initialAgeWeek || base.startingWeek || base.ageWeek || 'W18';
-    const startWeekNum = base.startWeekNumber || parseInt(initialWeekStr.replace(/\D/g, ''), 10) || 1;
+    const initialWeekStr = base.activeBatch?.startWeekNumber ? `W${base.activeBatch.startWeekNumber}` : (base.initialAgeWeek || base.startingWeek || base.ageWeek || 'W1');
+    const startWeekNum = base.activeBatch?.startWeekNumber || base.startWeekNumber || parseInt(initialWeekStr.replace(/\D/g, ''), 10) || 1;
+    const batchStartDate = base.activeBatch?.startDate || base.startDate || base.flockDate;
     return {
       ...base,
+      batchId: base.activeBatch?.id || activeBatchId || base.batchId,
+      batchName: base.activeBatch?.batchName || activeBatchName || base.batchName || 'Batch 1',
+      activeBatch: base.activeBatch || (activeBatchId ? { id: activeBatchId, farmId: base.id, batchName: activeBatchName, startDate: batchStartDate, startWeekNumber: startWeekNum, status: 'ACTIVE' as const } : undefined),
+      startDate: batchStartDate,
       initialAgeWeek: initialWeekStr,
       startingWeek: initialWeekStr,
       startWeekNumber: startWeekNum,
-      ageWeek: ageWeek || base.ageWeek || 'W18',
+      ageWeek: ageWeek || initialWeekStr || base.ageWeek || 'W1',
     };
-  }, [accessibleFarms, activeFarmId, currentUserRole, ageWeek]);
+  }, [accessibleFarms, activeFarmId, currentUserRole, ageWeek, activeBatchId, activeBatchName]);
 
   // Farm Assignment Hub handler for Managers & Admins
   const handleAssignUserToFarm = (farmId: string, assignedUsers: string[]) => {
@@ -586,6 +603,15 @@ export default function App() {
     setShowExitConfirm(false);
 
     // 1. Revoke server session asynchronously in background without blocking UI
+    if (activeLockedShedIdRef.current) {
+      cloudApi.leaveShed(activeLockedShedIdRef.current, {
+        recordedByUserId: currentUser?.id,
+        recordedByUserName: currentUser?.name,
+        hasRecordedWeights: true,
+      }).catch(() => {});
+      activeLockedShedIdRef.current = null;
+      setActiveLockedShedId(null);
+    }
     cloudApi.logout().catch(() => {});
 
     // 2. Clear client session credentials immediately (leaving drafts intact)
@@ -668,11 +694,26 @@ export default function App() {
   // Shed Gender Filter State (All / Female / Male) - Req 9
   const [shedGenderFilter, setShedGenderFilter] = useState<'ALL' | 'FEMALE' | 'MALE'>('ALL');
 
+  // Shed Concurrency Locking, Live Presence & Collision Notification State
+  const [shedLocks, setShedLocks] = useState<Record<string, ShedLockInfo>>({});
+  const [activeLockedShedId, setActiveLockedShedId] = useState<string | null>(null);
+  const activeLockedShedIdRef = useRef<string | null>(null);
+  activeLockedShedIdRef.current = activeLockedShedId;
+  const [collisionModalData, setCollisionModalData] = useState<{
+    shedName: string;
+    lockedByUserName: string;
+    lockedByUserId?: string;
+    shedId: string;
+  } | null>(null);
+  const [isEnteringShed, setIsEnteringShed] = useState<string | null>(null);
+  const [isForceUnlockingShed, setIsForceUnlockingShed] = useState<string | null>(null);
+  const lastUserInteractionTimestampRef = useRef<number>(Date.now());
+
   // Dynamic Sheds Hierarchy - Authoritative Data from Database / Cache, No Hardcoded Defaults
   const [sheds, setSheds] = useState<ShedData[]>(() => {
     const activeId = localStorage.getItem('poultry_active_farm_id');
     if (activeId) {
-      const activeWeek = localStorage.getItem(`poultry_active_week_${activeId}`) || 'W18';
+      const activeWeek = localStorage.getItem(`poultry_active_week_${activeId}`) || 'W1';
       try {
         const weekDraftStr = localStorage.getItem(`poultry_draft_${activeId}_${activeWeek}`);
         if (weekDraftStr) {
@@ -702,6 +743,7 @@ export default function App() {
   // Hardware Back Button & Mobile Popstate Routing Trap with Hash Navigation
   const currentScreenRef = useRef<ScreenType>('home');
   currentScreenRef.current = currentScreen;
+  const handleGoBackRef = useRef<() => void>(() => {});
 
   const selectedShedIdRef = useRef(selectedShedId);
   selectedShedIdRef.current = selectedShedId;
@@ -803,6 +845,11 @@ export default function App() {
 
     const targetScreen = targetState?.screen || getScreenFromHash(window.location.hash) || 'home';
 
+    const isShedScreen = (s?: ScreenType | null) => s === 'part_select' || s === 'line_select' || s === 'weigh_pad';
+    if (activeLockedShedIdRef.current && (!isShedScreen(targetScreen) || (targetState?.shedId && targetState.shedId !== activeLockedShedIdRef.current))) {
+      releaseCurrentShedLock();
+    }
+
     // If active screen is already 'home' and navigating back at root: trigger Exit confirmation
     if (currentScreenRef.current === 'home' && targetScreen === 'home' && event) {
       setShowExitConfirm(true);
@@ -812,6 +859,14 @@ export default function App() {
 
     // Otherwise navigate smoothly without exit confirmation
     setShowExitConfirm(false);
+
+    if (targetScreen === 'setup' && (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge')) {
+      setCurrentScreen('home');
+      currentScreenRef.current = 'home';
+      showToast('Permission Denied: System configurations are restricted to Administrator and Manager.');
+      return;
+    }
+
     setCurrentScreen(targetScreen);
     currentScreenRef.current = targetScreen;
   };
@@ -827,18 +882,82 @@ export default function App() {
     }
 
     window.addEventListener('popstate', handlePopState);
+
+    // Capacitor hardware back button & Android swipe-back handler
+    let capBackButtonHandle: any = null;
+    const initCapacitorBack = async () => {
+      try {
+        capBackButtonHandle = await CapApp.addListener('backButton', () => {
+          if (!isAuthenticatedRef.current) return;
+          const active = currentScreenRef.current;
+          if (active === 'home') {
+            setShowExitConfirm(true);
+            window.history.pushState({ screen: 'home' }, '', '#home');
+          } else {
+            handleGoBackRef.current();
+          }
+        });
+      } catch {
+        // Ignored in standard browser environment
+      }
+    };
+    initCapacitorBack();
+
     return () => {
       window.removeEventListener('popstate', handlePopState);
+      if (capBackButtonHandle && typeof capBackButtonHandle.remove === 'function') {
+        capBackButtonHandle.remove();
+      }
     };
   }, []);
 
+  // Release Shed Concurrency Lock
+  const releaseCurrentShedLock = useCallback(async (targetShedId?: string) => {
+    const shedId = targetShedId || activeLockedShedIdRef.current;
+    if (!shedId) return;
+
+    setActiveLockedShedId(null);
+    activeLockedShedIdRef.current = null;
+
+    const currentShed = shedsRef.current.find(s => s.id === shedId) || sheds.find(s => s.id === shedId);
+    const sAllWeights = (currentShed?.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || []));
+    const hasWeights = sAllWeights.length > 0;
+    const currentUserId = currentUser?.id || 'offline-incharge';
+    const currentUserName = currentUser?.userName || currentUser?.name || currentUser?.username || 'Incharge';
+
+    try {
+      await cloudApi.leaveShed(shedId, {
+        recordedByUserId: hasWeights ? currentUserId : undefined,
+        recordedByUserName: hasWeights ? currentUserName : undefined,
+        hasRecordedWeights: hasWeights,
+      });
+
+      if (hasWeights) {
+        setSheds(prev => prev.map(s => s.id === shedId ? {
+          ...s,
+          recordedByUserId: currentUserId,
+          recordedByUserName: currentUserName,
+          lockedByUserId: null,
+          lockedByUserName: null,
+          lockedAt: null,
+          lastHeartbeatAt: null,
+        } : s));
+      }
+    } catch (err) {
+      console.warn('Error releasing shed lock:', err);
+    }
+  }, [sheds, currentUser]);
+
   // Dedicated Home Navigation: always directly returns to Dashboard Home
   const handleGoHome = useCallback(() => {
+    if (activeLockedShedIdRef.current) {
+      releaseCurrentShedLock();
+    }
     setShowExitConfirm(false);
     setCurrentScreen('home');
     currentScreenRef.current = 'home';
     window.history.pushState({ screen: 'home' }, '', '#home');
-  }, []);
+  }, [releaseCurrentShedLock]);
 
   // Consistent UI Back Button handler: steps down hierarchical level identically to swipe back
   const handleGoBack = useCallback(() => {
@@ -852,6 +971,10 @@ export default function App() {
       return;
     }
     const parent = getParentScreen(active);
+    const isShedScreen = (s?: ScreenType | null) => s === 'part_select' || s === 'line_select' || s === 'weigh_pad';
+    if (activeLockedShedIdRef.current && !isShedScreen(parent)) {
+      releaseCurrentShedLock();
+    }
     setCurrentScreen(parent);
     currentScreenRef.current = parent;
     window.history.pushState(
@@ -859,10 +982,14 @@ export default function App() {
       '',
       getHashForScreen(parent)
     );
-  }, []);
+  }, [releaseCurrentShedLock]);
+  handleGoBackRef.current = handleGoBack;
 
   // Synchronized Forward Navigation Helpers with Hash Anchors (Recognized by Android Chrome)
   const navigateToShedSelect = () => {
+    if (activeLockedShedIdRef.current) {
+      releaseCurrentShedLock();
+    }
     setCurrentScreen('shed_select');
     window.history.pushState({ screen: 'shed_select' }, '', '#sheds');
   };
@@ -908,8 +1035,13 @@ export default function App() {
   const navigateTo = (screen: ScreenType) => {
     // Permission guard (Req 1 & 6)
     if (screen === 'setup' && (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge')) {
-      showToast('Permission Denied: System configuration is restricted to Administrator.');
+      showToast('Permission Denied: System configurations are restricted to Administrator and Manager.');
       return;
+    }
+
+    const isShedScreen = (s?: ScreenType | null) => s === 'part_select' || s === 'line_select' || s === 'weigh_pad';
+    if (activeLockedShedIdRef.current && !isShedScreen(screen)) {
+      releaseCurrentShedLock();
     }
 
     setCurrentScreen(screen);
@@ -925,19 +1057,231 @@ export default function App() {
     window.history.pushState({ screen }, '', hash);
   };
 
+  // Enter Shed with Concurrency Lock & Collision Guard
+  const handleEnterShed = async (s: ShedData) => {
+    const lock = shedLocks[s.id];
+    const currentUserId = currentUser?.id;
+    const now = Date.now();
+    const lockTime = lock?.lastHeartbeatAt ? new Date(lock.lastHeartbeatAt).getTime() : 0;
+    const isLockedByOther = Boolean(
+      lock?.locked &&
+      lock.lockedByUserId &&
+      lock.lockedByUserId !== currentUserId &&
+      (now - lockTime <= 120_000)
+    );
+
+    if (isLockedByOther) {
+      const lockedUserName = lock?.lockedByUserName || 'Another Incharge';
+      setCollisionModalData({
+        shedName: s.name,
+        lockedByUserName: lockedUserName,
+        lockedByUserId: lock?.lockedByUserId || undefined,
+        shedId: s.id,
+      });
+      showToast(`⚠️ ${s.name} is currently being weighed by ${lockedUserName}. Only one Incharge can enter a shed at a time.`);
+      return;
+    }
+
+    setIsEnteringShed(s.id);
+    try {
+      const res = await cloudApi.enterShed(s.id, {
+        id: currentUser?.id,
+        name: currentUser?.userName || currentUser?.name || currentUser?.username || 'Incharge',
+      });
+
+      setActiveLockedShedId(s.id);
+      activeLockedShedIdRef.current = s.id;
+      lastUserInteractionTimestampRef.current = Date.now();
+
+      setShedLocks(prev => ({
+        ...prev,
+        [s.id]: {
+          ...res,
+          shedName: s.name,
+        }
+      }));
+
+      navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a');
+    } catch (err: any) {
+      if (err.status === 409 || err.collisionData) {
+        const colData = err.collisionData || {};
+        const lockedUserName = colData.lockedByUserName || err.message || 'another Incharge';
+        setCollisionModalData({
+          shedName: s.name,
+          lockedByUserName: lockedUserName,
+          lockedByUserId: colData.lockedByUserId,
+          shedId: s.id,
+        });
+        showToast(`⚠️ ${s.name} is currently being weighed by ${lockedUserName}. Only one Incharge can enter a shed at a time.`);
+        if (activeFarmId) {
+          cloudApi.getShedLocks(activeFarmId, ageWeek).then(data => {
+            if (data?.locks) setShedLocks(data.locks);
+          }).catch(() => {});
+        }
+      } else {
+        showToast(err.message || 'Failed to enter shed');
+      }
+    } finally {
+      setIsEnteringShed(null);
+    }
+  };
+
+  // Supervisor / Admin Manual Force Unlock Override
+  const handleForceUnlock = async (shedId: string, shedName?: string) => {
+    setIsForceUnlockingShed(shedId);
+    try {
+      await cloudApi.forceUnlockShed(shedId, currentUserRole);
+      showToast(`Shed ${shedName || ''} unlocked successfully.`);
+      setCollisionModalData(null);
+      if (activeLockedShedIdRef.current === shedId) {
+        setActiveLockedShedId(null);
+        activeLockedShedIdRef.current = null;
+      }
+      if (activeFarmId) {
+        const data = await cloudApi.getShedLocks(activeFarmId, ageWeek);
+        if (data?.locks) setShedLocks(data.locks);
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to force unlock shed');
+    } finally {
+      setIsForceUnlockingShed(null);
+    }
+  };
+
+  // 1. User activity tracker for 2-minute inactivity auto-release
+  useEffect(() => {
+    const handleUserActivity = () => {
+      lastUserInteractionTimestampRef.current = Date.now();
+    };
+
+    window.addEventListener('pointerdown', handleUserActivity, { passive: true });
+    window.addEventListener('keydown', handleUserActivity, { passive: true });
+    window.addEventListener('touchstart', handleUserActivity, { passive: true });
+    window.addEventListener('scroll', handleUserActivity, { passive: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', handleUserActivity);
+      window.removeEventListener('keydown', handleUserActivity);
+      window.removeEventListener('touchstart', handleUserActivity);
+      window.removeEventListener('scroll', handleUserActivity);
+    };
+  }, []);
+
+  // 2. Shed Keep-Alive Heartbeat (every 30s) + 2-minute Inactivity Auto-Release
+  useEffect(() => {
+    if (!activeLockedShedId) return;
+
+    const intervalId = setInterval(async () => {
+      const currentShedId = activeLockedShedIdRef.current;
+      if (!currentShedId) return;
+
+      // Check if 2 minutes (120,000ms) of inactivity has elapsed
+      const inactiveDuration = Date.now() - lastUserInteractionTimestampRef.current;
+      if (inactiveDuration >= 120_000) {
+        console.warn(`[Lock] Auto-releasing shed ${currentShedId} due to 2 minutes of inactivity.`);
+        await releaseCurrentShedLock(currentShedId);
+        showToast('⚠️ Session timed out after 2 minutes of inactivity. Shed lock was released.');
+        navigateToShedSelect();
+        return;
+      }
+
+      // Otherwise send keep-alive heartbeat
+      try {
+        await cloudApi.heartbeatShed(currentShedId, {
+          id: currentUser?.id,
+          name: currentUser?.userName || currentUser?.name || currentUser?.username || 'Incharge',
+        });
+      } catch (err: any) {
+        if (err.status === 409) {
+          showToast('⚠️ Your lock on this shed expired or was superseded.');
+          setActiveLockedShedId(null);
+          activeLockedShedIdRef.current = null;
+          navigateToShedSelect();
+        }
+      }
+    }, 30_000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [activeLockedShedId, currentUser, releaseCurrentShedLock]);
+
+  // 3. 5-second polling on Shed Selection and Home screens for live presence & team save progress badges
+  useEffect(() => {
+    if ((currentScreen !== 'shed_select' && currentScreen !== 'home') || !activeFarmId) return;
+
+    const fetchLocks = async () => {
+      try {
+        const res = await cloudApi.getShedLocks(activeFarmId, ageWeek);
+        if (res && res.locks) {
+          setShedLocks(res.locks);
+        }
+      } catch (err) {
+        console.warn('Failed to poll shed locks:', err);
+      }
+    };
+
+    fetchLocks();
+    const intervalId = setInterval(fetchLocks, 5_000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [currentScreen, activeFarmId, ageWeek]);
+
+  // 4. Page Unload / Hide cleanup: sendBeacon / keepalive lock release
+  useEffect(() => {
+    const handlePageUnload = () => {
+      const currentShedId = activeLockedShedIdRef.current;
+      if (!currentShedId) return;
+
+      const currentUserId = currentUser?.id || 'offline-incharge';
+      const currentUserName = currentUser?.userName || currentUser?.name || currentUser?.username || 'Incharge';
+
+      try {
+        const url = `${getApiBaseUrl()}/sheds/${currentShedId}/leave`;
+        const payload = JSON.stringify({
+          recordedByUserId: currentUserId,
+          recordedByUserName: currentUserName,
+        });
+        if (navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: 'application/json' });
+          navigator.sendBeacon(url, blob);
+        } else {
+          cloudApi.leaveShed(currentShedId, {
+            recordedByUserId: currentUserId,
+            recordedByUserName: currentUserName,
+          });
+        }
+      } catch {
+        cloudApi.leaveShed(currentShedId);
+      }
+    };
+
+    window.addEventListener('beforeunload', handlePageUnload);
+    window.addEventListener('pagehide', handlePageUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handlePageUnload);
+      window.removeEventListener('pagehide', handlePageUnload);
+    };
+  }, [currentUser]);
+
   const handleCancelExit = () => {
     setShowExitConfirm(false);
     window.history.pushState({ screen: 'home' }, '', '#home');
   };
 
-  const handleConfirmExit = () => {
+  const handleConfirmExit = async () => {
     setShowExitConfirm(false);
     try {
-      window.close();
+      await CapApp.exitApp();
     } catch {
-      // fallback
+      try {
+        window.close();
+      } catch {}
+      window.history.go(-2);
     }
-    window.history.go(-2);
   };
 
   // Switch Active Farm (Week-aware)
@@ -961,8 +1305,11 @@ export default function App() {
       }
     }
 
-    // Determine target week for this farm
-    const targetWeek = localStorage.getItem(`poultry_active_week_${targetFarmId}`) || knownFarm?.ageWeek || 'W18';
+    // Determine target week: prefer saved active week, then farm's known start week, fallback to W1
+    const knownStartWeek = knownFarm?.activeBatch?.startWeekNumber 
+      ? `W${knownFarm.activeBatch.startWeekNumber}`
+      : (knownFarm?.initialAgeWeek || knownFarm?.startingWeek || knownFarm?.ageWeek || 'W1');
+    const targetWeek = localStorage.getItem(`poultry_active_week_${targetFarmId}`) || knownStartWeek;
     setAgeWeek(targetWeek);
 
     // Immediately restore local draft if available strictly for targetWeek
@@ -1016,12 +1363,22 @@ export default function App() {
     setIsPendingSubmission(localPending === 'true');
 
     try {
-      const data = await cloudApi.getFarmDetails(targetFarmId, targetWeek);
+      const data = await cloudApi.getFarmDetails(targetFarmId, targetWeek, activeBatchId || undefined);
       if (data) {
         setFarmName(data.name);
         setDate(data.flockDate || new Date().toISOString().split('T')[0]);
-        setAgeWeek(data.ageWeek || targetWeek || 'W18');
+        setAgeWeek(targetWeek || data.ageWeek || 'W1');
         setSeason((data.season as any) || 'Summer');
+        if (data.activeBatch) {
+          setActiveBatchId(data.activeBatch.id);
+          setActiveBatchName(data.activeBatch.batchName);
+        } else if (data.batchId) {
+          setActiveBatchId(data.batchId);
+          setActiveBatchName(data.batchName || 'Batch 1');
+        }
+        if (Array.isArray(data.batches)) {
+          setBatchesList(data.batches);
+        }
         if (data.status) {
           setFarmStatus(data.status);
           localStorage.setItem(`poultry_status_${targetFarmId}_${targetWeek}`, data.status);
@@ -1096,7 +1453,25 @@ export default function App() {
         } catch {}
       }
     }
-  }, []);
+  }, [activeBatchId]);
+
+  // Switch Batch for Active Farm (Manager & Admin)
+  const handleSelectBatch = useCallback(async (batchId: string) => {
+    setActiveBatchId(batchId);
+    const found = batchesList.find(b => b.id === batchId);
+    if (found) {
+      setActiveBatchName(found.batchName);
+    }
+    try {
+      const data = await cloudApi.getFarmDetails(activeFarmId, ageWeek, batchId);
+      if (data && Array.isArray(data.sheds)) {
+        shedsRef.current = data.sheds;
+        setSheds(data.sheds);
+      }
+    } catch (e) {
+      console.warn('Could not load farm batch details:', e);
+    }
+  }, [activeFarmId, ageWeek, batchesList]);
 
   // Switch Recording Week for Active Farm (Req Steps 2 & 3)
   const handleSwitchWeek = useCallback(async (newWeek: string) => {
@@ -1116,6 +1491,7 @@ export default function App() {
 
     // 2. Set new active week
     setAgeWeek(cleanWeek);
+    setShedLocks({});
     if (activeFarmId) {
       localStorage.setItem(`poultry_active_week_${activeFarmId}`, cleanWeek);
     }
@@ -1394,6 +1770,27 @@ export default function App() {
     return () => clearInterval(pollInterval);
   }, [activeFarmId, ageWeek, lastServerUpdatedAt, inputWeight, syncStatus]);
 
+  // Real-Time Cross-Phone Shed Save & Lock Polling (Every 1.5s)
+  const liveStatePollRef = useRef<any>(null);
+  useEffect(() => {
+    if (!activeFarmId || !ageWeek) return;
+    const poll = async () => {
+      // Never interrupt active weighing or input
+      const activeScreen = currentScreenRef.current;
+      if (activeScreen === 'weigh_pad' || activeScreen === 'part_select' || activeScreen === 'line_select') return;
+      try {
+        const data = await cloudApi.getLiveState(activeFarmId, ageWeek);
+        if (data?.locks) {
+          setShedLocks(prev => ({ ...prev, ...data.locks }));
+        }
+      } catch {}
+    };
+    liveStatePollRef.current = setInterval(poll, 1500);
+    return () => {
+      if (liveStatePollRef.current) clearInterval(liveStatePollRef.current);
+    };
+  }, [activeFarmId, ageWeek, farmStatus]);
+
   // Manual Pull-To-Refresh from Cloud
   const handleManualRefresh = async () => {
     setIsRefreshingCloud(true);
@@ -1585,7 +1982,26 @@ export default function App() {
     }
   };
 
-  // Toggle Shed-Wise Female/Male Gender Selection
+  // Toggle Line-Wise Female/Male Gender Selection (Req 2)
+  const handleToggleLineGender = async (lineId: string | number, newGender: 'Female' | 'Male') => {
+    const uppercaseGender = newGender.toUpperCase() as 'MALE' | 'FEMALE';
+    setSheds(prev => prev.map(s => ({
+      ...s,
+      parts: s.parts.map(p => ({
+        ...p,
+        lines: p.lines.map(l => String(l.id) === String(lineId) ? { ...l, gender: uppercaseGender } : l)
+      }))
+    })));
+
+    try {
+      await cloudApi.updateLineGender(lineId, uppercaseGender);
+      showToast(`Line standard updated to ${newGender === 'Male' ? '♂ Male' : '♀ Female'} (STD: ${newGender === 'Male' ? stdWeightMale : stdWeightFemale}g)`);
+    } catch {
+      showToast(`Line standard set to ${newGender === 'Male' ? '♂ Male' : '♀ Female'}`);
+    }
+  };
+
+  // Toggle Shed-Wise Female/Male Gender Selection (Fallback)
   const handleToggleShedGender = async (shedId: string, newGender: 'Female' | 'Male') => {
     setSheds(prev => prev.map(s => s.id === shedId ? { ...s, type: newGender } : s));
     try {
@@ -1789,7 +2205,9 @@ export default function App() {
   const activePart = activeShed?.parts?.find(p => p.id === selectedPartId) || activeShed?.parts?.[0] || null;
   const activeLine = activePart?.lines?.find(l => String(l.id) === String(selectedLineId)) || activePart?.lines?.[0] || null;
 
-  const activeStd = activeShed?.type === 'Male' ? stdWeightMale : stdWeightFemale;
+  // LINE-LEVEL GENDER SELECTION & DYNAMIC STANDARD WEIGHT (Req 2)
+  const activeLineGender = (activeLine?.gender || (activeShed?.type === 'Male' ? 'MALE' : 'FEMALE')).toUpperCase() === 'MALE' ? 'Male' : 'Female';
+  const activeStd = activeLineGender === 'Male' ? stdWeightMale : stdWeightFemale;
   const activeBands = useMemo(() => getGradingBands(activeStd, weekNum), [activeStd, weekNum]);
 
   // Real-time Calculations
@@ -1810,22 +2228,27 @@ export default function App() {
     return calculateFlockStats(weights, activeStd, weekNum);
   }, [activeShed, activeStd, weekNum]);
 
-  // Consolidated Overall Calculations
+  // Consolidated Overall Calculations dynamically aggregated by Line Gender
   const consolidated = useMemo(() => {
     const femaleWeights = sheds
-      .filter(s => s.type === 'Female')
-      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights)));
+      .flatMap(s => s.parts.flatMap(p => p.lines.filter(l => {
+        const g = (l.gender || (s.type === 'Male' ? 'MALE' : 'FEMALE')).toUpperCase();
+        return g === 'FEMALE';
+      }).flatMap(l => l.weights)));
 
     const maleWeights = sheds
-      .filter(s => s.type === 'Male')
-      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights)));
+      .flatMap(s => s.parts.flatMap(p => p.lines.filter(l => {
+        const g = (l.gender || (s.type === 'Male' ? 'MALE' : 'FEMALE')).toUpperCase();
+        return g === 'MALE';
+      }).flatMap(l => l.weights)));
 
     const fStats = calculateFlockStats(femaleWeights, stdWeightFemale, weekNum);
     const mStats = calculateFlockStats(maleWeights, stdWeightMale, weekNum);
 
     const shedSummaries = sheds.map((s, idx) => {
       const allW = s.parts.flatMap(p => p.lines.flatMap(l => l.weights));
-      const std = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
+      const sGender = (s.type === 'Male' ? 'Male' : 'Female');
+      const std = sGender === 'Male' ? stdWeightMale : stdWeightFemale;
       return {
         ...s,
         indexNum: idx + 1,
@@ -2068,6 +2491,145 @@ export default function App() {
     }
   }, [activeFarmId, completionStats.progressPercent, currentUser, currentUserRole, sheds, farmName, date, ageWeek, season, farmAudit]);
 
+  // =========================================================================
+  // STAGE 2: SHED-WISE "SAVE SHED" (TEAM VISIBLE, NOT SUBMISSION HISTORY)
+  // =========================================================================
+  const [isSavingShed, setIsSavingShed] = useState(false);
+
+  const handleSaveShed = useCallback(async (targetShed?: ShedData) => {
+    const shedToSave = targetShed || activeShed;
+    if (!shedToSave) return;
+    setIsSavingShed(true);
+    try {
+      const userName = currentUser?.userName || currentUser?.name || currentUser?.username || 'Incharge 1';
+      const userId = currentUser?.id || 'incharge-1';
+
+      // 1. Compute total birds weighed in this shed
+      const shedBirdWeights = (shedToSave.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || []));
+      const totalBirdCount = shedBirdWeights.length;
+
+      // 2. Extract line weights payload
+      const weightsPayload: Array<{ lineId: string; weights: number[] }> = [];
+      for (const p of shedToSave.parts || []) {
+        for (const l of p.lines || []) {
+          weightsPayload.push({
+            lineId: String(l.id),
+            weights: l.weights || [],
+          });
+        }
+      }
+
+      // 3. Persist locally first
+      localStorage.setItem(`poultry_shed_${shedToSave.id}_${ageWeek}`, JSON.stringify(shedToSave));
+
+      // 4. Call Stage 2 API: POST /api/sheds/:shedId/save-shed
+      // Persists weights into Farm+Week workspace, marks SAVED, releases lock, visible to team, NEVER writes to SubmissionHistory
+      const res = await cloudApi.saveShed(shedToSave.id, {
+        farmId: activeFarmId,
+        week: ageWeek,
+        batchId: activeBatchId || undefined,
+        userId,
+        userName,
+        totalBirdCount,
+        weights: weightsPayload,
+      });
+
+      // 5. Update local shed lock state immediately so the badge updates
+      setShedLocks(prev => ({
+        ...prev,
+        [shedToSave.id]: {
+          ...(prev[shedToSave.id] || { shedId: shedToSave.id }),
+          locked: false,
+          lockedByUserId: null,
+          lockedByUserName: null,
+          savedStatus: 'SAVED',
+          savedByUserName: userName,
+          savedByUserId: userId,
+          totalBirdCount: res.totalBirdCount ?? totalBirdCount,
+          savedAt: new Date().toISOString(),
+        }
+      }));
+
+      // Update sheds state so the saved weights and status persist in memory & draft
+      setSheds(prev => prev.map(sh => sh.id === shedToSave.id ? ({ ...shedToSave, savedStatus: 'SAVED', savedByUserName: userName, totalBirdCount } as any) : sh));
+      shedsRef.current = shedsRef.current.map(sh => sh.id === shedToSave.id ? ({ ...shedToSave, savedStatus: 'SAVED', savedByUserName: userName, totalBirdCount } as any) : sh);
+      if (activeFarmId) {
+        localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: shedsRef.current, updatedAt: Date.now() }));
+      }
+
+      // Release active locked shed in local client
+      if (activeLockedShedId === shedToSave.id) {
+        setActiveLockedShedId(null);
+        activeLockedShedIdRef.current = null;
+      }
+
+      showToast(`✅ ${shedToSave.name} saved! Birds count: ${totalBirdCount}. Shared with team.`);
+
+      // Navigate back to shed selection
+      navigateTo('shed_select');
+
+      // Refresh farm and locks
+      if (activeFarmId) {
+        cloudApi.getShedLocks(activeFarmId, ageWeek).then(data => {
+          if (data?.locks) setShedLocks(data.locks);
+        }).catch(() => {});
+      }
+    } catch (err: any) {
+      console.error('Failed to save shed:', err);
+      showToast(`Failed to save shed: ${err.message || 'Storage error'}`);
+    } finally {
+      setIsSavingShed(false);
+    }
+  }, [activeShed, currentUser, activeFarmId, ageWeek, activeLockedShedId, navigateTo, showToast]);
+
+  // =========================================================================
+  // STAGE 3: OVERALL FARM "FINAL SUBMIT" (WRITES TO SUBMISSION HISTORY)
+  // =========================================================================
+  const [isSubmittingOverallFarm, setIsSubmittingOverallFarm] = useState(false);
+  const [showOverallSubmitConfirmModal, setShowOverallSubmitConfirmModal] = useState(false);
+
+  const handleOverallFarmFinalSubmit = useCallback(async () => {
+    if (!activeFarmId) return;
+    setIsSubmittingOverallFarm(true);
+    try {
+      const userName = currentUser?.userName || currentUser?.name || 'Field Supervisor';
+      const userRole = currentUserRole;
+
+      const res = await cloudApi.submitOverallFarm(activeFarmId, ageWeek, {
+        submittedBy: userName,
+        submittedRole: userRole,
+        batchId: activeBatchId || undefined,
+        batchName: activeBatchName || undefined,
+      });
+
+      setFarmStatus('COMPLETED');
+      localStorage.setItem(`poultry_status_${activeFarmId}_${ageWeek}`, 'COMPLETED');
+      localStorage.setItem(`poultry_status_${activeFarmId}`, 'COMPLETED');
+      setIsPendingSubmission(false);
+
+      // Auto-unlock next week
+      const currentNum = parseInt(ageWeek.replace(/\D/g, ''), 10) || 1;
+      const nextWeekStr = res.nextWeek || `W${currentNum + 1}`;
+      localStorage.setItem(`poultry_active_week_${activeFarmId}`, nextWeekStr);
+      localStorage.setItem(`poultry_status_${activeFarmId}_${nextWeekStr}`, 'DRAFT');
+
+      // Guarantee 100% empty state for next week: retain sheds/parts/lines layout, reset weights to [] and status to PENDING
+      const nextWeekCleanSheds = createEmptyWeeklySheds(shedsRef.current);
+      localStorage.setItem(`poultry_draft_${activeFarmId}_${nextWeekStr}`, JSON.stringify({ sheds: nextWeekCleanSheds, updatedAt: Date.now() }));
+
+      showToast(`🎉 Overall Farm Final Submission Complete! Week ${ageWeek} finalized. Week ${nextWeekStr} unlocked.`);
+      setShowOverallSubmitConfirmModal(false);
+
+      // Navigate to conclusion / history
+      navigateTo('conclusion');
+    } catch (err: any) {
+      console.error('Failed to submit overall farm:', err);
+      showToast(`Overall farm submission failed: ${err.message || 'Submission error'}`);
+    } finally {
+      setIsSubmittingOverallFarm(false);
+    }
+  }, [activeFarmId, ageWeek, currentUser, currentUserRole, activeBatchId, activeBatchName, navigateTo, showToast]);
+
   // --- WEIGHING PAD WEIGHT HANDLERS (Local Staging & Draft Workflow) ---
   const handleAddWeight = () => {
     // Prevent duplicate submissions from rapid multi-taps
@@ -2128,10 +2690,6 @@ export default function App() {
 
       // Guard: Confirmation if editing a previously completed record
       if (farmStatus === 'COMPLETED') {
-        if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
-          showToast('Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.');
-          return;
-        }
         const confirmReopen = window.confirm(
           'This farm record was COMPLETED & SUBMITTED.\n\nAdding or modifying weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
         );
@@ -2183,10 +2741,6 @@ export default function App() {
     if (idx < 0 || idx >= currentLine.weights.length) return;
 
     if (farmStatus === 'COMPLETED') {
-      if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
-        showToast('Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.');
-        return;
-      }
       const confirmReopen = window.confirm(
         'This farm record was COMPLETED & SUBMITTED.\n\nDeleting weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
       );
@@ -2217,10 +2771,6 @@ export default function App() {
     if (!currentShed || !currentPart || !currentLine || currentLine.weights.length === 0) return;
 
     if (farmStatus === 'COMPLETED') {
-      if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
-        showToast('Permission Denied: Completed submissions cannot be modified by Supervisor or Incharge.');
-        return;
-      }
       const confirmReopen = window.confirm(
         'This farm record was COMPLETED & SUBMITTED.\n\nClearing weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
       );
@@ -2409,10 +2959,6 @@ export default function App() {
   // --- PART MANAGEMENT HANDLERS ---
   const handleAddPart = () => {
     if (!activeShed) return;
-    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
-      showToast('Permission Denied: Completed submissions cannot be modified.');
-      return;
-    }
     if (isAddingPartRef.current) return;
     isAddingPartRef.current = true;
 
@@ -2491,20 +3037,11 @@ export default function App() {
   };
 
   const handleStartEditPart = (part: ShedPart) => {
-    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
-      showToast('Permission Denied: Completed submissions cannot be modified.');
-      return;
-    }
     setEditingPart({ id: part.id, name: part.name });
   };
 
   const handleSaveEditPart = () => {
     if (!editingPart || !editingPart.name.trim() || !activeShed) return;
-    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
-      showToast('Permission Denied: Completed submissions cannot be modified.');
-      setEditingPart(null);
-      return;
-    }
     const clean = editingPart.name.trim();
     const withoutPart = clean.replace(/^part\s*[:\-]?\s*/i, '').trim();
     const letter = (withoutPart || clean).toUpperCase()[0];
@@ -2538,10 +3075,6 @@ export default function App() {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
-    }
-    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
-      showToast('Permission Denied: Completed submissions cannot be modified.');
-      return;
     }
     if (!activeShed) return;
     if (activeShed.parts.length <= 1) {
@@ -2585,10 +3118,6 @@ export default function App() {
   // --- LINE / PEN MANAGEMENT HANDLERS ---
   const handleAddLine = () => {
     if (!activeShed || !activePart) return;
-    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
-      showToast('Permission Denied: Completed submissions cannot be modified.');
-      return;
-    }
     if (isAddingLineRef.current) return;
     isAddingLineRef.current = true;
 
@@ -2692,10 +3221,6 @@ export default function App() {
       e.preventDefault();
       e.stopPropagation();
     }
-    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
-      showToast('Permission Denied: Completed submissions cannot be modified.');
-      return;
-    }
     if (!activeShed || !activePart) return;
     if (activePart.lines.length <= 1) {
       showToast('Cannot delete line: A part must have at least 1 pen line.');
@@ -2790,20 +3315,11 @@ export default function App() {
   };
 
   const handleStartEditShed = (shed: ShedData) => {
-    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
-      showToast('Permission Denied: Completed submissions cannot be modified.');
-      return;
-    }
     setEditingShed({ id: shed.id, name: shed.name, type: shed.type });
   };
 
   const handleSaveEditShed = () => {
     if (!editingShed || !editingShed.name.trim()) return;
-    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
-      showToast('Permission Denied: Completed submissions cannot be modified.');
-      setEditingShed(null);
-      return;
-    }
     const trimmed = editingShed.name.trim();
     const shedId = editingShed.id;
     const shedType = editingShed.type;
@@ -2839,10 +3355,6 @@ export default function App() {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
-    }
-    if (farmStatus === 'COMPLETED' || currentActiveFarmSummary?.status === 'COMPLETED') {
-      showToast('Permission Denied: Completed submissions cannot be modified.');
-      return;
     }
     if (sheds.length <= 1) {
       showToast('Cannot delete shed: A farm must have at least 1 shed.');
@@ -2936,6 +3448,7 @@ export default function App() {
       }
       const res = await exportPoultryWorkbook({
         farmName: activeName,
+        batchName: activeBatchName || undefined,
         dateStr: date,
         formattedDateTime,
         ageWeek,
@@ -3016,6 +3529,10 @@ export default function App() {
                   if (targetFarm.flockDate) setDate(targetFarm.flockDate);
                   if (targetFarm.ageWeek) setAgeWeek(targetFarm.ageWeek);
                   if (targetFarm.season) setSeason(targetFarm.season as any);
+                  if (targetFarm.activeBatch?.id) {
+                    setActiveBatchId(targetFarm.activeBatch.id);
+                    setActiveBatchName(targetFarm.activeBatch.batchName);
+                  }
                 }
                 navigateTo('conclusion');
                 switchFarm(farmId, true);
@@ -3029,30 +3546,54 @@ export default function App() {
               onRefreshFarms={handleManualRefresh}
               onDeleteFarm={handleDeleteFarm}
               onRenameFarm={handleRenameFarm}
-            />
-          ) : (
-            // Dashboard A: Field Operator Dashboard (Supervisor & Incharge)
-            <SupervisorDashboard
-              currentUser={currentUser}
-              activeFarm={currentActiveFarmSummary}
-              assignedFarms={accessibleFarms}
-              completionStats={completionStats}
-              farmStatus={farmStatus}
-              formattedDateTime={formattedDateTime}
-              onSelectFarm={(farmId) => {
-                switchFarm(farmId);
-              }}
-              onStartWeighing={navigateToShedSelect}
-              onOpenSubmitPage={() => navigateTo('submit_page')}
-              onViewSubmissionsUpdate={() => navigateTo('history')}
-              onOpenAuth={() => navigateTo('auth')}
-              onLogout={handleLogout}
-              onRenameFarm={handleRenameFarm}
+              activeBatchId={activeBatchId}
+              onSelectBatch={handleSelectBatch}
               currentWeek={ageWeek}
               onSwitchWeek={handleSwitchWeek}
-              weekStatusMap={weekStatusMap}
             />
-          )
+          ) : (() => {
+            const savedShedsList = sheds.filter(s => {
+              const l = shedLocks[s.id];
+              return l?.savedStatus === 'SAVED' || (s as any).savedStatus === 'SAVED';
+            });
+            const savedShedsCount = savedShedsList.length;
+            const totalShedsCount = sheds.length;
+            const isAllShedsSaved = totalShedsCount > 0 && savedShedsCount >= totalShedsCount;
+            const totalFarmBirdsCount = sheds.reduce((acc, s) => {
+              const l = shedLocks[s.id];
+              const sCount = (s.parts || []).flatMap(p => (p.lines || []).flatMap(line => line.weights || [])).length;
+              return acc + (l?.totalBirdCount !== undefined ? l.totalBirdCount : sCount);
+            }, 0);
+
+            return (
+              // Dashboard A: Field Operator Dashboard (Supervisor & Incharge)
+              <SupervisorDashboard
+                currentUser={currentUser}
+                activeFarm={currentActiveFarmSummary}
+                assignedFarms={accessibleFarms}
+                completionStats={completionStats}
+                farmStatus={farmStatus}
+                formattedDateTime={formattedDateTime}
+                onSelectFarm={(farmId) => {
+                  switchFarm(farmId);
+                }}
+                onStartWeighing={navigateToShedSelect}
+                onOpenSubmitPage={() => navigateTo('submit_page')}
+                onViewSubmissionsUpdate={() => navigateTo('history')}
+                onOpenAuth={() => navigateTo('auth')}
+                onLogout={handleLogout}
+                onRenameFarm={handleRenameFarm}
+                currentWeek={ageWeek}
+                onSwitchWeek={handleSwitchWeek}
+                weekStatusMap={weekStatusMap}
+                savedShedsCount={savedShedsCount}
+                totalShedsCount={totalShedsCount}
+                totalFarmBirdsCount={totalFarmBirdsCount}
+                isAllShedsSaved={isAllShedsSaved}
+                onSubmitOverallFarm={() => setShowOverallSubmitConfirmModal(true)}
+              />
+            );
+          })()
         )}
 
         {/* ========================================================= */}
@@ -3061,6 +3602,7 @@ export default function App() {
         {currentScreen === 'submit_page' && (
           <DedicatedSubmitScreen
             farm={currentActiveFarmSummary}
+            batchName={activeBatchName}
             completionStats={completionStats}
             farmStatus={farmStatus}
             farmAudit={farmAudit}
@@ -3155,29 +3697,40 @@ export default function App() {
                 </div>
 
                 <div className="relative w-full min-w-0">
-                  <select
-                    id="shed-recording-week-select"
-                    value={ageWeek}
-                    onChange={(e) => handleSwitchWeek(e.target.value)}
-                    className="w-full min-w-0 max-w-full bg-emerald-50/80 hover:bg-emerald-100/70 border border-emerald-300/80 rounded-xl pl-3 pr-8 py-2 text-xs font-black text-emerald-950 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 transition cursor-pointer appearance-none truncate"
-                    title="Change Recording Week"
-                  >
-                    {Array.from({ length: 24 }, (_, i) => `W${i + 1}`).map((w) => {
-                      const wStatus = weekStatusMap?.[w];
-                      const statusIcon = wStatus === 'COMPLETED' ? '🟢' : '🟡';
-                      const statusText = wStatus === 'COMPLETED' ? 'COMPLETED' : 'DRAFT';
-                      const farmAnchor = currentActiveFarmSummary || { flockDate: date, ageWeek };
-                      const initialWeek = currentActiveFarmSummary?.startWeekNumber || currentActiveFarmSummary?.initialAgeWeek || currentActiveFarmSummary?.startingWeek || currentActiveFarmSummary?.ageWeek;
-                      return (
-                        <option key={w} value={w} className="text-slate-900 bg-white py-1">
-                          {w} — {statusIcon} {formatRecordingWeekLabel(w, farmAnchor, initialWeek)} ({statusText})
-                        </option>
-                      );
-                    })}
-                  </select>
-                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-emerald-700">
-                    <ChevronDown className="w-4 h-4" />
-                  </div>
+                  {isFieldWorker ? (
+                    <div className="w-full min-w-0 bg-emerald-50/80 border border-emerald-300/80 rounded-xl px-3 py-2 text-xs font-black text-emerald-950 flex items-center justify-between">
+                      <span>{ageWeek}</span>
+                      <span className="text-[10px] text-emerald-800 font-bold">
+                        {weekStatusMap?.[ageWeek] === 'COMPLETED' ? '🟢 Completed' : '🟡 In-Progress'} (Active Week)
+                      </span>
+                    </div>
+                  ) : (
+                    <>
+                      <select
+                        id="shed-recording-week-select"
+                        value={ageWeek}
+                        onChange={(e) => handleSwitchWeek(e.target.value)}
+                        className="w-full min-w-0 max-w-full bg-emerald-50/80 hover:bg-emerald-100/70 border border-emerald-300/80 rounded-xl pl-3 pr-8 py-2 text-xs font-black text-emerald-950 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 transition cursor-pointer appearance-none truncate"
+                        title="Change Recording Week"
+                      >
+                        {Array.from({ length: 24 }, (_, i) => `W${i + 1}`).map((w) => {
+                          const wStatus = weekStatusMap?.[w];
+                          const statusIcon = wStatus === 'COMPLETED' ? '🟢' : '🟡';
+                          const statusText = wStatus === 'COMPLETED' ? 'COMPLETED' : 'DRAFT';
+                          const farmAnchor = currentActiveFarmSummary || { flockDate: date, ageWeek };
+                          const initialWeek = currentActiveFarmSummary?.startWeekNumber || currentActiveFarmSummary?.initialAgeWeek || currentActiveFarmSummary?.startingWeek || currentActiveFarmSummary?.ageWeek;
+                          return (
+                            <option key={w} value={w} className="text-slate-900 bg-white py-1">
+                              {w} — {statusIcon} {formatRecordingWeekLabel(w, farmAnchor, initialWeek)} ({statusText})
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-emerald-700">
+                        <ChevronDown className="w-4 h-4" />
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Active Recording Period Date Range & Status Strip */}
@@ -3194,51 +3747,11 @@ export default function App() {
                   </span>
                 </div>
               </div>
-
-              {/* Dedicated Full-Width Shed Gender Filter Bar */}
-              <div className="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2">
-                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Filter Sheds:</span>
-                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 shadow-2xs max-w-full overflow-x-auto">
-                  <button
-                    type="button"
-                    onClick={() => setShedGenderFilter('ALL')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer shrink-0 ${
-                      shedGenderFilter === 'ALL'
-                        ? 'bg-slate-900 text-white shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                    }`}
-                  >
-                    All ({sheds.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShedGenderFilter('FEMALE')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 shrink-0 ${
-                      shedGenderFilter === 'FEMALE'
-                        ? 'bg-pink-600 text-white shadow-xs'
-                        : 'text-pink-700 hover:bg-pink-100'
-                    }`}
-                  >
-                    <span>♀ Female</span>
-                    <span>({sheds.filter(s => s.type !== 'Male').length})</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShedGenderFilter('MALE')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 shrink-0 ${
-                      shedGenderFilter === 'MALE'
-                        ? 'bg-blue-600 text-white shadow-xs'
-                        : 'text-blue-700 hover:bg-blue-100'
-                    }`}
-                  >
-                    <span>♂ Male</span>
-                    <span>({sheds.filter(s => s.type === 'Male').length})</span>
-                  </button>
-                </div>
-              </div>
             </div>
 
-            <p className="text-xs text-slate-500 mb-3 px-1 font-medium">Choose a shed or toggle its Female / Male flock gender:</p>
+
+
+            <p className="text-xs text-slate-500 mb-3 px-1 font-medium">Select a shed to view parts and pen lines:</p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6 overflow-y-auto flex-1">
               {sheds.length === 0 ? (
@@ -3259,30 +3772,56 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                (shedGenderFilter === 'ALL'
-                  ? sheds
-                  : shedGenderFilter === 'FEMALE'
-                    ? sheds.filter(s => s.type !== 'Male')
-                    : sheds.filter(s => s.type === 'Male')
-                ).map((s, sIdx) => {
-                  const sStd = s.type === 'Male' ? stdWeightMale : stdWeightFemale;
-                  const sStats = calculateFlockStats((s.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || [])), sStd, weekNum);
+                sheds.map((s, sIdx) => {
+                  const sAllWeights = (s.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || []));
+                  const sStats = calculateFlockStats(sAllWeights, stdWeightFemale, weekNum);
+
+                  const lock = shedLocks[s.id] || {
+                    locked: Boolean(s.lockedByUserId),
+                    lockedByUserId: s.lockedByUserId,
+                    lockedByUserName: s.lockedByUserName,
+                    lastHeartbeatAt: s.lastHeartbeatAt,
+                    recordedByUserId: s.recordedByUserId,
+                    recordedByUserName: s.recordedByUserName,
+                    savedStatus: (s as any).savedStatus,
+                    savedByUserName: (s as any).savedByUserName,
+                    totalBirdCount: (s as any).totalBirdCount,
+                  };
+
+                  const currentUserId = currentUser?.id;
+                  const now = Date.now();
+                  const lockTime = lock?.lastHeartbeatAt ? new Date(lock.lastHeartbeatAt).getTime() : 0;
+                  const isLockActive = Boolean(lock?.locked && lock.lockedByUserId && (now - lockTime <= 120_000));
+                  const isLockedByMe = Boolean(isLockActive && lock.lockedByUserId === currentUserId);
+                  const isLockedByOther = Boolean(isLockActive && lock.lockedByUserId !== currentUserId);
+
+                  const isSaved = lock?.savedStatus === 'SAVED' || (s as any).savedStatus === 'SAVED';
+                  const savedByName = lock?.savedByUserName || (s as any).savedByUserName || lock?.recordedByUserName || s.recordedByUserName;
+                  const savedBirdsCount = lock?.totalBirdCount !== undefined ? lock.totalBirdCount : sStats.count;
+
+                  let cardBorderClass = "border-slate-200 bg-white hover:bg-slate-50/70";
+                  if (isLockedByOther) {
+                    cardBorderClass = "border-amber-300 bg-amber-50/40 shadow-sm opacity-90 ring-1 ring-amber-300/60";
+                  } else if (isLockedByMe) {
+                    cardBorderClass = "border-emerald-400 bg-emerald-50/50 shadow-sm ring-2 ring-emerald-500/25";
+                  } else if (isSaved) {
+                    cardBorderClass = "border-emerald-300 bg-emerald-50/20 hover:bg-emerald-50/40 shadow-xs ring-1 ring-emerald-400/40";
+                  }
+
                   return (
                     <div
                       key={`${s.id || sIdx}-${s.name}-${sIdx}`}
-                      className="w-full bg-white hover:bg-slate-50/70 p-4 rounded-2xl border border-slate-200 flex flex-col justify-between gap-3 shadow-xs transition"
+                      onClick={() => handleEnterShed(s)}
+                      className={`w-full p-4 rounded-2xl border flex flex-col justify-between gap-3 shadow-xs transition cursor-pointer select-none ${cardBorderClass}`}
                     >
                       <div>
-                        {/* Shed Name Row with full width */}
-                        <div 
-                          className="flex items-center justify-between gap-2 mb-2 cursor-pointer"
-                          onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
-                        >
+                        {/* Shed Name Row with full width and Presence Badges */}
+                        <div className="flex items-center justify-between gap-2 mb-2">
                           <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="font-black text-base text-slate-900 hover:text-emerald-600 transition truncate">
+                            <span className={`font-black text-base truncate transition ${isLockedByOther ? 'text-slate-700' : 'text-slate-900 hover:text-emerald-600'}`}>
                               {s.name}
                             </span>
-                            {farmStatus !== 'COMPLETED' && (
+                            {!isLockedByOther && (
                               <div className="flex items-center gap-0.5 ml-1 shrink-0" onClick={e => e.stopPropagation()}>
                                 <button
                                   type="button"
@@ -3311,78 +3850,107 @@ export default function App() {
                               </div>
                             )}
                           </div>
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 ${
-                            s.type === 'Male'
-                              ? 'bg-blue-50 text-blue-700 border-blue-200'
-                              : 'bg-pink-50 text-pink-700 border-pink-200'
-                          }`}>
-                            {s.type === 'Male' ? '♂ Male' : '♀ Female'}
-                          </span>
-                        </div>
 
-                        {/* Interactive High-Contrast Shed-Wise Female/Male Selection on its own row */}
-                        <div 
-                          className="flex items-center justify-between gap-2 p-1.5 bg-slate-50 rounded-xl border border-slate-200/80 mb-2" 
-                          onClick={e => e.stopPropagation()}
-                        >
-                          <span className="text-[11px] font-bold text-slate-500 pl-1">Flock Gender:</span>
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (s.type !== 'Female') handleToggleShedGender(s.id, 'Female');
-                              }}
-                              className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
-                                s.type === 'Female'
-                                  ? 'bg-pink-600 text-white shadow-xs'
-                                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                              }`}
-                              title="Set shed to Female"
-                            >
-                              <span>♀ Female</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (s.type !== 'Male') handleToggleShedGender(s.id, 'Male');
-                              }}
-                              className={`px-2.5 py-1 rounded-lg text-xs font-black transition cursor-pointer flex items-center gap-1 ${
-                                s.type === 'Male'
-                                  ? 'bg-blue-600 text-white shadow-xs'
-                                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                              }`}
-                              title="Set shed to Male"
-                            >
-                              <span>♂ Male</span>
-                            </button>
-                          </div>
+                          {/* Live Presence / Lock / Save Badge (Exact required format) */}
+                          {isLockedByOther ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full border bg-amber-100 text-amber-900 border-amber-300 animate-pulse shrink-0">
+                              <span>🔒 Weighing: {lock.lockedByUserName || 'Incharge'}</span>
+                            </span>
+                          ) : isLockedByMe ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-0.5 rounded-full border bg-emerald-100 text-emerald-800 border-emerald-300 shrink-0">
+                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                              <span>Active (You)</span>
+                            </span>
+                          ) : isSaved ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full border bg-emerald-50 text-emerald-900 border-emerald-300 shrink-0 shadow-2xs" title={`Saved by ${savedByName} • ${savedBirdsCount} birds`}>
+                              <span>✅ Saved by {savedByName || 'Incharge 1'} • birds count-&gt;{savedBirdsCount}</span>
+                            </span>
+                          ) : sStats.count > 0 ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border bg-amber-50 text-amber-900 border-amber-200 shrink-0">
+                              <span>🟡 In Progress • {sStats.count} birds</span>
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-slate-100 text-slate-700 border-slate-200 shrink-0">
+                              {(s.parts || []).length} Parts
+                            </span>
+                          )}
                         </div>
 
                         <div className="text-xs text-slate-500 mb-2">
-                          {(s.parts || []).length} {(s.parts || []).length === 1 ? 'Part' : 'Parts'} • {sStats.count} birds weighed
+                          {(s.parts || []).reduce((acc, p) => acc + (p.lines || []).length, 0)} Lines • <span className="font-bold text-slate-800">{sStats.count} birds weighed</span>
                         </div>
+
+                        {/* Attribution line if occupied by another operator */}
+                        {isLockedByOther && (
+                          <div className="text-[11px] text-amber-800 bg-amber-100/60 px-2.5 py-1 rounded-lg border border-amber-200/80 mb-1 flex items-center justify-between gap-1">
+                            <span>🔒 In use by <strong>{lock.lockedByUserName}</strong></span>
+                            {(currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'Supervisor') && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleForceUnlock(s.id, s.name);
+                                }}
+                                disabled={isForceUnlockingShed === s.id}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-900 hover:text-amber-950 underline cursor-pointer"
+                              >
+                                {isForceUnlockingShed === s.id ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Unlock className="w-3 h-3" />
+                                )}
+                                <span>Unlock</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
 
-                      <div 
-                        className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100 cursor-pointer"
-                        onClick={() => navigateToPartSelect(s.id, s.parts[0]?.id || 'part-1-a')}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div>
-                            <span className="text-[10px] text-slate-400 block uppercase font-bold">Avg</span>
-                            <span className="font-mono font-black text-emerald-600 text-sm">{sStats.avg > 0 ? `${sStats.avg}g` : '—'}</span>
+                      <div className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100">
+                        {isFieldWorker ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase">Birds Weighed:</span>
+                            <span className="font-mono font-black text-slate-900 text-sm">{sStats.count}</span>
                           </div>
-                          <div>
-                            <span className="text-[10px] text-slate-400 block uppercase font-bold">Unif (±10%)</span>
-                            <span className="text-xs font-bold text-amber-600 font-mono">{sStats.count > 0 ? `${sStats.uniformity10Pct}%` : '—'}</span>
+                        ) : (
+                          <div className="flex items-center gap-3">
+                            <div>
+                              <span className="text-[10px] text-slate-400 block uppercase font-bold">Avg</span>
+                              <span className="font-mono font-black text-emerald-600 text-sm">{sStats.avg > 0 ? `${sStats.avg}g` : '—'}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-slate-400 block uppercase font-bold">Unif (±10%)</span>
+                              <span className="text-xs font-bold text-amber-600 font-mono">{sStats.count > 0 ? `${sStats.uniformity10Pct}%` : '—'}</span>
+                            </div>
                           </div>
-                        </div>
-                        <div className="flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-                          <span>Open Parts</span>
-                          <ChevronRight className="w-3.5 h-3.5 text-emerald-600" />
-                        </div>
+                        )}
+
+                        {/* Action CTA Button */}
+                        {isLockedByOther ? (
+                          <div className="flex items-center gap-1 font-bold text-amber-900 bg-amber-100/90 px-2.5 py-1 rounded-lg border border-amber-300 text-xs">
+                            <Lock className="w-3.5 h-3.5 text-amber-700" />
+                            <span>Locked (In Use)</span>
+                          </div>
+                        ) : isLockedByMe ? (
+                          <div className="flex items-center gap-1 font-bold text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-lg border border-emerald-300 text-xs">
+                            <span>Resume Weighing</span>
+                            <ChevronRight className="w-3.5 h-3.5 text-emerald-700" />
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg border border-emerald-200 text-xs transition">
+                            {isEnteringShed === s.id ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                                <span>Entering...</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>Open Parts</span>
+                                <ChevronRight className="w-3.5 h-3.5 text-emerald-600" />
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -3396,6 +3964,79 @@ export default function App() {
                 <Plus className="w-4 h-4" /> Add New Shed
               </button>
             </div>
+
+            {/* STAGE 2 & 3: LIVE TOTAL FARM PROGRESS BANNER & MASTER "SUBMIT OVERALL FARM" BUTTON (PAGE BOTTOM) */}
+            {(() => {
+              const savedShedsList = sheds.filter(s => {
+                const l = shedLocks[s.id];
+                return l?.savedStatus === 'SAVED' || (s as any).savedStatus === 'SAVED';
+              });
+              const savedShedsCount = savedShedsList.length;
+              const totalShedsCount = sheds.length;
+              const totalFarmBirdsCount = sheds.reduce((acc, s) => {
+                const l = shedLocks[s.id];
+                const sCount = (s.parts || []).flatMap(p => (p.lines || []).flatMap(line => line.weights || [])).length;
+                return acc + (l?.totalBirdCount !== undefined ? l.totalBirdCount : sCount);
+              }, 0);
+              const farmProgressPercent = totalShedsCount > 0 ? Math.round((savedShedsCount / totalShedsCount) * 100) : 0;
+              const hasAnySavedShed = savedShedsCount > 0 || totalFarmBirdsCount > 0;
+
+              return (
+                <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white p-4 rounded-2xl border border-emerald-500/30 shadow-md mt-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] sm:text-xs font-black uppercase tracking-wider text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded-md border border-emerald-500/40">
+                          Shared Team Workspace
+                        </span>
+                        <span className="text-xs font-bold text-slate-300">
+                          Week: <strong className="text-white">{ageWeek}</strong>
+                        </span>
+                      </div>
+                      <h3 className="text-sm sm:text-base font-black text-white mt-1.5 flex items-center gap-2 flex-wrap">
+                        <span>Total Farm Progress:</span>
+                        <span className="text-emerald-400 font-mono font-black">{savedShedsCount} of {totalShedsCount} Sheds Saved ({farmProgressPercent}%)</span>
+                        <span className="text-slate-400">•</span>
+                        <span className="text-amber-300 font-mono font-black">{totalFarmBirdsCount.toLocaleString()} Total Birds Counted</span>
+                      </h3>
+                    </div>
+
+                    {/* Master Submit Overall Farm Button */}
+                    <div className="shrink-0 flex items-center gap-2">
+                      {farmStatus === 'COMPLETED' ? (
+                        <span className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded-xl text-xs font-black shadow-xs">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          <span>Week Finalized & Submitted</span>
+                        </span>
+                      ) : hasAnySavedShed ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowOverallSubmitConfirmModal(true)}
+                          className="px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black rounded-xl text-xs shadow-lg shadow-emerald-500/25 active:scale-95 transition cursor-pointer flex items-center gap-2"
+                          title="Submit overall farm data for this week"
+                        >
+                          <UploadCloud className="w-4 h-4 text-slate-950" />
+                          <span>Submit Overall Farm ({savedShedsCount}/{totalShedsCount} Saved)</span>
+                        </button>
+                      ) : (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-800/90 text-slate-400 border border-slate-700/80 rounded-xl text-[11px] font-bold">
+                          <Lock className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Submit Overall Farm ({savedShedsCount}/{totalShedsCount} Saved)</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Visual Progress Bar */}
+                  <div className="w-full bg-slate-800 rounded-full h-2 mt-3 overflow-hidden border border-slate-700/60">
+                    <div
+                      className="bg-gradient-to-r from-emerald-500 to-teal-400 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${farmProgressPercent}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -3428,37 +4069,6 @@ export default function App() {
                 <span className="text-xs font-bold text-slate-700 bg-white px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs">
                   {activeShed.name}
                 </span>
-                <div 
-                  className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200" 
-                  onClick={e => e.stopPropagation()}
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (activeShed.type !== 'Female') handleToggleShedGender(activeShed.id, 'Female');
-                    }}
-                    className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
-                      activeShed.type === 'Female'
-                        ? 'bg-pink-600 text-white shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    ♀ Female
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (activeShed.type !== 'Male') handleToggleShedGender(activeShed.id, 'Male');
-                    }}
-                    className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
-                      activeShed.type === 'Male'
-                        ? 'bg-blue-600 text-white shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    ♂ Male
-                  </button>
-                </div>
               </div>
             </div>
 
@@ -3473,36 +4083,55 @@ export default function App() {
                     : 'Select a part to view its pen lines (Parts A–D allowed)'}
                 </p>
               </div>
-              <button
-                onClick={handleAddPart}
-                disabled={activeShed.parts.length >= 4}
-                title={activeShed.parts.length >= 4 ? 'Maximum 4 parts (A-D) allowed per shed' : 'Add Next Part'}
-                className={`text-xs px-3 py-1.5 rounded-xl font-bold flex items-center gap-1 shadow-xs transition ${
-                  activeShed.parts.length >= 4
-                    ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
-                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950 active:scale-95 cursor-pointer'
-                }`}
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>{activeShed.parts.length >= 4 ? 'Max Parts (4/4)' : 'Add Part'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleSaveShed(activeShed)}
+                  disabled={isSavingShed}
+                  className="text-xs px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 shadow-xs bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 transition cursor-pointer"
+                  title="Save this shed and share progress with team"
+                >
+                  {isSavingShed ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                  <span>Save Shed ({shedStats.count})</span>
+                </button>
+                <button
+                  onClick={handleAddPart}
+                  disabled={activeShed.parts.length >= 4}
+                  title={activeShed.parts.length >= 4 ? 'Maximum 4 parts (A-D) allowed per shed' : 'Add Next Part'}
+                  className={`text-xs px-3 py-1.5 rounded-xl font-bold flex items-center gap-1 shadow-xs transition ${
+                    activeShed.parts.length >= 4
+                      ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                      : 'bg-amber-500 hover:bg-amber-400 text-slate-950 active:scale-95 cursor-pointer'
+                  }`}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{activeShed.parts.length >= 4 ? 'Max Parts (4/4)' : 'Add Part'}</span>
+                </button>
+              </div>
             </div>
 
             {/* Shed Mini Stats Summary */}
-            <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-white p-3.5 rounded-2xl border border-slate-200 text-center text-xs mb-4 font-mono shadow-xs">
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Shed Birds</span>
-                <span className="font-black text-slate-900 text-sm sm:text-base truncate block">{shedStats.count}</span>
+            {isFieldWorker ? (
+              <div className="bg-white p-3 rounded-2xl border border-slate-200 text-center text-xs mb-4 shadow-xs flex items-center justify-between">
+                <span className="text-xs text-slate-500 font-bold uppercase">Shed Birds Weighed</span>
+                <span className="font-black text-slate-900 text-sm sm:text-base font-mono">{shedStats.count} Birds</span>
               </div>
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Shed Avg</span>
-                <span className="font-black text-emerald-600 text-sm sm:text-base truncate block font-mono">{shedStats.avg}g</span>
+            ) : (
+              <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-white p-3.5 rounded-2xl border border-slate-200 text-center text-xs mb-4 font-mono shadow-xs">
+                <div className="min-w-0">
+                  <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Shed Birds</span>
+                  <span className="font-black text-slate-900 text-sm sm:text-base truncate block">{shedStats.count}</span>
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Shed Avg</span>
+                  <span className="font-black text-emerald-600 text-sm sm:text-base truncate block font-mono">{shedStats.avg}g</span>
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Uniformity</span>
+                  <span className="font-black text-amber-600 text-sm sm:text-base truncate block font-mono">{shedStats.sPct}%</span>
+                </div>
               </div>
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Uniformity</span>
-                <span className="font-black text-amber-600 text-sm sm:text-base truncate block font-mono">{shedStats.sPct}%</span>
-              </div>
-            </div>
+            )}
 
             {/* Responsive Multi-Column Part Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6 overflow-y-auto flex-1">
@@ -3549,20 +4178,27 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-1 bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-center text-xs font-mono">
-                        <div className="min-w-0">
-                          <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">AVG WT</span>
-                          <span className="font-extrabold text-emerald-600 truncate block font-mono">{partStat.avg}g</span>
+                      {isFieldWorker ? (
+                        <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex items-center justify-between text-xs">
+                          <span className="text-[11px] text-slate-500 font-bold uppercase">Birds Weighed:</span>
+                          <span className="font-black text-slate-900 text-xs font-mono">{partBirds} Birds</span>
                         </div>
-                        <div className="min-w-0">
-                          <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">Uniformity</span>
-                          <span className="font-extrabold text-amber-600 truncate block font-mono">{partStat.sPct}%</span>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-1 bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-center text-xs font-mono">
+                          <div className="min-w-0">
+                            <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">AVG WT</span>
+                            <span className="font-extrabold text-emerald-600 truncate block font-mono">{partStat.avg}g</span>
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">Uniformity</span>
+                            <span className="font-extrabold text-amber-600 truncate block font-mono">{partStat.sPct}%</span>
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">CV %</span>
+                            <span className="font-extrabold text-sky-600 truncate block font-mono">{partStat.cv}%</span>
+                          </div>
                         </div>
-                        <div className="min-w-0">
-                          <span className="text-[10px] text-slate-500 block font-sans font-bold truncate">CV %</span>
-                          <span className="font-extrabold text-sky-600 truncate block font-mono">{partStat.cv}%</span>
-                        </div>
-                      </div>
+                      )}
                     </div>
 
                     <button
@@ -3641,25 +4277,34 @@ export default function App() {
             </div>
 
             {/* Part Mini Stats Summary */}
-            <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-white p-3.5 rounded-2xl border border-slate-200 text-center text-xs mb-4 font-mono shadow-xs">
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Part Birds</span>
-                <span className="font-black text-slate-900 text-sm sm:text-base truncate block">{partStats.count}</span>
+            {isFieldWorker ? (
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-200 flex items-center justify-between text-xs mb-4 font-mono shadow-xs">
+                <span className="text-xs text-slate-500 font-sans font-bold uppercase">Total Birds Weighed in {activePart.name}</span>
+                <span className="font-black text-slate-900 text-sm sm:text-base font-mono">{partStats.count} Birds</span>
               </div>
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Part Avg</span>
-                <span className="font-black text-emerald-600 text-sm sm:text-base truncate block font-mono">{partStats.avg}g</span>
+            ) : (
+              <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-white p-3.5 rounded-2xl border border-slate-200 text-center text-xs mb-4 font-mono shadow-xs">
+                <div className="min-w-0">
+                  <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Part Birds</span>
+                  <span className="font-black text-slate-900 text-sm sm:text-base truncate block">{partStats.count}</span>
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Part Avg</span>
+                  <span className="font-black text-emerald-600 text-sm sm:text-base truncate block font-mono">{partStats.avg}g</span>
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Uniformity</span>
+                  <span className="font-black text-amber-600 text-sm sm:text-base truncate block font-mono">{partStats.sPct}%</span>
+                </div>
               </div>
-              <div className="min-w-0">
-                <span className="text-[10px] text-slate-500 block font-sans font-bold uppercase truncate">Uniformity</span>
-                <span className="font-black text-amber-600 text-sm sm:text-base truncate block font-mono">{partStats.sPct}%</span>
-              </div>
-            </div>
+            )}
 
             {/* Responsive Multi-Column Line Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6 overflow-y-auto flex-1">
               {activePart.lines.map((line, lineIndex) => {
-                const lStats = calculateFlockStats(line.weights, activeStd, weekNum);
+                const lineGender: 'Male' | 'Female' = (line.gender === 'Female' || line.gender === 'FEMALE') ? 'Female' : 'Male';
+                const lineStd = (lineGender === 'Female' ? stdWeightFemale : stdWeightMale) || activeStd;
+                const lStats = calculateFlockStats(line.weights, lineStd, weekNum);
                 const hasWeights = (line.weights || []).length > 0;
                 const isComplete = lStats.isComplete;
 
@@ -3677,42 +4322,76 @@ export default function App() {
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <h3 className="font-black text-base text-slate-900 truncate">{line.name}</h3>
-                              <span className={`text-[10px] font-black px-2 py-0.2 rounded-full border ${
-                                activeShed.type === 'Male'
-                                  ? 'bg-blue-100 text-blue-900 border-blue-300'
-                                  : 'bg-pink-100 text-pink-900 border-pink-300'
-                              }`}>
-                                {activeShed.name} ({activeShed.type === 'Male' ? '♂ Male' : '♀ Female'})
-                              </span>
+                              {/* Line-level Gender Selector */}
+                              <div 
+                                className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200"
+                                onClick={e => e.stopPropagation()}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (lineGender !== 'Female') handleToggleLineGender(line.id, 'Female');
+                                  }}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
+                                    lineGender === 'Female'
+                                      ? 'bg-pink-600 text-white shadow-2xs'
+                                      : 'text-slate-600 hover:text-slate-900'
+                                  }`}
+                                  title="Set Line to Female"
+                                >
+                                  ♀ F
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (lineGender !== 'Male') handleToggleLineGender(line.id, 'Male');
+                                  }}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
+                                    lineGender === 'Male'
+                                      ? 'bg-blue-600 text-white shadow-2xs'
+                                      : 'text-slate-600 hover:text-slate-900'
+                                  }`}
+                                  title="Set Line to Male"
+                                >
+                                  ♂ M
+                                </button>
+                              </div>
+                              {!isFieldWorker && (
+                                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-300 font-mono">
+                                  STD: {lineStd}g
+                                </span>
+                              )}
                             </div>
-                            <span className="text-xs text-slate-500 block truncate">
+                            <span className="text-xs text-slate-500 block truncate mt-0.5">
                               {line.weights.length} {line.weights.length === 1 ? 'Bird Weighed' : 'Birds Weighed'}
                             </span>
                           </div>
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
-                          {/* Line Status / Grade Badge */}
-                          {!hasWeights ? (
-                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                              🟡 Pending
-                            </span>
-                          ) : !isComplete ? (
-                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-300">
-                              🟡 In Progress ({lStats.count}/10)
-                            </span>
-                          ) : lStats.status === 'EXCELLENT' ? (
-                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
-                              🟢 EXCELLENT ({lStats.uniformity10Pct}%)
-                            </span>
-                          ) : lStats.status === 'ACCEPTABLE' ? (
-                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
-                              🔵 ACCEPTABLE ({lStats.uniformity10Pct}%)
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
-                              🔴 POOR ({lStats.uniformity10Pct}%)
-                            </span>
+                          {/* Only show Grade / Status badge to Admin & Manager */}
+                          {!isFieldWorker && (
+                            !hasWeights ? (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                                🟡 Pending
+                              </span>
+                            ) : !isComplete ? (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-300">
+                                🟡 In Progress ({lStats.count}/10)
+                              </span>
+                            ) : lStats.status === 'EXCELLENT' ? (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                🟢 EXCELLENT ({lStats.uniformity10Pct}%)
+                              </span>
+                            ) : lStats.status === 'ACCEPTABLE' ? (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
+                                🔵 ACCEPTABLE ({lStats.uniformity10Pct}%)
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
+                                🔴 POOR ({lStats.uniformity10Pct}%)
+                              </span>
+                            )
                           )}
 
                           <button
@@ -3726,30 +4405,38 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs font-mono min-w-0 max-w-full">
-                        <div className="min-w-0">
-                          <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">BIRDS</span>
-                          <div className="font-extrabold text-slate-900 truncate">{lStats.count}</div>
+                      {/* Line Stats Strip: Restricted for Field Workers (Supervisor & In-Charge) */}
+                      {isFieldWorker ? (
+                        <div className="flex items-center justify-between bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs font-mono">
+                          <span className="text-[11px] text-slate-500 font-sans font-bold uppercase">BIRDS WEIGHED</span>
+                          <span className="font-extrabold text-slate-900 text-sm font-mono">{lStats.count} Birds</span>
                         </div>
-                        <div className="min-w-0">
-                          <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">AVG WT</span>
-                          <div className="font-extrabold text-emerald-600 truncate font-mono">
-                            {hasWeights ? `${lStats.avg}g` : '—'}
+                      ) : (
+                        <div className="grid grid-cols-4 gap-1 text-center bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs font-mono min-w-0 max-w-full">
+                          <div className="min-w-0">
+                            <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">BIRDS</span>
+                            <div className="font-extrabold text-slate-900 truncate">{lStats.count}</div>
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">AVG WT</span>
+                            <div className="font-extrabold text-emerald-600 truncate font-mono">
+                              {hasWeights ? `${lStats.avg}g` : '—'}
+                            </div>
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">Uniformity (±10%)</span>
+                            <div className="font-extrabold text-amber-600 truncate font-mono">
+                              {hasWeights ? `${lStats.uniformity10Pct}%` : '—'}
+                            </div>
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">CV %</span>
+                            <div className="font-extrabold text-sky-600 truncate font-mono">
+                              {hasWeights ? `${lStats.cv}%` : '—'}
+                            </div>
                           </div>
                         </div>
-                        <div className="min-w-0">
-                          <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">Uniformity (±10%)</span>
-                          <div className="font-extrabold text-amber-600 truncate font-mono">
-                            {hasWeights ? `${lStats.uniformity10Pct}%` : '—'}
-                          </div>
-                        </div>
-                        <div className="min-w-0">
-                          <span className="text-[10px] text-slate-500 font-sans font-bold uppercase truncate block">CV %</span>
-                          <div className="font-extrabold text-sky-600 truncate font-mono">
-                            {hasWeights ? `${lStats.cv}%` : '—'}
-                          </div>
-                        </div>
-                      </div>
+                      )}
                     </div>
 
                     <button
@@ -3801,239 +4488,127 @@ export default function App() {
                 <span className="text-slate-300">›</span>
                 <span className="text-sky-700 font-extrabold">{activeLine.name}</span>
               </div>
-
-              <div 
-                className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200 shrink-0" 
-                onClick={e => e.stopPropagation()}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (activeShed.type !== 'Female') handleToggleShedGender(activeShed.id, 'Female');
-                  }}
-                  className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
-                    activeShed.type === 'Female'
-                      ? 'bg-pink-600 text-white shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                  title="Set shed to Female"
-                >
-                  ♀ Female
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (activeShed.type !== 'Male') handleToggleShedGender(activeShed.id, 'Male');
-                  }}
-                  className={`px-2 py-0.5 rounded text-[10px] font-black transition cursor-pointer ${
-                    activeShed.type === 'Male'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                  title="Set shed to Male"
-                >
-                  ♂ Male
-                </button>
-              </div>
             </div>
 
-            {/* Responsive 2-Column Grid on Laptop (lg:grid lg:grid-cols-12 lg:gap-5) */}
-            <div className="lg:grid lg:grid-cols-12 lg:gap-5 flex-1 items-start">
-              {/* Left Column on Laptop (lg:col-span-7): Metrics, Input, Chips & Actions */}
-              <div className="lg:col-span-7 flex flex-col space-y-2.5">
-                {/* Real-Time Metric Strip for Current Line & Part */}
-                <div className="bg-white p-3 rounded-2xl border border-slate-200 grid grid-cols-4 gap-1 text-center shadow-xs">
-                  <div className="min-w-0">
-                    <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Weighed</span>
-                    <div className="text-base font-black text-slate-900">{lineStats.count}</div>
-                    <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count}</span>
-                  </div>
-                  <div className="min-w-0">
-                    <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Avg Wt</span>
-                    <div className="text-base font-black text-emerald-600 font-mono">
-                      {lineStats.count > 0 ? `${lineStats.avg}g` : '—'}
-                    </div>
-                    <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.avg}g` : '—'}</span>
-                  </div>
-                  <div className="min-w-0">
-                    <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">Uniformity (±10%)</span>
-                    <div className="text-base font-black text-amber-600 font-mono">
-                      {lineStats.count > 0 ? `${lineStats.uniformity10Pct}%` : '—'}
-                    </div>
-                    <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.uniformity10Pct}%` : '—'}</span>
-                  </div>
-                  <div className="min-w-0">
-                    <span className="text-[10px] text-slate-500 font-bold uppercase truncate block">CV %</span>
-                    <div className="text-base font-black text-sky-600 font-mono">
-                      {lineStats.count > 0 ? `${lineStats.cv}%` : '—'}
-                    </div>
-                    <span className="text-[9px] text-slate-400 block font-semibold truncate">Part: {partStats.count > 0 ? `${partStats.cv}%` : '—'}</span>
-                  </div>
+            {/* Centered Weighing Pad Screen (Weighed Birds list card completely removed) */}
+            <div className="w-full max-w-lg mx-auto flex-1 flex flex-col space-y-3 pt-2">
+              {/* Line Info Banner showing live birds count */}
+              <div className="flex items-center justify-between bg-white px-4 py-3 rounded-2xl border border-slate-200 shadow-2xs">
+                <div>
+                  <h3 className="font-black text-sm text-slate-900">{activeLine.name} Weighing</h3>
+                  <p className="text-[11px] text-slate-500">{activeShed.name} › {activePart.name}</p>
                 </div>
-
-                {/* Live Line Status Indicator */}
-                <div className="flex items-center justify-between bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 text-xs">
-                  <span className="text-[11px] font-bold text-slate-600">
-                    {activeLine.name} Uniformity Status:
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono font-black px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
+                    {activeLine.weights.length} Birds Entered
                   </span>
-                  {lineStats.count === 0 ? (
-                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
-                      🟡 Pending (0 Birds)
-                    </span>
-                  ) : !lineStats.isComplete ? (
-                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
-                      🟡 In Progress ({lineStats.count}/10 birds)
-                    </span>
-                  ) : lineStats.status === 'EXCELLENT' ? (
-                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
-                      🟢 EXCELLENT ({lineStats.uniformity10Pct}%)
-                    </span>
-                  ) : lineStats.status === 'ACCEPTABLE' ? (
-                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
-                      🔵 ACCEPTABLE ({lineStats.uniformity10Pct}%)
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
-                      🔴 POOR ({lineStats.uniformity10Pct}%)
+                  {!isFieldWorker && (
+                    <span className="text-[10px] font-mono font-bold px-2 py-1 rounded-lg bg-slate-100 text-slate-600 border border-slate-200">
+                      STD: {activeStd}g
                     </span>
                   )}
-                </div>
-
-                {/* Manual Entry Form - Compact & Fast */}
-                <form onSubmit={e => { e.preventDefault(); handleAddWeight(); }} className="flex flex-col gap-1.5">
-                  <div className="flex gap-2">
-                    <input
-                      ref={weightInputRef}
-                      type="number"
-                      step="any"
-                      inputMode="decimal"
-                      placeholder={`Weight for ${activeLine.name}...`}
-                      value={inputWeight}
-                      onChange={e => {
-                        setInputWeight(e.target.value);
-                        if (inputWeightError) setInputWeightError(null);
-                      }}
-                      autoFocus
-                      className={`flex-1 min-w-0 bg-white border ${
-                        inputWeightError ? 'border-rose-500 focus:border-rose-600' : 'border-slate-300 focus:border-emerald-600'
-                      } rounded-xl px-3 py-2 text-base font-black text-slate-900 focus:outline-none font-mono shadow-xs placeholder:text-slate-400`}
-                    />
-                    <button
-                      type="submit"
-                      disabled={isSubmittingWeight}
-                      className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black px-5 rounded-xl text-xs shrink-0 shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition"
-                    >
-                      {isSubmittingWeight ? 'Saving...' : 'Save'}
-                    </button>
-                  </div>
-                  {inputWeightError && (
-                    <div className="flex items-center gap-1.5 text-rose-600 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-xl text-xs font-bold animate-in fade-in duration-150">
-                      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-500" />
-                      <span>{inputWeightError}</span>
-                    </div>
-                  )}
-                </form>
-
-                {/* Action Buttons: Save Draft (Supervisor & Incharge) & Go to Submit Screen */}
-                <div className="space-y-2 pt-1">
-                  {(currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') && (
-                    <button
-                      type="button"
-                      onClick={handleManualSaveDraft}
-                      disabled={isSavingDraft}
-                      className="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer disabled:opacity-50"
-                    >
-                      {isSavingDraft ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                          <span>Saving Draft to Storage...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Save className="w-4 h-4 text-slate-950" />
-                          <span>Save Draft</span>
-                        </>
-                      )}
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => navigateTo('submit_page')}
-                    className="w-full font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-between bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-white shadow-md active:scale-95 transition cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2">
-                      <UploadCloud className="w-4 h-4 text-emerald-400" />
-                      <span>Go to Dedicated Submit Screen</span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        completionStats.isFarm100PercentWeighed
-                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                      }`}>
-                        {completionStats.progressPercent}% Weighed
-                      </span>
-                      <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
-                    </div>
-                  </button>
                 </div>
               </div>
 
-              {/* Right Column on Laptop (lg:col-span-5): Weighed Birds List with Live Grading Badges */}
-              <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-3 shadow-xs mt-3 lg:mt-0 flex flex-col min-h-[320px] lg:min-h-[480px]">
-                <div className="flex justify-between items-center text-xs text-slate-500 pb-2 mb-2 border-b border-slate-100">
-                  <span className="font-bold text-slate-900">{activeLine.name} Birds ({activeLine.weights.length})</span>
-                  <span className="text-[11px] font-mono font-semibold text-slate-600">
-                    Target: {activeStd}g (±{activeBands.tolerance}g)
-                  </span>
+              {/* Manual Entry Form */}
+              <form onSubmit={e => { e.preventDefault(); handleAddWeight(); }} className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <input
+                    ref={weightInputRef}
+                    type="number"
+                    step="any"
+                    inputMode="decimal"
+                    placeholder={`Weight for ${activeLine.name}...`}
+                    value={inputWeight}
+                    onChange={e => {
+                      setInputWeight(e.target.value);
+                      if (inputWeightError) setInputWeightError(null);
+                    }}
+                    autoFocus
+                    className={`flex-1 min-w-0 bg-white border ${
+                      inputWeightError ? 'border-rose-500 focus:border-rose-600' : 'border-slate-300 focus:border-emerald-600'
+                    } rounded-xl px-4 py-3 text-lg font-black text-slate-900 focus:outline-none font-mono shadow-xs placeholder:text-slate-400`}
+                  />
+                  <button
+                    type="submit"
+                    disabled={isSubmittingWeight}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black px-6 rounded-xl text-sm shrink-0 shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition"
+                  >
+                    {isSubmittingWeight ? 'Saving...' : 'Save'}
+                  </button>
                 </div>
-
-                <div className="flex-1 overflow-y-auto max-h-[300px] lg:max-h-[420px] pr-1">
-                  {activeLine.weights.length === 0 ? (
-                    <div className="text-center py-12 text-xs text-slate-400">
-                      No birds recorded in {activeLine.name} yet. Tap chips or enter weights on the left.
-                    </div>
-                  ) : (
-                    <div className="space-y-1.5">
-                      {activeLine.weights.map((w, idx) => {
-                        const grade = getBirdGrade(w, activeBands);
-                        const badgeClass = getBadgeStyle(grade);
-
-                        return (
-                          <div 
-                            key={idx} 
-                            className="flex items-center justify-between bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100 text-xs"
-                          >
-                            <span className="text-slate-400 font-mono text-[11px] w-6">#{idx + 1}</span>
-                            <span className="font-bold text-sm text-slate-900 font-mono">{w}g</span>
-                            <span className={`px-2 py-0.5 rounded-md text-[10px] border ${badgeClass}`}>
-                              {grade}
-                            </span>
-                            <button 
-                              onClick={() => handleDeleteWeight(idx)} 
-                              className="text-slate-400 hover:text-rose-600 p-1 rounded-lg cursor-pointer transition"
-                              title="Delete bird"
-                            >
-                              <Trash2 className="w-3.5 h-3.5"/>
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {activeLine.weights.length > 0 && (
-                  <div className="pt-2.5 mt-2.5 border-t border-slate-100 text-center">
-                    <button
-                      onClick={handleClearLineWeights}
-                      className="text-[11px] font-bold text-rose-600 hover:text-rose-700 active:scale-95 transition cursor-pointer"
-                    >
-                      Clear All {activeLine.weights.length} Weights in {activeLine.name}
-                    </button>
+                {inputWeightError && (
+                  <div className="flex items-center gap-1.5 text-rose-600 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-xl text-xs font-bold animate-in fade-in duration-150">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-500" />
+                    <span>{inputWeightError}</span>
                   </div>
                 )}
+              </form>
+
+              {/* Action Buttons: Stage 2 Save Shed (Visible to Team), Save Draft & Submit */}
+              <div className="space-y-2.5 pt-2">
+                {/* STAGE 2: Dedicated Save Shed Button (Visible to Team, NOT Final Submission) */}
+                <button
+                  type="button"
+                  onClick={() => handleSaveShed()}
+                  disabled={isSavingShed}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-black py-3.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 transition cursor-pointer disabled:opacity-50"
+                  title="Persist shed weights into team workspace and mark as SAVED without creating a final submission"
+                >
+                  {isSavingShed ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>Saving Shed to Shared Workspace...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4 text-white" />
+                      <span>Save Shed (Share with Team)</span>
+                    </>
+                  )}
+                </button>
+
+                {(currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') && (
+                  <button
+                    type="button"
+                    onClick={handleManualSaveDraft}
+                    disabled={isSavingDraft}
+                    className="w-full bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black py-3.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition cursor-pointer disabled:opacity-50"
+                  >
+                    {isSavingDraft ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                        <span>Saving Draft to Storage...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Save className="w-4 h-4 text-slate-950" />
+                        <span>Save Draft</span>
+                      </>
+                    )}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => navigateTo('submit_page')}
+                  className="w-full font-bold py-3.5 px-4 rounded-xl text-xs flex items-center justify-between bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-white shadow-md active:scale-95 transition cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <UploadCloud className="w-4 h-4 text-emerald-400" />
+                    <span>Go to Dedicated Submit Screen</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      completionStats.isFarm100PercentWeighed
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                    }`}>
+                      {completionStats.progressPercent}% Weighed
+                    </span>
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                  </div>
+                </button>
               </div>
             </div>
           </div>
@@ -4059,10 +4634,14 @@ export default function App() {
               
               <div className="text-center">
                 <h2 className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-wide">
-                  Consolidated Flock Conclusion (Cons)
+                  Manager Conclusion
                 </h2>
                 <div className="flex items-center justify-center gap-1.5 mt-0.5 flex-wrap">
-                  <span className="text-[10px] text-slate-600 font-bold">{farmName}</span>
+                  <span className="text-[10px] text-slate-700 font-bold">🏢 {farmName}</span>
+                  <span className="text-slate-300">•</span>
+                  <span className="text-[10px] text-purple-700 font-black bg-purple-50 px-1.5 py-0.2 rounded border border-purple-200">
+                    📦 {activeBatchName || 'Batch 1'}
+                  </span>
                   <span className="text-slate-300">•</span>
                   <select
                     value={ageWeek}
@@ -4170,79 +4749,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Compact Shed-Wise Conclusion Breakdown Table */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex-1">
-              <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex items-center justify-between text-xs font-bold text-slate-700">
-                <span className="flex items-center gap-1.5">
-                  <Layers className="w-4 h-4 text-emerald-600" />
-                  <span>
-                    {consolidated.shedSummaries.length > 0
-                      ? `Shed-Wise Conclusion Breakdown (${consolidated.shedSummaries.length} Sheds)`
-                      : 'Shed-Wise Conclusion Breakdown'}
-                  </span>
-                </span>
-                <span className="text-[10px] text-slate-500">
-                  {consolidated.shedSummaries.length > 0
-                    ? `${consolidated.shedSummaries.length} Evaluated Shed Results`
-                    : 'Evaluated Shed Results'}
-                </span>
-              </div>
 
-              <div className="overflow-x-auto max-h-60 overflow-y-auto">
-                <table className="w-full text-xs text-left">
-                  <thead className="bg-slate-100/75 text-[10px] uppercase font-bold text-slate-500 border-b border-slate-200 sticky top-0">
-                    <tr>
-                      <th className="py-2 px-3">Shed</th>
-                      <th className="py-2 px-3">Sex</th>
-                      <th className="py-2 px-3">Birds</th>
-                      <th className="py-2 px-3 text-emerald-700">Act Wt</th>
-                      <th className="py-2 px-3">Min</th>
-                      <th className="py-2 px-3">Max</th>
-                      <th className="py-2 px-3">CV %</th>
-                      <th className="py-2 px-3 text-rose-700">MB %</th>
-                      <th className="py-2 px-3 text-amber-700">B %</th>
-                      <th className="py-2 px-3 text-emerald-700">S %</th>
-                      <th className="py-2 px-3 text-sky-700">A %</th>
-                      <th className="py-2 px-3 text-purple-700">MA %</th>
-                      <th className="py-2 px-3 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 font-medium">
-                    {consolidated.shedSummaries.map((s, idx) => (
-                      <tr key={s.id || idx} className="hover:bg-slate-50/70 transition">
-                        <td className="py-2 px-3 font-bold text-slate-800">{s.name}</td>
-                        <td className="py-2 px-3">
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                            s.type === 'Male' ? 'bg-blue-100 text-blue-800' : 'bg-pink-100 text-pink-800'
-                          }`}>
-                            {s.type === 'Male' ? '♂ Male' : '♀ Female'}
-                          </span>
-                        </td>
-                        <td className="py-2 px-3 font-mono">{s.stats.count > 0 ? `${s.stats.count}b` : '0b'}</td>
-                        <td className="py-2 px-3 font-mono font-bold text-emerald-600">{s.stats.count > 0 ? `${s.stats.avg}g` : '—'}</td>
-                        <td className="py-2 px-3 font-mono text-slate-500">{s.stats.count > 0 ? `${s.stats.min}g` : '—'}</td>
-                        <td className="py-2 px-3 font-mono text-slate-500">{s.stats.count > 0 ? `${s.stats.max}g` : '—'}</td>
-                        <td className="py-2 px-3 font-mono text-sky-600">{s.stats.count > 0 ? `${s.stats.cv}%` : '—'}</td>
-                        <td className="py-2 px-3 font-mono font-bold text-rose-600">{s.stats.count > 0 ? `${s.stats.mbPct}%` : '—'}</td>
-                        <td className="py-2 px-3 font-mono font-bold text-amber-600">{s.stats.count > 0 ? `${s.stats.bPct}%` : '—'}</td>
-                        <td className="py-2 px-3 font-mono font-bold text-emerald-600">{s.stats.count > 0 ? `${s.stats.sPct}%` : '—'}</td>
-                        <td className="py-2 px-3 font-mono font-bold text-sky-600">{s.stats.count > 0 ? `${s.stats.aPct}%` : '—'}</td>
-                        <td className="py-2 px-3 font-mono font-bold text-purple-600">{s.stats.count > 0 ? `${s.stats.maPct}%` : '—'}</td>
-                        <td className="py-2 px-3 text-center">
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
-                            s.stats.count === 0 ? 'bg-slate-100 text-slate-500' :
-                            s.stats.sPct >= 80 ? 'bg-emerald-100 text-emerald-800' :
-                            s.stats.sPct >= 70 ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'
-                          }`}>
-                            {s.stats.count === 0 ? 'PENDING' : s.stats.sPct >= 80 ? 'EXCELLENT' : s.stats.sPct >= 70 ? 'ACCEPTABLE' : 'MODERATE'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
 
             {/* Bottom Download Bar */}
             <button 
@@ -4300,19 +4807,8 @@ export default function App() {
                         <Edit2 className="w-3.5 h-3.5"/>
                       </button>
                       <button
-                        onClick={() => {
-                          if (currentUserRole !== 'Admin') {
-                            showToast('Permission Denied: Only Admins can delete sheds.');
-                            return;
-                          }
-                          if (sheds.length <= 1) {
-                            showToast('Keep at least one shed.');
-                            return;
-                          }
-                          if (window.confirm(`Delete ${s.name}?`)) {
-                            setSheds(prev => prev.filter(sh => sh.id !== s.id));
-                            showToast(`${s.name} deleted.`);
-                          }
+                        onClick={(e) => {
+                          handleDeleteShed(s.id, e);
                         }}
                         className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer"
                       >
@@ -4587,9 +5083,19 @@ export default function App() {
                       <div>
                         {/* Top Header: Farm Unit Name & COMPLETED Status */}
                         <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-100">
-                          <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                             <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
                             <span className="font-black text-xs text-slate-900 truncate">{log.farmName}</span>
+                            {Boolean((log as any).batchName || (log as any).batch_name) && (
+                              <span className="text-[10px] font-black text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.2 rounded">
+                                {(log as any).batchName || (log as any).batch_name}
+                              </span>
+                            )}
+                            {Boolean((log as any).weekNumber) && (
+                              <span className="text-[10px] font-black text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded">
+                                {(log as any).weekNumber}
+                              </span>
+                            )}
                           </div>
 
                           <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 rounded-full text-[9px] font-black shrink-0 flex items-center gap-1">
@@ -4598,33 +5104,42 @@ export default function App() {
                           </span>
                         </div>
 
-                        {/* Summary Metrics: Spacious 2x2 Grid with min-w-0 preventing text collisions */}
-                        <div className="mt-2.5 grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-xs">
-                          <div className="min-w-0">
-                            <span className="text-[9px] text-slate-500 font-bold uppercase block truncate">Total Sampled</span>
-                            <span className="font-extrabold text-slate-900 text-sm font-mono truncate block">
+                        {/* Summary Metrics: Restricted for Field Workers (Supervisor & In-Charge) */}
+                        {isFieldWorker ? (
+                          <div className="mt-2.5 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 flex items-center justify-between text-xs">
+                            <span className="text-[11px] text-slate-500 font-bold uppercase">Total Birds Sampled:</span>
+                            <span className="font-extrabold text-slate-900 text-sm font-mono">
                               {log.sampleCount || 0} Birds
                             </span>
                           </div>
-                          <div className="min-w-0">
-                            <span className="text-[9px] text-emerald-600 font-bold uppercase block truncate">Overall Avg Wt</span>
-                            <span className="font-extrabold text-emerald-700 text-sm font-mono truncate block">
-                              {overallAvg ? `${overallAvg}g` : (femaleVal || maleVal ? `${femaleVal || maleVal}g` : 'N/A')}
-                            </span>
+                        ) : (
+                          <div className="mt-2.5 grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 text-xs">
+                            <div className="min-w-0">
+                              <span className="text-[9px] text-slate-500 font-bold uppercase block truncate">Total Sampled</span>
+                              <span className="font-extrabold text-slate-900 text-sm font-mono truncate block">
+                                {log.sampleCount || 0} Birds
+                              </span>
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-[9px] text-emerald-600 font-bold uppercase block truncate">Overall Avg Wt</span>
+                              <span className="font-extrabold text-emerald-700 text-sm font-mono truncate block">
+                                {overallAvg ? `${overallAvg}g` : (femaleVal || maleVal ? `${femaleVal || maleVal}g` : 'N/A')}
+                              </span>
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-[9px] text-pink-600 font-bold uppercase block truncate">Female Act Wt</span>
+                              <span className="font-extrabold text-pink-700 text-sm font-mono truncate block">
+                                {femaleVal ? `${femaleVal}g` : 'N/A'}
+                              </span>
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-[9px] text-blue-600 font-bold uppercase block truncate">Male Act Wt</span>
+                              <span className="font-extrabold text-blue-700 text-sm font-mono truncate block">
+                                {maleVal ? `${maleVal}g` : 'N/A'}
+                              </span>
+                            </div>
                           </div>
-                          <div className="min-w-0">
-                            <span className="text-[9px] text-pink-600 font-bold uppercase block truncate">Female Act Wt</span>
-                            <span className="font-extrabold text-pink-700 text-sm font-mono truncate block">
-                              {femaleVal ? `${femaleVal}g` : 'N/A'}
-                            </span>
-                          </div>
-                          <div className="min-w-0">
-                            <span className="text-[9px] text-blue-600 font-bold uppercase block truncate">Male Act Wt</span>
-                            <span className="font-extrabold text-blue-700 text-sm font-mono truncate block">
-                              {maleVal ? `${maleVal}g` : 'N/A'}
-                            </span>
-                          </div>
-                        </div>
+                        )}
                       </div>
 
                       {/* Footer: Submitter & Formatted Timestamp (Update Action Button Completely Removed) */}
@@ -4798,29 +5313,6 @@ export default function App() {
                   className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 mt-1 focus:outline-none focus:border-emerald-600"
                 />
               </div>
-              <div>
-                <label className="text-xs text-slate-600 uppercase font-semibold">Flock Gender</label>
-                <div className="grid grid-cols-2 gap-2 mt-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setNewShedType('Female')}
-                    className={`py-2 rounded-xl text-xs font-bold border transition ${
-                      newShedType === 'Female' ? 'bg-pink-50 text-pink-700 border-pink-300 shadow-xs' : 'bg-white text-slate-500 border-slate-200'
-                    }`}
-                  >
-                    ♀ Female
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewShedType('Male')}
-                    className={`py-2 rounded-xl text-xs font-bold border transition ${
-                      newShedType === 'Male' ? 'bg-blue-50 text-blue-700 border-blue-300 shadow-xs' : 'bg-white text-slate-500 border-slate-200'
-                    }`}
-                  >
-                    ♂ Male
-                  </button>
-                </div>
-              </div>
               <div className="flex gap-2 pt-1">
                 <button 
                   onClick={() => setShowAddShedModal(false)} 
@@ -4859,29 +5351,6 @@ export default function App() {
                   onChange={e => setEditingShed({ ...editingShed, name: e.target.value })}
                   className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 mt-1 focus:outline-none focus:border-emerald-600"
                 />
-              </div>
-              <div>
-                <label className="text-xs text-slate-600 uppercase font-semibold">Flock Gender</label>
-                <div className="grid grid-cols-2 gap-2 mt-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setEditingShed({ ...editingShed, type: 'Female' })}
-                    className={`py-2 rounded-xl text-xs font-bold border transition ${
-                      editingShed.type === 'Female' ? 'bg-pink-50 text-pink-700 border-pink-300' : 'bg-white text-slate-500 border-slate-200'
-                    }`}
-                  >
-                    ♀ Female
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingShed({ ...editingShed, type: 'Male' })}
-                    className={`py-2 rounded-xl text-xs font-bold border transition ${
-                      editingShed.type === 'Male' ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-white text-slate-500 border-slate-200'
-                    }`}
-                  >
-                    ♂ Male
-                  </button>
-                </div>
               </div>
               <div className="flex gap-2 pt-1">
                 <button 
@@ -5679,6 +6148,171 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
+        {/* MODAL: SHED LOCK COLLISION NOTIFICATION & ACCESS GUARD    */}
+        {/* ========================================================= */}
+        {collisionModalData && (
+          <div 
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setCollisionModalData(null)}
+          >
+            <div 
+              className="bg-white rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl border border-amber-200 space-y-4 animate-in zoom-in-95 duration-150"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="w-14 h-14 rounded-2xl bg-amber-100 border border-amber-200 flex items-center justify-center mx-auto text-amber-600 shadow-xs">
+                <Lock className="w-7 h-7" />
+              </div>
+
+              <div className="text-center space-y-2">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Access Restricted</span>
+                </div>
+                <h3 className="text-lg font-black text-slate-900">
+                  {collisionModalData.shedName} is Currently in Use
+                </h3>
+                <p className="text-sm text-slate-800 leading-relaxed font-semibold">
+                  ⚠️ {collisionModalData.shedName} is currently being weighed by {collisionModalData.lockedByUserName}. Only one Incharge can enter a shed at a time.
+                </p>
+                <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 text-left space-y-1">
+                  <div className="font-bold flex items-center gap-1.5 text-amber-950">
+                    <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                    <span>Single-Incharge Shed Guard Active</span>
+                  </div>
+                  <p className="text-amber-800 leading-normal">
+                    Only one Incharge can enter a shed at a time to prevent conflicting weight measurements. Please select another shed.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setCollisionModalData(null)}
+                  className="w-full py-3 px-4 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-sm font-bold shadow-md cursor-pointer transition active:scale-[0.98]"
+                >
+                  Choose Another Shed
+                </button>
+
+                {(currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'Supervisor') && (
+                  <button
+                    type="button"
+                    onClick={() => handleForceUnlock(collisionModalData.shedId, collisionModalData.shedName)}
+                    disabled={isForceUnlockingShed === collisionModalData.shedId}
+                    className="w-full py-2.5 px-4 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold cursor-pointer transition flex items-center justify-center gap-2"
+                  >
+                    {isForceUnlockingShed === collisionModalData.shedId ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-amber-700" />
+                    ) : (
+                      <Unlock className="w-4 h-4 text-amber-700" />
+                    )}
+                    <span>Supervisor Override: Force Unlock</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODAL: STAGE 3 OVERALL FARM FINAL SUBMIT CONFIRMATION     */}
+        {/* ========================================================= */}
+        {showOverallSubmitConfirmModal && (
+          <div 
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div 
+              className="bg-white rounded-3xl p-6 sm:p-7 max-w-lg w-full shadow-2xl border border-emerald-200 space-y-4 animate-in zoom-in-95 duration-150"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="w-14 h-14 rounded-2xl bg-emerald-100 border border-emerald-200 flex items-center justify-center mx-auto text-emerald-600 shadow-xs">
+                <UploadCloud className="w-7 h-7" />
+              </div>
+
+              <div className="text-center space-y-2">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Stage 3: Final Overall Farm Submission</span>
+                </div>
+                <h3 className="text-lg font-black text-slate-900">
+                  Submit Overall Farm ({ageWeek})
+                </h3>
+                <p className="text-xs text-slate-600 leading-relaxed max-w-sm mx-auto">
+                  All sheds on <strong className="text-slate-900">{farmName || 'Active Farm'}</strong> have been saved by the field team. Submitting will consolidate all sheds into one single record in Submission History and lock this week.
+                </p>
+              </div>
+
+              {/* Shed Breakdown Preview */}
+              <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 max-h-48 overflow-y-auto space-y-2">
+                {sheds.map((s, idx) => {
+                  const l = shedLocks[s.id];
+                  const sCount = (s.parts || []).flatMap(p => (p.lines || []).flatMap(line => line.weights || [])).length;
+                  const birdCount = l?.totalBirdCount !== undefined ? l.totalBirdCount : sCount;
+                  const savedBy = l?.savedByUserName || (s as any).savedByUserName || 'Incharge';
+                  return (
+                    <div key={s.id || idx} className="flex items-center justify-between text-xs bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-900">{s.name}</span>
+                        <span className="text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 font-bold">
+                          Saved by {savedBy}
+                        </span>
+                      </div>
+                      <span className="font-mono font-black text-slate-900">
+                        {birdCount} birds
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center justify-between px-2 text-xs font-bold text-slate-700">
+                <span>Total Birds Across All Sheds:</span>
+                <span className="text-emerald-700 font-mono font-black text-sm">
+                  {sheds.reduce((acc, s) => {
+                    const l = shedLocks[s.id];
+                    const sCount = (s.parts || []).flatMap(p => (p.lines || []).flatMap(line => line.weights || [])).length;
+                    return acc + (l?.totalBirdCount !== undefined ? l.totalBirdCount : sCount);
+                  }, 0).toLocaleString()} Birds
+                </span>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowOverallSubmitConfirmModal(false)}
+                  disabled={isSubmittingOverallFarm}
+                  className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold cursor-pointer transition active:scale-95"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOverallFarmFinalSubmit}
+                  disabled={isSubmittingOverallFarm}
+                  className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 cursor-pointer transition active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isSubmittingOverallFarm ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>Submitting Overall Farm...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UploadCloud className="w-4 h-4 text-white" />
+                      <span>Confirm & Final Submit</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
         {/* MODAL: EXIT CONFIRMATION TRAP                             */}
         {/* ========================================================= */}
         {isAuthenticated && currentScreen === 'home' && showExitConfirm && (
@@ -5694,13 +6328,13 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="font-black text-base text-slate-900">
-                    Exit Application?
+                    Exit Application
                   </h3>
-                  <p className="text-xs text-slate-500">Poultry Weight & Uniformity Tracker</p>
+                  <p className="text-xs text-slate-500">Poultry Flock Pro</p>
                 </div>
               </div>
-              <p className="text-xs text-slate-700 bg-slate-50 p-3.5 rounded-xl border border-slate-200 leading-relaxed">
-                Do you want to exit the application?
+              <p className="text-xs text-slate-700 bg-slate-50 p-3.5 rounded-xl border border-slate-200 leading-relaxed font-medium">
+                Are you sure you want to exit Poultry Flock Pro?
               </p>
               <div className="flex gap-2 pt-1">
                 <button
@@ -5708,7 +6342,7 @@ export default function App() {
                   onClick={handleCancelExit}
                   className="flex-1 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-slate-700 active:scale-95 transition cursor-pointer"
                 >
-                  Cancel
+                  Stay
                 </button>
                 <button
                   type="button"

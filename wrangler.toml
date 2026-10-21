@@ -1,6 +1,7 @@
 name = "poultry-weight-tracker"
+main = "worker.ts"
 account_id = "607a4c8239664450331ee2c9de563318"
-compatibility_date = "2026-01-01"
+compatibility_date = "2026-10-01"
 
 [assets]
 directory = "./frontend/dist"
@@ -8,3 +9,19 @@ not_found_handling = "single-page-application"
 
 [vars]
 ENVIRONMENT = "production"
+
+# Cloudflare D1 Serverless SQL Database Binding
+[[d1_databases]]
+binding = "DB"
+database_name = "poultry_tracker_db"
+database_id = "f955c29a-ec36-4ea5-8e66-e8c959e3d223"
+
+# Cloudflare R2 15 GB+ Object Storage for Archived Weight Batches & Excel Reports
+# (Note: Enable R2 in your Cloudflare Dashboard at dash.cloudflare.com -> R2, then uncomment these lines)
+# [[r2_buckets]]
+# binding = "STORAGE_BUCKET"
+# bucket_name = "poultry-data-15gb-store"
+# 
+# [[r2_buckets]]
+# binding = "REPORT_BUCKET"
+# bucket_name = "poultry-data-15gb-store"
