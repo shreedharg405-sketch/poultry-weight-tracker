@@ -177,7 +177,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
         },
         include: {
           farm: { select: { name: true } },
-          user: { select: { id: true, name: true, username: true, role: true, employeeCode: true } },
+          user: { select: { id: true, name: true, username: true, role: true, employeeCode: true } as any },
           sheds: {
             orderBy: { order: 'asc' },
             include: {
@@ -465,7 +465,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
                 : 0;
               const isLineMale = (l.gender && String(l.gender).toUpperCase() === 'MALE') || (!l.gender && s.type === 'Male');
 
-              const subLine = await tx.submissionLine.create({
+              const subLine = await (tx.submissionLine as any).create({
                 data: {
                   submissionPartId: subPart.id,
                   lineId: l.id ? String(l.id) : null,
@@ -744,7 +744,7 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
             select: { name: true }
           },
           user: {
-            select: { id: true, name: true, username: true, role: true, employeeCode: true }
+            select: { id: true, name: true, username: true, role: true, employeeCode: true } as any
           },
           sheds: {
             orderBy: { order: 'asc' },
@@ -1113,7 +1113,7 @@ submissionRouter.put('/submissions/:id', requireAuth, async (req: AuthenticatedR
                 const lineAvg = cleanWeights.length ? Math.round(cleanWeights.reduce((a: number, b: number) => a + b, 0) / cleanWeights.length) : null;
 
                 const isLineMale = (l.gender && String(l.gender).toUpperCase() === 'MALE') || (!l.gender && s.type === 'Male');
-                const createdLine = await tx.submissionLine.create({
+                const createdLine = await (tx.submissionLine as any).create({
                   data: {
                     submissionPartId: createdPart.id,
                     name: l.name || `Line ${lIdx + 1}`,

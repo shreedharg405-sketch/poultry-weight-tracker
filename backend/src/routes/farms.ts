@@ -4027,10 +4027,10 @@ export async function getNextEmployeeCode(): Promise<string> {
 
   if (isPostgresConfigured()) {
     try {
-      const users = await prisma.user.findMany({ 
+      const users = await (prisma.user as any).findMany({ 
         select: { username: true, employeeCode: true } 
       });
-      for (const u of users) {
+      for (const u of (users as any[])) {
         const candidates = [u.employeeCode, u.username].filter(Boolean) as string[];
         for (const c of candidates) {
           const clean = c.trim().toUpperCase();
@@ -4260,7 +4260,7 @@ farmRouter.post('/auth/logout', (_req: Request, res: Response) => {
 farmRouter.get('/auth/users', async (_req: Request, res: Response) => {
   if (isPostgresConfigured()) {
     try {
-      const users = await prisma.user.findMany({
+      const users = await (prisma.user as any).findMany({
         where: {
           status: { notIn: ['DEACTIVATED', 'DELETED'] }
         },
@@ -4279,9 +4279,9 @@ farmRouter.get('/auth/users', async (_req: Request, res: Response) => {
         },
         orderBy: { createdAt: 'asc' },
       });
-      return res.json(users.map(u => ({
+      return res.json(users.map((u: any) => ({
         ...u,
-        employeeCode: (u as any).employeeCode || (u.username.startsWith('EMP') ? u.username : undefined),
+        employeeCode: u.employeeCode || (u.username?.toUpperCase().startsWith('EMP') ? u.username.toUpperCase() : undefined),
         phone: (u as any).phone,
         requiresPasswordChange: !!(u as any).requiresPasswordChange,
       })));
@@ -4421,7 +4421,7 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
       let finalEmpCode = employeeCode;
       let effectiveUsername = cleanUsername;
       while (attempts < 5) {
-        const existing = await prisma.user.findFirst({
+        const existing = await (prisma.user as any).findFirst({
           where: {
             OR: [
               { username: { equals: effectiveUsername, mode: 'insensitive' as const } },
@@ -4449,7 +4449,7 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
 
       employeeCode = finalEmpCode;
 
-      const created = await prisma.user.create({
+      const created = await (prisma.user as any).create({
         data: {
           id: crypto.randomUUID(),
           username: effectiveUsername,

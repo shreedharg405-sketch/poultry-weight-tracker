@@ -2,9 +2,9 @@ import { ShedData } from './excelExportService';
 
 export type UserRole = 'Manager' | 'In-Charge' | 'Admin' | 'Incharge' | 'Supervisor';
 
-// Formats user ID or employee code into standardized EMP0001..EMP0008 format
+// Formats user ID or employee code into standardized EMP0001.. format
 export function formatEmployeeId(user: any): string {
-  if (!user) return 'EMP0008';
+  if (!user) return '';
   if (typeof user === 'string') {
     const trimmed = user.trim().toUpperCase();
     if (trimmed.startsWith('EMP')) {
@@ -13,9 +13,10 @@ export function formatEmployeeId(user: any): string {
       return trimmed;
     }
     const num = parseInt(trimmed.replace(/\D/g, ''), 10);
-    if (!isNaN(num) && num > 0) return `EMP${String(num % 10000 || 8).padStart(4, '0')}`;
-    return 'EMP0008';
+    if (!isNaN(num) && num > 0) return `EMP${String(num).padStart(4, '0')}`;
+    return trimmed;
   }
+  // 1. Explicit employeeCode property on user
   if (user.employeeCode) {
     const code = String(user.employeeCode).trim().toUpperCase();
     if (code.startsWith('EMP')) {
@@ -24,25 +25,31 @@ export function formatEmployeeId(user: any): string {
       return code;
     }
     const num = parseInt(code.replace(/\D/g, ''), 10);
-    if (!isNaN(num) && num > 0) return `EMP${String(num % 10000 || 8).padStart(4, '0')}`;
+    if (!isNaN(num) && num > 0) return `EMP${String(num).padStart(4, '0')}`;
+    return code;
   }
-  const idStr = String(user.id || user.username || '');
+  // 2. Check if username is an employee code (e.g. emp0003 or EMP0003)
+  if (user.username) {
+    const un = String(user.username).trim().toUpperCase();
+    if (un.startsWith('EMP')) {
+      const numPart = parseInt(un.replace(/^EMP/, ''), 10);
+      if (!isNaN(numPart)) return `EMP${String(numPart).padStart(4, '0')}`;
+      return un;
+    }
+  }
+  // 3. Known seed accounts
+  const unLower = String(user.username || '').toLowerCase();
+  if (unLower === 'admin' || user.id === 'u-admin-1') return 'EMP0001';
+  if (unLower === 'manager' || user.id === 'u-manager-1') return 'EMP0002';
+  if (unLower === 'supervisor' || user.id === 'u-supervisor-1') return 'EMP0003';
+  if (unLower === 'incharge' || user.id === 'u-incharge-1') return 'EMP0004';
+
+  const idStr = String(user.id || '');
   if (idStr.toUpperCase().startsWith('EMP')) {
     const numPart = parseInt(idStr.toUpperCase().replace(/^EMP/, ''), 10);
     if (!isNaN(numPart)) return `EMP${String(numPart).padStart(4, '0')}`;
   }
-  const digits = idStr.replace(/\D/g, '');
-  if (digits) {
-    const num = parseInt(digits, 10);
-    if (!isNaN(num) && num > 0) return `EMP${String(num % 10000 || 8).padStart(4, '0')}`;
-  }
-  // Deterministic 4-digit numeric code for UUIDs
-  let hash = 0;
-  for (let i = 0; i < idStr.length; i++) {
-    hash = (hash * 31 + idStr.charCodeAt(i)) & 0xffff;
-  }
-  const empNum = (Math.abs(hash) % 9999) + 1;
-  return `EMP${String(empNum).padStart(4, '0')}`;
+  return user.employeeCode || user.username || '';
 }
 
 export interface AppUser {

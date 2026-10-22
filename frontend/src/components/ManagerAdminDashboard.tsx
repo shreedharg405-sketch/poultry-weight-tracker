@@ -341,7 +341,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       return;
     }
 
-    const isFieldRole = createRole === 'Supervisor';
+    const isFieldRole = createRole === 'Supervisor' || createRole === 'In-Charge';
     const cleanPhone = createPhone.replace(/\D/g, '');
 
     if (isFieldRole) {
@@ -367,7 +367,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
         : createPassword.trim();
 
       const created = await cloudApi.createUser({
-        username: isFieldRole ? (createUsername.trim().toLowerCase() || nextEmpCode.toLowerCase()) : createUsername.trim().toLowerCase(),
+        username: isFieldRole ? (createUsername.trim() || nextEmpCode) : createUsername.trim().toLowerCase(),
         name: createName.trim(),
         password: derivedPw,
         role: createRole,
@@ -375,11 +375,11 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
         assignedFarms: createAssignedFarms,
       });
 
-      const empCodeDisplay = created.employeeCode || (created.username.startsWith('EMP') ? created.username : nextEmpCode);
+      const empCodeDisplay = created.employeeCode || (created.username?.toUpperCase().startsWith('EMP') ? created.username.toUpperCase() : nextEmpCode);
       setUserMgmtFeedback(
         isFieldRole 
-          ? `Created employee @${created.username} (Code: ${empCodeDisplay}). Initial Password: ${derivedPw} (Prompted on first login)`
-          : `User @${created.username} created successfully!`
+          ? `✓ Created employee ${created.name} (@${created.username}, Code: ${empCodeDisplay}). Initial Password: ${derivedPw}`
+          : `✓ User @${created.username} created successfully!`
       );
       setShowCreateUser(false);
       setCreateUsername('');
@@ -389,6 +389,9 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       setCreateRole('Supervisor');
       setCreateAssignedFarms([]);
       await loadSystemUsers();
+      cloudApi.getNextEmployeeCode().then(r => {
+        if (r?.nextEmployeeCode) setNextEmpCode(r.nextEmployeeCode);
+      }).catch(() => {});
     } catch (err: any) {
       alert(err.message || 'Failed to create user account');
     } finally {
@@ -1537,6 +1540,9 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 onClick={() => {
                   setShowCreateUser(true);
                   setUserMgmtFeedback(null);
+                  cloudApi.getNextEmployeeCode().then(r => {
+                    if (r?.nextEmployeeCode) setNextEmpCode(r.nextEmployeeCode);
+                  }).catch(() => {});
                 }}
                 className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow-md active:scale-95 transition cursor-pointer"
               >
@@ -1828,7 +1834,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
             </div>
 
             {/* Field Role: Auto-assigned Employee Code & Phone Number for Temporary Password */}
-            {createRole === 'Supervisor' ? (
+            {(createRole === 'Supervisor' || createRole === 'In-Charge') ? (
               <>
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between">
                   <div>
