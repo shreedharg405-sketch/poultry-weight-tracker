@@ -46,12 +46,21 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
 };
 
-function jsonResponse(data: any, status = 200): Response {
+// Strict anti-caching headers for real-time Cloudflare multi-device sync
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+  'Pragma': 'no-cache',
+  'Expires': '0',
+};
+
+function jsonResponse(data: any, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json',
       ...CORS_HEADERS,
+      ...NO_CACHE_HEADERS,
+      ...extraHeaders,
     },
   });
 }
@@ -62,6 +71,7 @@ function errorResponse(message: string, status = 400): Response {
     headers: {
       'Content-Type': 'application/json',
       ...CORS_HEADERS,
+      ...NO_CACHE_HEADERS,
     },
   });
 }
@@ -79,6 +89,8 @@ async function ensureShedWeekStatusTable(env: Env): Promise<void> {
         saved_by_user_id TEXT,
         saved_by_user_name TEXT,
         total_bird_count INTEGER DEFAULT 0,
+        weights_json TEXT,
+        batch_id TEXT,
         saved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (shed_id, week)
       )
@@ -86,9 +98,21 @@ async function ensureShedWeekStatusTable(env: Env): Promise<void> {
     await env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_shed_week_status ON shed_week_status(farm_id, week)
     `).run().catch(() => {});
+    // Auto-migrate schema: ensure weights_json and batch_id exist if table already existed
+    await env.DB.prepare(`ALTER TABLE shed_week_status ADD COLUMN weights_json TEXT`).run().catch(() => {});
+    await env.DB.prepare(`ALTER TABLE shed_week_status ADD COLUMN batch_id TEXT`).run().catch(() => {});
   } catch (err) {
     console.error('ensureShedWeekStatusTable error:', err);
   }
+}
+
+// Ensure sheds table has real-time lock tracking columns
+async function ensureShedLockColumns(env: Env): Promise<void> {
+  if (!env.DB) return;
+  try {
+    await env.DB.prepare(`ALTER TABLE sheds ADD COLUMN locked_week TEXT`).run().catch(() => {});
+    await env.DB.prepare(`ALTER TABLE sheds ADD COLUMN locked_batch_id TEXT`).run().catch(() => {});
+  } catch (err) {}
 }
 
 // Ensure batches table exists in D1 database for Farm -> Batch -> Week hierarchy
@@ -110,6 +134,46 @@ async function ensureBatchesTable(env: Env): Promise<void> {
     await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_batches_farm ON batches(farm_id)`).run().catch(() => {});
   } catch (err) {
     console.error('ensureBatchesTable error:', err);
+  }
+}
+
+// Ensure users table exists, auto-migrate SUPERVISOR to INCHARGE, and sequentially assign EMP0001.. codes
+async function ensureUsersTable(env: Env): Promise<void> {
+  if (!env.DB) return;
+  try {
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        phone_or_email TEXT UNIQUE NOT NULL,
+        role TEXT NOT NULL,
+        employee_code TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run().catch(() => {});
+    await env.DB.prepare(`ALTER TABLE users ADD COLUMN employee_code TEXT`).run().catch(() => {});
+    await env.DB.prepare(`ALTER TABLE users ADD COLUMN assigned_farm_id TEXT`).run().catch(() => {});
+    await env.DB.prepare(`ALTER TABLE users ADD COLUMN assigned_farms TEXT`).run().catch(() => {});
+
+    // Sequential EMP codes (EMP0001, EMP0002, ...) for all users
+    const usersRes = await env.DB.prepare(`SELECT id, employee_code FROM users ORDER BY created_at ASC, rowid ASC`).all().catch(() => ({ results: [] }));
+    const users = (usersRes.results || []) as any[];
+    let currentMax = 0;
+    for (const u of users) {
+      if (u.employee_code && String(u.employee_code).toUpperCase().startsWith('EMP')) {
+        const n = parseInt(String(u.employee_code).replace(/\D/g, ''), 10);
+        if (!isNaN(n) && n > currentMax) currentMax = n;
+      }
+    }
+    for (const u of users) {
+      if (!u.employee_code) {
+        currentMax++;
+        const nextCode = `EMP${String(currentMax).padStart(4, '0')}`;
+        await env.DB.prepare(`UPDATE users SET employee_code = ? WHERE id = ?`).bind(nextCode, u.id).run().catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.error('ensureUsersTable error:', err);
   }
 }
 
@@ -188,10 +252,28 @@ export default {
       });
     }
 
+    // Health check endpoint (Direct /health)
+    if (url.pathname === '/health' || url.pathname === '/health/') {
+      return jsonResponse({
+        status: 'ok',
+        connected: true,
+        database: { status: 'connected', provider: 'cloudflare-d1' },
+      });
+    }
+
     // 2. Handle API Routes under /api/
     if (url.pathname.startsWith('/api')) {
       try {
         const path = url.pathname.replace(/^\/api/, '') || '/';
+
+        // Health check endpoint: GET /api/health
+        if (path === '/health' || path === '/health/') {
+          return jsonResponse({
+            status: 'ok',
+            connected: true,
+            database: { status: 'connected', provider: 'cloudflare-d1' },
+          });
+        }
 
         // -------------------------------------------------------------
         // A. HIERARCHY ENDPOINTS: GET /api/hierarchy, POST /api/hierarchy
@@ -292,6 +374,116 @@ export default {
 
             return jsonResponse({ success: true, farmId });
           }
+        }
+
+        // -------------------------------------------------------------
+        // B0. PARTS ENDPOINTS (POST /api/parts, PUT /api/parts/:id, DELETE /api/parts/:id)
+        // -------------------------------------------------------------
+        if ((path === '/parts' || path === '/parts/') && method === 'POST') {
+          const body = await request.json().catch(() => ({})) as any;
+          const shedId = body.shedId || body.shed_id;
+          const name = (body.name || 'Part A').trim();
+          if (!shedId) return errorResponse('Missing shedId', 400);
+
+          const partId = `part-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+          if (env.DB) {
+            await env.DB.prepare(
+              'INSERT INTO parts (id, shed_id, name) VALUES (?, ?, ?)'
+            ).bind(partId, shedId, name).run().catch((err) => {
+              console.error('Error adding part:', err);
+            });
+          }
+
+          return jsonResponse({ id: partId, shedId, name, lines: [] }, 201);
+        }
+
+        const singlePartMatch = path.match(/^\/parts\/([^/]+)$/);
+        if (singlePartMatch && method === 'PUT') {
+          const partId = decodeURIComponent(singlePartMatch[1]);
+          const body = await request.json().catch(() => ({})) as any;
+          const name = (body.name || '').trim();
+          if (env.DB && name) {
+            await env.DB.prepare('UPDATE parts SET name = ? WHERE id = ?').bind(name, partId).run().catch(() => {});
+          }
+          return jsonResponse({ success: true, message: 'Part updated' });
+        }
+
+        if (singlePartMatch && method === 'DELETE') {
+          const partId = decodeURIComponent(singlePartMatch[1]);
+          if (env.DB) {
+            await env.DB.prepare('DELETE FROM bird_weights WHERE line_id IN (SELECT id FROM lines WHERE part_id = ?)').bind(partId).run().catch(() => {});
+            await env.DB.prepare('DELETE FROM lines WHERE part_id = ?').bind(partId).run().catch(() => {});
+            await env.DB.prepare('DELETE FROM parts WHERE id = ?').bind(partId).run().catch(() => {});
+          }
+          return jsonResponse({ success: true, message: 'Part deleted' });
+        }
+
+        // -------------------------------------------------------------
+        // B1. LINES ENDPOINTS (POST /api/lines, PUT /api/lines/:id, DELETE /api/lines/:id)
+        // -------------------------------------------------------------
+        if ((path === '/lines' || path === '/lines/') && method === 'POST') {
+          const body = await request.json().catch(() => ({})) as any;
+          const partId = body.partId || body.part_id;
+          if (!partId) return errorResponse('Missing partId', 400);
+
+          let lineNum = body.lineNumber;
+          if (!lineNum && env.DB) {
+            const countRes = await env.DB.prepare('SELECT COUNT(*) as count FROM lines WHERE part_id = ?').bind(partId).first() as any;
+            lineNum = (countRes?.count || 0) + 1;
+          } else if (!lineNum) {
+            lineNum = 1;
+          }
+
+          const lineName = body.name || `Line ${lineNum}`;
+          const gender = (body.gender || 'MALE').toUpperCase() === 'FEMALE' ? 'FEMALE' : 'MALE';
+          const lineId = `line-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+          if (env.DB) {
+            await env.DB.prepare(`
+              INSERT INTO lines (id, part_id, line_number, name, gender, std_weight_grams, target_bird_count)
+              VALUES (?, ?, ?, ?, ?, 140, 50)
+            `).bind(lineId, partId, lineNum, lineName, gender).run().catch((err) => {
+              console.error('Error adding line:', err);
+            });
+          }
+
+          return jsonResponse({ id: lineId, partId, lineNumber: lineNum, name: lineName, gender, weights: [] }, 201);
+        }
+
+        const singleLineMatch = path.match(/^\/lines\/([^/]+)$/);
+        if (singleLineMatch && method === 'PUT') {
+          const lineId = decodeURIComponent(singleLineMatch[1]);
+          const body = await request.json().catch(() => ({})) as any;
+          if (env.DB) {
+            if (body.name) {
+              await env.DB.prepare('UPDATE lines SET name = ? WHERE id = ?').bind(body.name, lineId).run().catch(() => {});
+            }
+            if (body.gender) {
+              const g = body.gender.toUpperCase() === 'FEMALE' ? 'FEMALE' : 'MALE';
+              await env.DB.prepare('UPDATE lines SET gender = ? WHERE id = ?').bind(g, lineId).run().catch(() => {});
+            }
+          }
+          return jsonResponse({ success: true, message: 'Line updated' });
+        }
+
+        if (singleLineMatch && method === 'DELETE') {
+          const lineId = decodeURIComponent(singleLineMatch[1]);
+          if (env.DB) {
+            const line = await env.DB.prepare('SELECT part_id FROM lines WHERE id = ?').bind(lineId).first() as any;
+            await env.DB.prepare('DELETE FROM bird_weights WHERE line_id = ?').bind(lineId).run().catch(() => {});
+            await env.DB.prepare('DELETE FROM lines WHERE id = ?').bind(lineId).run().catch(() => {});
+
+            // Auto-reindex remaining lines in that part sequentially from Line 1
+            if (line?.part_id) {
+              const remRes = await env.DB.prepare('SELECT id FROM lines WHERE part_id = ? ORDER BY line_number ASC, rowid ASC').bind(line.part_id).all().catch(() => ({ results: [] }));
+              const remLines = (remRes.results || []) as any[];
+              for (let i = 0; i < remLines.length; i++) {
+                const nextNum = i + 1;
+                await env.DB.prepare('UPDATE lines SET line_number = ?, name = ? WHERE id = ?').bind(nextNum, `Line ${nextNum}`, remLines[i].id).run().catch(() => {});
+              }
+            }
+          }
+          return jsonResponse({ success: true, message: 'Line deleted' });
         }
 
         // -------------------------------------------------------------
@@ -603,10 +795,28 @@ export default {
             const farms = farmsRes.results || [];
             const summaries: any[] = [];
 
+            const allUsersRes = await env.DB.prepare('SELECT id, name, role, assigned_farms, assigned_farm_id FROM users').all().catch(() => ({ results: [] }));
+            const allUsers = (allUsersRes.results || []) as any[];
+
             for (const f of farms) {
               const activeBatch = await ensureFarmActiveBatch(env, f);
               const shedCountRes = await env.DB.prepare('SELECT COUNT(*) as count FROM sheds WHERE farm_id = ?').bind(f.id).first() as any;
               const subCountRes = await env.DB.prepare('SELECT COUNT(*) as count FROM submissions WHERE farm_id = ?').bind(f.id).first() as any;
+
+              const assignedUsers = allUsers.filter(u => {
+                if (u.assigned_farm_id === f.id) return true;
+                try {
+                  const list = JSON.parse(u.assigned_farms || '[]');
+                  return Array.isArray(list) && (list.includes(f.id) || list.includes(f.name));
+                } catch {
+                  return false;
+                }
+              });
+              const assignedUserNames = assignedUsers.map(u => {
+                const r = (u.role || '').toUpperCase();
+                const display = (r === 'ADMIN' || r === 'MANAGER') ? 'Manager' : (r === 'INCHARGE' ? 'In-Charge' : 'Supervisor');
+                return `${u.name} (${display})`;
+              });
 
               summaries.push({
                 id: f.id,
@@ -620,6 +830,7 @@ export default {
                 activeBatch,
                 startDate: activeBatch?.startDate || f.flock_date,
                 startWeekNumber: activeBatch?.startWeekNumber || 1,
+                assignedUserNames,
                 _count: {
                   sheds: shedCountRes?.count || 0,
                   submissions: subCountRes?.count || 0,
@@ -633,11 +844,15 @@ export default {
           if (method === 'POST') {
             const body = await request.json().catch(() => ({})) as any;
             const farmId = `farm-${Date.now()}`;
-            const farmName = body.name || 'New Farm';
+            const farmName = (body.name || 'New Farm').trim();
             const season = body.season || 'Summer';
             const ageWeek = body.ageWeek || 'W1';
             const flockDate = body.flockDate || new Date().toISOString().split('T')[0];
             const shedCount = Math.min(Math.max(Number(body.shedCount) || 10, 1), 40);
+
+            const createdSheds: any[] = [];
+            const startWeekNum = parseInt(String(ageWeek || 'W1').replace(/\D/g, '') || '1', 10);
+            const batchId = `batch-${farmId}-1`;
 
             if (env.DB) {
               await ensureBatchesTable(env);
@@ -646,41 +861,85 @@ export default {
               ).bind(farmId, farmName, season, ageWeek, flockDate).run();
 
               // Automatically initialize default Batch 1 for the new farm
-              const batchId = `batch-${farmId}-1`;
-              const startWeekNum = parseInt(String(ageWeek || 'W1').replace(/\D/g, '') || '1', 10);
               await env.DB.prepare(`
                 INSERT INTO batches (id, farm_id, batch_name, start_date, start_week_number, status)
                 VALUES (?, ?, 'Batch 1', ?, ?, 'ACTIVE')
               `).bind(batchId, farmId, flockDate, startWeekNum).run().catch(() => {});
+            }
 
-              // Pre-create sheds, parts, and lines with Line-level Gender
-              for (let sIdx = 1; sIdx <= shedCount; sIdx++) {
-                const shedId = `shed-${farmId}-${sIdx}`;
+            // Pre-create sheds, parts, and lines with Line-level Gender and empty weights
+            for (let sIdx = 1; sIdx <= shedCount; sIdx++) {
+              const shedId = `shed-${farmId}-${sIdx}`;
+              const shedName = `Shed ${sIdx}`;
+              if (env.DB) {
                 await env.DB.prepare(
                   'INSERT INTO sheds (id, farm_id, name) VALUES (?, ?, ?)'
-                ).bind(shedId, farmId, `Shed ${sIdx}`).run();
+                ).bind(shedId, farmId, shedName).run().catch(() => {});
+              }
 
-                // 2 Parts per shed
-                for (let pIdx = 1; pIdx <= 2; pIdx++) {
-                  const partId = `part-${shedId}-${pIdx}`;
-                  const partName = pIdx === 1 ? 'Part 1' : 'Part 2';
+              const partsList: any[] = [];
+              // 2 Parts per shed
+              for (let pIdx = 1; pIdx <= 2; pIdx++) {
+                const partId = `part-${shedId}-${pIdx}`;
+                const partName = pIdx === 1 ? 'Part 1' : 'Part 2';
+                if (env.DB) {
                   await env.DB.prepare(
                     'INSERT INTO parts (id, shed_id, name) VALUES (?, ?, ?)'
-                  ).bind(partId, shedId, partName).run();
+                  ).bind(partId, shedId, partName).run().catch(() => {});
+                }
 
-                  // 5 Lines per part
-                  for (let lIdx = 1; lIdx <= 5; lIdx++) {
-                    const lineId = `line-${partId}-${lIdx}`;
-                    // Default to FEMALE for main grower lines, MALE for line 5
-                    const gender = (sIdx === shedCount || lIdx === 5) ? 'MALE' : 'FEMALE';
-                    const std = gender === 'MALE' ? 150 : 140;
+                const linesList: any[] = [];
+                // 5 Lines per part
+                for (let lIdx = 1; lIdx <= 5; lIdx++) {
+                  const lineId = `line-${partId}-${lIdx}`;
+                  // Default to FEMALE for main grower lines, MALE for line 5
+                  const gender = (sIdx === shedCount || lIdx === 5) ? 'MALE' : 'FEMALE';
+                  const std = gender === 'MALE' ? 150 : 140;
 
+                  if (env.DB) {
                     await env.DB.prepare(
                       'INSERT INTO lines (id, part_id, line_number, name, gender, std_weight_grams) VALUES (?, ?, ?, ?, ?, ?)'
-                    ).bind(lineId, partId, lIdx, `Line ${lIdx}`, gender, std).run();
+                    ).bind(lineId, partId, lIdx, `Line ${lIdx}`, gender, std).run().catch(() => {});
                   }
+
+                  linesList.push({
+                    id: lineId,
+                    name: `Line ${lIdx}`,
+                    lineNumber: lIdx,
+                    gender,
+                    stdWeight: std,
+                    targetBirdCount: 0,
+                    weights: [],
+                  });
                 }
+
+                partsList.push({
+                  id: partId,
+                  name: partName,
+                  lines: linesList,
+                });
               }
+
+              createdSheds.push({
+                id: shedId,
+                farmId,
+                name: shedName,
+                type: sIdx === shedCount ? 'Male' : 'Female',
+                targetBirdCount: 0,
+                locked: false,
+                lockedByUserId: null,
+                lockedByUserName: null,
+                lockedAt: null,
+                lastHeartbeatAt: null,
+                recordedByUserId: null,
+                recordedByUserName: null,
+                birdCount: 0,
+                weights: [],
+                status: 'PENDING',
+                savedStatus: 'PENDING',
+                totalBirdCount: 0,
+                parts: partsList,
+              });
             }
 
             return jsonResponse({
@@ -689,7 +948,16 @@ export default {
               season,
               ageWeek,
               flockDate,
-              sheds: [],
+              shedCount,
+              sheds: createdSheds,
+              activeBatch: {
+                id: batchId,
+                farmId,
+                batchName: 'Batch 1',
+                startDate: flockDate,
+                startWeekNumber: startWeekNum,
+                status: 'ACTIVE',
+              },
             }, 201);
           }
         }
@@ -885,21 +1153,23 @@ export default {
               const isSaved = sws?.status === 'SAVED';
               if (isSaved) savedShedsCount++;
 
+              const last = s.last_heartbeat_at ? new Date(s.last_heartbeat_at).getTime() : 0;
+              const isLocked = Boolean(s.locked_by_user_id && last && (Date.now() - last <= 120_000) && (!s.locked_week || s.locked_week.toUpperCase() === targetWeek.toUpperCase()));
+
               sheds.push({
                 id: s.id,
                 name: s.name,
-                lockedByUserId: s.locked_by_user_id || null,
-                lockedByUserName: s.locked_by_user_name || null,
-                lockedAt: s.locked_at || null,
-                lastHeartbeatAt: s.last_heartbeat_at || null,
-                recordedByUserId: s.recorded_by_user_id || null,
-                recordedByUserName: s.recorded_by_user_name || null,
-                // Stage 2: Team Visibility attributes
-                savedStatus: isSaved ? 'SAVED' : (shedBirdCount > 0 ? 'DRAFT' : null),
-                savedByUserId: sws?.saved_by_user_id || s.recorded_by_user_id || null,
-                savedByUserName: sws?.saved_by_user_name || s.recorded_by_user_name || null,
-                totalBirdCount: sws?.total_bird_count ?? shedBirdCount,
-                savedAt: sws?.saved_at || null,
+                locked: isLocked,
+                lockedByUserId: isLocked ? s.locked_by_user_id : null,
+                lockedByUserName: isLocked ? s.locked_by_user_name : null,
+                lockedAt: isLocked ? s.locked_at : null,
+                lastHeartbeatAt: isLocked ? s.last_heartbeat_at : null,
+                // Stage 2: Team Visibility attributes strictly scoped to targetWeek
+                savedStatus: isSaved ? 'SAVED' : (shedBirdCount > 0 ? 'DRAFT' : 'PENDING'),
+                savedByUserId: isSaved ? (sws?.saved_by_user_id || null) : null,
+                savedByUserName: isSaved ? (sws?.saved_by_user_name || null) : null,
+                totalBirdCount: isSaved ? (sws?.total_bird_count || 0) : shedBirdCount,
+                savedAt: isSaved ? (sws?.saved_at || null) : null,
                 parts,
               });
             }
@@ -907,6 +1177,23 @@ export default {
             const totalShedsCount = sheds.length;
             const allShedsSaved = totalShedsCount > 0 && savedShedsCount >= totalShedsCount;
             const selectedBatch = batchesList.find(b => b.id === targetBatchId) || activeBatch;
+
+            // Fetch assigned user names for this farm
+            const farmUsersRes = await env.DB.prepare('SELECT id, name, role, assigned_farms, assigned_farm_id FROM users').all().catch(() => ({ results: [] }));
+            const farmAssignedUsers = ((farmUsersRes.results || []) as any[]).filter(u => {
+              if (u.assigned_farm_id === farmId) return true;
+              try {
+                const list = JSON.parse(u.assigned_farms || '[]');
+                return Array.isArray(list) && (list.includes(farmId) || list.includes(farm.name));
+              } catch {
+                return false;
+              }
+            });
+            const assignedUserNames = farmAssignedUsers.map(u => {
+              const r = (u.role || '').toUpperCase();
+              const display = (r === 'ADMIN' || r === 'MANAGER') ? 'Manager' : (r === 'INCHARGE' ? 'In-Charge' : 'Supervisor');
+              return `${u.name} (${display})`;
+            });
 
             return jsonResponse({
               ...farm,
@@ -917,6 +1204,7 @@ export default {
               startDate: selectedBatch?.startDate || farm.flock_date,
               startWeekNumber: selectedBatch?.startWeekNumber || 1,
               status: subForWeek ? 'COMPLETED' : 'DRAFT',
+              assignedUserNames,
               audit: subForWeek ? {
                 status: 'COMPLETED',
                 lastSubmittedAt: subForWeek.created_at,
@@ -946,6 +1234,94 @@ export default {
             }
             return jsonResponse({ success: true, message: 'Farm archived' });
           }
+        }
+
+        // POST /api/farms/:id/assign-operators - Assign Field Operators to Farm
+        const farmAssignOperatorsMatch = path.match(/^\/farms\/([^/]+)\/assign-operators$/);
+        if (farmAssignOperatorsMatch && method === 'POST') {
+          const farmId = decodeURIComponent(farmAssignOperatorsMatch[1]);
+          const body = await request.json().catch(() => ({})) as any;
+          const operatorUserIds: string[] = body.operatorUserIds || body.operatorIds || [];
+
+          if (!Array.isArray(operatorUserIds)) {
+            return errorResponse('operatorUserIds must be an array of user IDs', 400);
+          }
+
+          if (!env.DB) {
+            return jsonResponse({
+              success: true,
+              farmId,
+              assignedUserNames: [],
+              count: 0,
+            });
+          }
+
+          await ensureUsersTable(env);
+          const farm = await env.DB.prepare('SELECT id, name FROM farms WHERE id = ?').bind(farmId).first() as any;
+          if (!farm) {
+            return errorResponse('Farm not found in database', 404);
+          }
+
+          // Query all users to update their farm assignments
+          const allUsersRes = await env.DB.prepare(
+            'SELECT id, name, role, assigned_farms, assigned_farm_id FROM users'
+          ).all().catch(() => ({ results: [] }));
+          const allUsers = (allUsersRes.results || []) as any[];
+
+          const updatedAssignedUserNames: string[] = [];
+
+          for (const user of allUsers) {
+            const isManagerOrAdmin = (user.role || '').toUpperCase() === 'ADMIN' || (user.role || '').toUpperCase() === 'MANAGER';
+            // Only update assignments for field operators or explicit target users
+            const isTarget = operatorUserIds.includes(user.id);
+
+            // Skip modifying Admin/Manager assignedFarms unless explicitly targeted
+            if (isManagerOrAdmin && !isTarget) {
+              continue;
+            }
+
+            const currentSet = new Set<string>();
+            if (user.assigned_farms) {
+              try {
+                const parsed = JSON.parse(user.assigned_farms);
+                if (Array.isArray(parsed)) {
+                  parsed.forEach((item: string) => {
+                    if (item && item !== '*') currentSet.add(item);
+                  });
+                }
+              } catch {}
+            }
+
+            let newAssignedFarmId = user.assigned_farm_id;
+
+            if (isTarget) {
+              currentSet.add(farm.id);
+              currentSet.add(farm.name);
+              newAssignedFarmId = farm.id;
+              const r = (user.role || '').toUpperCase();
+              const displayRole = (r === 'ADMIN' || r === 'MANAGER') ? 'Manager' : (r === 'INCHARGE' ? 'In-Charge' : 'Supervisor');
+              updatedAssignedUserNames.push(`${user.name} (${displayRole})`);
+            } else {
+              currentSet.delete(farm.id);
+              currentSet.delete(farm.name);
+              if (newAssignedFarmId === farm.id) {
+                const remaining = Array.from(currentSet).filter(id => id.startsWith('farm-'));
+                newAssignedFarmId = remaining.length > 0 ? remaining[0] : null;
+              }
+            }
+
+            const newAssignedFarmsJson = JSON.stringify(Array.from(currentSet));
+            await env.DB.prepare(
+              'UPDATE users SET assigned_farm_id = ?, assigned_farms = ? WHERE id = ?'
+            ).bind(newAssignedFarmId, newAssignedFarmsJson, user.id).run().catch(() => {});
+          }
+
+          return jsonResponse({
+            success: true,
+            farmId,
+            assignedUserNames: updatedAssignedUserNames,
+            count: updatedAssignedUserNames.length,
+          });
         }
 
         // PUT /api/farms/:id/details
@@ -980,11 +1356,12 @@ export default {
         }
 
         // -------------------------------------------------------------
-        // SHED CONCURRENCY LOCKING & OPERATOR ATTRIBUTION
+        // SHED CONCURRENCY LOCKING & OPERATOR ATTRIBUTION (LIVE-STATE)
         // -------------------------------------------------------------
-        if (path === '/sheds/locks' || path.match(/^\/farms\/[^/]+\/shed-locks$/)) {
+        const liveStateFarmMatch = path.match(/^\/farms\/([^/]+)\/(?:shed-locks|live-state)$/);
+        if (path === '/sheds/locks' || liveStateFarmMatch) {
           if (method === 'GET') {
-            const farmIdParam = url.searchParams.get('farmId');
+            const farmIdParam = liveStateFarmMatch ? decodeURIComponent(liveStateFarmMatch[1]) : url.searchParams.get('farmId');
             const targetWeek = (url.searchParams.get('week') || 'W18').toUpperCase();
             const locks: Record<string, any> = {};
             let totalShedsCount = 0;
@@ -993,10 +1370,11 @@ export default {
 
             if (env.DB) {
               await ensureShedWeekStatusTable(env);
+              await ensureShedLockColumns(env);
 
               const allShedsRes = farmIdParam
-                ? await env.DB.prepare('SELECT id, farm_id, name, locked_by_user_id, locked_by_user_name, locked_at, last_heartbeat_at, recorded_by_user_id, recorded_by_user_name FROM sheds WHERE farm_id = ?').bind(farmIdParam).all().catch(() => ({ results: [] }))
-                : await env.DB.prepare('SELECT id, farm_id, name, locked_by_user_id, locked_by_user_name, locked_at, last_heartbeat_at, recorded_by_user_id, recorded_by_user_name FROM sheds').all().catch(() => ({ results: [] }));
+                ? await env.DB.prepare('SELECT id, farm_id, name, locked_by_user_id, locked_by_user_name, locked_at, last_heartbeat_at, locked_week, locked_batch_id, recorded_by_user_id, recorded_by_user_name FROM sheds WHERE farm_id = ?').bind(farmIdParam).all().catch(() => ({ results: [] }))
+                : await env.DB.prepare('SELECT id, farm_id, name, locked_by_user_id, locked_by_user_name, locked_at, last_heartbeat_at, locked_week, locked_batch_id, recorded_by_user_id, recorded_by_user_name FROM sheds').all().catch(() => ({ results: [] }));
 
               // Query shed saves for this week
               const swsRes = farmIdParam
@@ -1009,7 +1387,12 @@ export default {
 
               for (const s of shedsList) {
                 const last = s.last_heartbeat_at ? new Date(s.last_heartbeat_at).getTime() : 0;
-                const isLocked = Boolean(s.locked_by_user_id && last && (Date.now() - last <= 120_000));
+                const isLocked = Boolean(
+                  s.locked_by_user_id &&
+                  last &&
+                  (Date.now() - last <= 120_000) &&
+                  (!s.locked_week || s.locked_week.toUpperCase() === targetWeek)
+                );
                 const sws: any = swsMap.get(s.id);
                 const isSaved = sws?.status === 'SAVED';
                 if (isSaved) savedShedsCount++;
@@ -1026,14 +1409,13 @@ export default {
                   lockedByUserName: isLocked ? s.locked_by_user_name : null,
                   lockedAt: isLocked ? s.locked_at : null,
                   lastHeartbeatAt: isLocked ? s.last_heartbeat_at : null,
-                  recordedByUserId: s.recorded_by_user_id || null,
-                  recordedByUserName: s.recorded_by_user_name || null,
-                  // Stage 2: Team Visibility attributes
-                  savedStatus: isSaved ? 'SAVED' : null,
-                  savedByUserId: sws?.saved_by_user_id || s.recorded_by_user_id || null,
-                  savedByUserName: sws?.saved_by_user_name || s.recorded_by_user_name || null,
+                  // Stage 2: Team Visibility attributes strictly scoped to targetWeek
+                  savedStatus: isSaved ? 'SAVED' : (birdsInShed > 0 ? 'DRAFT' : 'PENDING'),
+                  savedByUserId: isSaved ? (sws?.saved_by_user_id || null) : null,
+                  savedByUserName: isSaved ? (sws?.saved_by_user_name || null) : null,
                   totalBirdCount: birdsInShed,
-                  savedAt: sws?.saved_at || null,
+                  savedAt: isSaved ? (sws?.saved_at || null) : null,
+                  weights: sws?.weights_json ? (() => { try { return JSON.parse(sws.weights_json); } catch { return null; } })() : null,
                 };
               }
             }
@@ -1049,8 +1431,18 @@ export default {
                 progressPercent: totalShedsCount > 0 ? Math.round((savedShedsCount / totalShedsCount) * 100) : 0,
               },
               allShedsSaved,
+              week: targetWeek,
+              farmId: farmIdParam,
             });
           }
+        }
+
+        // -------------------------------------------------------------
+        // PERMANENT SHED LOCK: BLOCK POST-CREATION RENAME & DELETE
+        // -------------------------------------------------------------
+        const singleShedMatch = path.match(/^\/sheds\/([^/]+)$/);
+        if (singleShedMatch && (method === 'DELETE' || method === 'PUT' || method === 'PATCH')) {
+          return errorResponse('Sheds are permanently locked at farm creation and cannot be renamed or deleted.', 403);
         }
 
         // POST /api/sheds/:shedId/enter
@@ -1060,17 +1452,25 @@ export default {
           const body = await request.json().catch(() => ({})) as any;
           const userId = body.userId || body.lockedByUserId || request.headers.get('x-user-id');
           const userName = body.userName || body.lockedByUserName || request.headers.get('x-user-username') || 'Incharge';
+          const targetWeek = (body.week || request.headers.get('x-week') || '').toUpperCase() || null;
+          const targetBatchId = body.batchId || null;
 
           if (!userId) {
             return errorResponse('Authentication required. Please log in.', 401);
           }
 
           if (env.DB) {
+            await ensureShedLockColumns(env);
             const shed = await env.DB.prepare('SELECT * FROM sheds WHERE id = ?').bind(shedId).first() as any;
             if (!shed) return errorResponse('Shed not found', 404);
 
             const last = shed.last_heartbeat_at ? new Date(shed.last_heartbeat_at).getTime() : 0;
-            const isLocked = Boolean(shed.locked_by_user_id && last && (Date.now() - last <= 120_000));
+            const isLocked = Boolean(
+              shed.locked_by_user_id &&
+              last &&
+              (Date.now() - last <= 120_000) &&
+              (!shed.locked_week || !targetWeek || shed.locked_week.toUpperCase() === targetWeek)
+            );
 
             if (shed.locked_by_user_id && shed.locked_by_user_id !== userId && isLocked) {
               return new Response(JSON.stringify({
@@ -1080,13 +1480,23 @@ export default {
                 message: `⚠️ ${shed.name} is currently being weighed by ${shed.locked_by_user_name || 'another Incharge'}. Only one Incharge can enter a shed at a time.`
               }), {
                 status: 409,
-                headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
+                headers: { 'Content-Type': 'application/json', ...CORS_HEADERS, ...NO_CACHE_HEADERS }
               });
             }
 
             const nowIso = new Date().toISOString();
-            await env.DB.prepare('UPDATE sheds SET locked_by_user_id = ?, locked_by_user_name = ?, locked_at = ?, last_heartbeat_at = ? WHERE id = ?')
-              .bind(userId, userName, nowIso, nowIso, shedId).run().catch(() => {});
+            await env.DB.prepare(`
+              UPDATE sheds SET 
+                locked_by_user_id = ?, 
+                locked_by_user_name = ?, 
+                locked_at = ?, 
+                last_heartbeat_at = ?,
+                locked_week = ?,
+                locked_batch_id = ?
+              WHERE id = ?
+            `).bind(userId, userName, nowIso, nowIso, targetWeek, targetBatchId, shedId).run().catch(() => {});
+
+            await env.DB.prepare('UPDATE farms SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(shed.farm_id).run().catch(() => {});
 
             return jsonResponse({
               success: true,
@@ -1097,6 +1507,7 @@ export default {
               lockedByUserName: userName,
               lockedAt: nowIso,
               lastHeartbeatAt: nowIso,
+              week: targetWeek,
             });
           }
 
@@ -1109,6 +1520,7 @@ export default {
           const shedId = decodeURIComponent(shedHeartbeatMatch[1]);
           const body = await request.json().catch(() => ({})) as any;
           const userId = body.userId || body.lockedByUserId || request.headers.get('x-user-id');
+          const targetWeek = (body.week || request.headers.get('x-week') || '').toUpperCase() || null;
           const nowIso = new Date().toISOString();
 
           if (env.DB) {
@@ -1116,7 +1528,12 @@ export default {
             if (!shed) return errorResponse('Shed not found', 404);
 
             const last = shed.last_heartbeat_at ? new Date(shed.last_heartbeat_at).getTime() : 0;
-            const isLocked = Boolean(shed.locked_by_user_id && last && (Date.now() - last <= 120_000));
+            const isLocked = Boolean(
+              shed.locked_by_user_id &&
+              last &&
+              (Date.now() - last <= 120_000) &&
+              (!shed.locked_week || !targetWeek || shed.locked_week.toUpperCase() === targetWeek)
+            );
 
             if (userId && shed.locked_by_user_id && shed.locked_by_user_id !== userId && isLocked) {
               return new Response(JSON.stringify({
@@ -1126,7 +1543,7 @@ export default {
                 message: `⚠️ ${shed.name} is currently being weighed by ${shed.locked_by_user_name || 'another Incharge'}. Only one Incharge can enter a shed at a time.`
               }), {
                 status: 409,
-                headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
+                headers: { 'Content-Type': 'application/json', ...CORS_HEADERS, ...NO_CACHE_HEADERS }
               });
             }
 
@@ -1145,13 +1562,16 @@ export default {
           const recordedByUserName = body.recordedByUserName || body.userName;
 
           if (env.DB) {
-            if (recordedByUserName) {
-              await env.DB.prepare('UPDATE sheds SET locked_by_user_id = NULL, locked_by_user_name = NULL, locked_at = NULL, last_heartbeat_at = NULL, recorded_by_user_id = ?, recorded_by_user_name = ? WHERE id = ?')
-                .bind(recordedByUserId, recordedByUserName, shedId).run().catch(() => {});
-            } else {
-              await env.DB.prepare('UPDATE sheds SET locked_by_user_id = NULL, locked_by_user_name = NULL, locked_at = NULL, last_heartbeat_at = NULL WHERE id = ?')
-                .bind(shedId).run().catch(() => {});
-            }
+            await env.DB.prepare(`
+              UPDATE sheds SET 
+                locked_by_user_id = NULL, 
+                locked_by_user_name = NULL, 
+                locked_at = NULL, 
+                last_heartbeat_at = NULL,
+                locked_week = NULL,
+                locked_batch_id = NULL
+              WHERE id = ?
+            `).bind(shedId).run().catch(() => {});
           }
 
           return jsonResponse({ success: true, shedId, locked: false, recordedByUserId, recordedByUserName });
@@ -1162,8 +1582,16 @@ export default {
         if (shedForceUnlockMatch && method === 'POST') {
           const shedId = decodeURIComponent(shedForceUnlockMatch[1]);
           if (env.DB) {
-            await env.DB.prepare('UPDATE sheds SET locked_by_user_id = NULL, locked_by_user_name = NULL, locked_at = NULL, last_heartbeat_at = NULL WHERE id = ?')
-              .bind(shedId).run().catch(() => {});
+            await env.DB.prepare(`
+              UPDATE sheds SET 
+                locked_by_user_id = NULL, 
+                locked_by_user_name = NULL, 
+                locked_at = NULL, 
+                last_heartbeat_at = NULL,
+                locked_week = NULL,
+                locked_batch_id = NULL
+              WHERE id = ?
+            `).bind(shedId).run().catch(() => {});
           }
           return jsonResponse({ success: true, shedId, locked: false, message: 'Shed forcibly unlocked' });
         }
@@ -1238,18 +1666,20 @@ export default {
               }
             }
 
-            // 2. Mark shed status for that week as SAVED in shed_week_status with batch_id
+            // 2. Mark shed status for that week as SAVED in shed_week_status with batch_id and weights_json
+            const weightsJson = body.weights ? JSON.stringify(body.weights) : null;
             await env.DB.prepare(`
-              INSERT INTO shed_week_status (shed_id, farm_id, week, status, saved_by_user_id, saved_by_user_name, total_bird_count, batch_id, saved_at)
-              VALUES (?, ?, ?, 'SAVED', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+              INSERT INTO shed_week_status (shed_id, farm_id, week, status, saved_by_user_id, saved_by_user_name, total_bird_count, weights_json, batch_id, saved_at)
+              VALUES (?, ?, ?, 'SAVED', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
               ON CONFLICT(shed_id, week) DO UPDATE SET
                 status = 'SAVED',
                 saved_by_user_id = excluded.saved_by_user_id,
                 saved_by_user_name = excluded.saved_by_user_name,
                 total_bird_count = excluded.total_bird_count,
+                weights_json = excluded.weights_json,
                 batch_id = excluded.batch_id,
                 saved_at = CURRENT_TIMESTAMP
-            `).bind(shedId, farmId, targetWeek, userId, userName, totalBirdCount, batchId).run();
+            `).bind(shedId, farmId, targetWeek, userId, userName, totalBirdCount, weightsJson, batchId).run();
 
             // 3. Release active lock
             await env.DB.prepare(`
@@ -1258,10 +1688,14 @@ export default {
                 locked_by_user_name = NULL,
                 locked_at = NULL,
                 last_heartbeat_at = NULL,
+                locked_week = NULL,
+                locked_batch_id = NULL,
                 recorded_by_user_id = ?,
                 recorded_by_user_name = ?
               WHERE id = ?
             `).bind(userId, userName, shedId).run().catch(() => {});
+
+            await env.DB.prepare('UPDATE farms SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(farmId).run().catch(() => {});
 
             // 4. Log to activity_logs
             const logId = `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
@@ -1569,7 +2003,7 @@ export default {
         }
 
         // -------------------------------------------------------------
-        // G. AUTH & USERS (Role-Based Access Control)
+        // G. AUTH & USERS (Role-Based Access Control: Manager & In-Charge Only)
         // -------------------------------------------------------------
         if (path === '/auth/login' && method === 'POST') {
           const body = await request.json().catch(() => ({})) as any;
@@ -1586,6 +2020,7 @@ export default {
               token: `cf-token-master-${Date.now()}`,
               user: {
                 id: 'user-master-shreedhar',
+                employeeCode: 'EMP0001',
                 username: 'shreedhar',
                 name: 'Shreedhar',
                 userName: 'Shreedhar',
@@ -1598,32 +2033,43 @@ export default {
             });
           }
 
-          // Check database users if env.DB bound
+          // Check database users if env.DB bound (support lookup by phone/email, name, id, or employee_code like EMP0008)
           if (env.DB) {
+            await ensureUsersTable(env);
             const dbUser = await env.DB.prepare(`
               SELECT * FROM users 
-              WHERE LOWER(phone_or_email) = ? OR LOWER(name) = ? OR id = ?
-            `).bind(username, username, rawUsername).first() as any;
+              WHERE LOWER(phone_or_email) = ? OR LOWER(name) = ? OR id = ? OR UPPER(employee_code) = ?
+            `).bind(username, username, rawUsername, rawUsername.toUpperCase()).first() as any;
 
             if (dbUser) {
               const uRoleRaw = (dbUser.role || 'SUPERVISOR').toUpperCase();
-              let normalizedRole: string = 'Supervisor';
-              if (uRoleRaw === 'ADMIN' || uRoleRaw === 'MANAGER') {
-                normalizedRole = 'Manager';
-              } else if (uRoleRaw === 'INCHARGE') {
-                normalizedRole = 'In-Charge';
+              let normalizedRole: 'Manager' | 'In-Charge' | 'Supervisor' = 'Supervisor';
+              if (uRoleRaw === 'ADMIN' || uRoleRaw === 'MANAGER') normalizedRole = 'Manager';
+              else if (uRoleRaw === 'INCHARGE' || uRoleRaw === 'IN-CHARGE') normalizedRole = 'In-Charge';
+              else normalizedRole = 'Supervisor';
+
+              let assignedFarms = ['*'];
+              if (dbUser.assigned_farms) {
+                try {
+                  const parsed = JSON.parse(dbUser.assigned_farms);
+                  if (Array.isArray(parsed)) assignedFarms = parsed;
+                } catch {}
+              } else if (dbUser.assigned_farm_id) {
+                assignedFarms = [dbUser.assigned_farm_id];
               }
 
               return jsonResponse({
                 token: `cf-token-${Date.now()}`,
                 user: {
                   id: dbUser.id,
+                  employeeCode: dbUser.employee_code || 'EMP0008',
                   username: dbUser.phone_or_email || username,
                   name: dbUser.name,
                   userName: dbUser.name,
                   role: normalizedRole,
                   userRole: normalizedRole,
-                  assignedFarms: ['*'],
+                  assignedFarmId: dbUser.assigned_farm_id || (assignedFarms.length > 0 && assignedFarms[0] !== '*' ? assignedFarms[0] : undefined),
+                  assignedFarms,
                   status: 'ACTIVE',
                   isAuthenticated: true,
                 },
@@ -1631,21 +2077,25 @@ export default {
             }
           }
 
-          // Fallback role determination for demo credentials
-          let role = 'Supervisor';
-          let name = 'Field Supervisor';
+          // Fallback role determination for demo credentials (Manager, In-Charge, Supervisor)
+          let role: 'Manager' | 'In-Charge' | 'Supervisor' = 'Supervisor';
+          let name = 'Line Supervisor';
+          let employeeCode = 'EMP0008';
           if (username.includes('admin') || username.includes('dir') || username.includes('man') || username.includes('mgr')) {
             role = 'Manager';
             name = username.includes('admin') ? 'Operations Director' : 'Farm Manager';
-          } else if (username.includes('inc') || username.includes('line')) {
+            employeeCode = 'EMP0001';
+          } else if (username.includes('incharge') || username.includes('in-charge')) {
             role = 'In-Charge';
-            name = 'Line In-Charge';
+            name = 'Field In-Charge';
+            employeeCode = 'EMP0002';
           }
 
           return jsonResponse({
             token: `cf-token-${Date.now()}`,
             user: {
               id: `usr-${username || 'demo'}`,
+              employeeCode,
               username: rawUsername,
               name,
               userName: name,
@@ -1665,6 +2115,7 @@ export default {
             return jsonResponse({
               user: {
                 id: 'user-master-shreedhar',
+                employeeCode: 'EMP0001',
                 username: 'shreedhar',
                 name: 'Shreedhar',
                 userName: 'Shreedhar',
@@ -1679,6 +2130,7 @@ export default {
           return jsonResponse({
             user: {
               id: 'usr-current',
+              employeeCode: 'EMP0001',
               username: 'manager',
               name: 'Farm Manager',
               role: 'Manager',
@@ -1693,30 +2145,46 @@ export default {
         if ((path === '/auth/users' || path === '/users' || path === '/auth/users/' || path === '/users/') && method === 'GET') {
           let usersList: any[] = [];
           if (env.DB) {
+            await ensureUsersTable(env);
             const res = await env.DB.prepare('SELECT * FROM users ORDER BY created_at ASC').all();
-            usersList = (res.results || []).map((u: any) => {
+            usersList = (res.results || []).map((u: any, idx: number) => {
               const rUpper = (u.role || '').toUpperCase();
-              let roleStr = 'Supervisor';
+              let roleStr: 'Manager' | 'In-Charge' | 'Supervisor' = 'Supervisor';
               if (rUpper === 'ADMIN' || rUpper === 'MANAGER') roleStr = 'Manager';
-              else if (rUpper === 'INCHARGE') roleStr = 'In-Charge';
+              else if (rUpper === 'INCHARGE' || rUpper === 'IN-CHARGE') roleStr = 'In-Charge';
+              else roleStr = 'Supervisor';
+
+              const empCode = u.employee_code || `EMP${String(idx + 1).padStart(4, '0')}`;
+
+              let assignedFarms = ['*'];
+              if (u.assigned_farms) {
+                try {
+                  const parsed = JSON.parse(u.assigned_farms);
+                  if (Array.isArray(parsed)) assignedFarms = parsed;
+                } catch {}
+              } else if (u.assigned_farm_id) {
+                assignedFarms = [u.assigned_farm_id];
+              }
 
               return {
                 id: u.id,
+                employeeCode: empCode,
                 username: u.phone_or_email,
                 name: u.name,
                 role: roleStr,
                 userRole: roleStr,
                 phone: u.phone_or_email,
                 status: 'ACTIVE',
-                assignedFarms: ['*'],
+                assignedFarmId: u.assigned_farm_id,
+                assignedFarms,
               };
             });
           } else {
             usersList = [
-              { id: 'u-admin-1', username: 'admin', name: 'Operations Director', role: 'Manager', status: 'ACTIVE', assignedFarms: ['*'] },
-              { id: 'u-manager-1', username: 'manager', name: 'Farm Manager', role: 'Manager', status: 'ACTIVE', assignedFarms: ['*'] },
-              { id: 'u-supervisor-1', username: 'supervisor', name: 'Field Supervisor', role: 'Supervisor', status: 'ACTIVE', assignedFarms: ['*'] },
-              { id: 'u-incharge-1', username: 'incharge', name: 'Line In-Charge', role: 'In-Charge', status: 'ACTIVE', assignedFarms: ['*'] },
+              { id: 'u-admin-1', employeeCode: 'EMP0001', username: 'admin', name: 'Operations Director', role: 'Manager', status: 'ACTIVE', assignedFarms: ['*'] },
+              { id: 'u-manager-1', employeeCode: 'EMP0002', username: 'manager', name: 'Farm Manager', role: 'Manager', status: 'ACTIVE', assignedFarms: ['*'] },
+              { id: 'u-incharge-1', employeeCode: 'EMP0003', username: 'incharge', name: 'Field In-Charge', role: 'In-Charge', status: 'ACTIVE', assignedFarms: ['*'] },
+              { id: 'u-supervisor-1', employeeCode: 'EMP0008', username: 'supervisor', name: 'Line Supervisor', role: 'Supervisor', status: 'ACTIVE', assignedFarms: ['*'] },
             ];
           }
 
@@ -1734,30 +2202,65 @@ export default {
         // POST /api/auth/users and /api/users
         if ((path === '/auth/users' || path === '/users' || path === '/auth/users/' || path === '/users/') && method === 'POST') {
           const body = await request.json().catch(() => ({})) as any;
-          const username = (body.username || '').trim();
+          const username = (body.username || body.phone || '').trim();
           const name = (body.name || username || 'New User').trim();
-          let role = (body.role || 'Supervisor').toString();
-          // Hide Admin: If Admin sent, set to Manager
-          if (role.toUpperCase() === 'ADMIN' || role.toUpperCase() === 'MANAGER') role = 'Manager';
-
-          const dbRole = role === 'In-Charge' || role.toUpperCase() === 'INCHARGE' ? 'INCHARGE' : (role === 'Manager' ? 'MANAGER' : 'SUPERVISOR');
-          const userId = `usr-${Date.now()}`;
-
-          if (env.DB) {
-            await env.DB.prepare(`
-              INSERT INTO users (id, name, phone_or_email, role)
-              VALUES (?, ?, ?, ?)
-            `).bind(userId, name, username, dbRole).run().catch(() => {});
+          const roleInput = (body.role || 'Supervisor').toString();
+          let role: 'Manager' | 'In-Charge' | 'Supervisor' = 'Supervisor';
+          let dbRole: 'MANAGER' | 'INCHARGE' | 'SUPERVISOR' = 'SUPERVISOR';
+          const rUpper = roleInput.toUpperCase();
+          if (rUpper === 'ADMIN' || rUpper === 'MANAGER') {
+            role = 'Manager';
+            dbRole = 'MANAGER';
+          } else if (rUpper === 'INCHARGE' || rUpper === 'IN-CHARGE') {
+            role = 'In-Charge';
+            dbRole = 'INCHARGE';
+          } else {
+            role = 'Supervisor';
+            dbRole = 'SUPERVISOR';
           }
 
+          const userId = `usr-${Date.now()}`;
+          let employeeCode = body.employeeCode;
+
+          if (env.DB) {
+            await ensureUsersTable(env);
+            if (!employeeCode) {
+              const maxRes = await env.DB.prepare(`
+                SELECT employee_code FROM users 
+                WHERE employee_code LIKE 'EMP%' 
+                ORDER BY CAST(SUBSTR(employee_code, 4) AS INTEGER) DESC 
+                LIMIT 1
+              `).first() as any;
+              let nextEmpNum = 1;
+              if (maxRes && maxRes.employee_code) {
+                const n = parseInt(String(maxRes.employee_code).replace(/\D/g, ''), 10);
+                if (!isNaN(n)) nextEmpNum = n + 1;
+              }
+              employeeCode = `EMP${String(nextEmpNum).padStart(4, '0')}`;
+            }
+
+            const assignedFarms = Array.isArray(body.assignedFarms) ? body.assignedFarms : (body.assignedFarmId ? [body.assignedFarmId] : []);
+            const assignedFarmId = body.assignedFarmId || (assignedFarms.length > 0 && assignedFarms[0] !== '*' ? assignedFarms[0] : null);
+
+            await env.DB.prepare(`
+              INSERT INTO users (id, name, phone_or_email, role, employee_code, assigned_farm_id, assigned_farms)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).bind(userId, name, username, dbRole, employeeCode, assignedFarmId, JSON.stringify(assignedFarms)).run().catch(() => {});
+          } else {
+            if (!employeeCode) employeeCode = 'EMP0008';
+          }
+
+          const assignedFarms = Array.isArray(body.assignedFarms) ? body.assignedFarms : (body.assignedFarmId ? [body.assignedFarmId] : ['*']);
           return jsonResponse({
             id: userId,
+            employeeCode,
             username,
             name,
             role,
             userRole: role,
             status: 'ACTIVE',
-            assignedFarms: body.assignedFarms || ['*'],
+            assignedFarmId: body.assignedFarmId || (assignedFarms.length > 0 && assignedFarms[0] !== '*' ? assignedFarms[0] : undefined),
+            assignedFarms,
           }, 201);
         }
 
@@ -1777,8 +2280,17 @@ export default {
               await env.DB.prepare('UPDATE users SET name = ? WHERE id = ?').bind(body.name, targetUserId).run().catch(() => {});
             }
             if (body.role) {
-              const r = body.role === 'In-Charge' ? 'INCHARGE' : (body.role.toUpperCase() === 'ADMIN' ? 'MANAGER' : body.role.toUpperCase());
+              const rUpper = (body.role || '').toUpperCase();
+              let r = 'SUPERVISOR';
+              if (rUpper === 'ADMIN' || rUpper === 'MANAGER') r = 'MANAGER';
+              else if (rUpper === 'INCHARGE' || rUpper === 'IN-CHARGE') r = 'INCHARGE';
+              else r = 'SUPERVISOR';
               await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(r, targetUserId).run().catch(() => {});
+            }
+            if (body.assignedFarms || body.assignedFarmId) {
+              const af = Array.isArray(body.assignedFarms) ? body.assignedFarms : (body.assignedFarmId ? [body.assignedFarmId] : []);
+              const afId = body.assignedFarmId || (af.length > 0 && af[0] !== '*' ? af[0] : null);
+              await env.DB.prepare('UPDATE users SET assigned_farm_id = ?, assigned_farms = ? WHERE id = ?').bind(afId, JSON.stringify(af), targetUserId).run().catch(() => {});
             }
           }
 

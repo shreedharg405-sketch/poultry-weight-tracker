@@ -1,11 +1,11 @@
 import { Flock, WeighingRecord, TallyItem, Shed, Pen, ShedSummaryData, ShedComparisonItem } from '../types';
-import { getApiBaseUrl } from './cloudSyncService';
+import { getApiBaseUrl, CLOUDFLARE_WORKER_API } from './cloudSyncService';
 
 const getBaseUrl = (): string => {
   try {
     return getApiBaseUrl();
   } catch {
-    return import.meta.env.VITE_API_URL || 'https://shreedharg405-sketch-poultry-weight.onrender.com/api';
+    return CLOUDFLARE_WORKER_API;
   }
 };
 

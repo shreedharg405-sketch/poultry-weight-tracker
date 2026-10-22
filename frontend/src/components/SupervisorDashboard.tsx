@@ -25,9 +25,10 @@ import {
   ShieldCheck,
   Cloud,
   CloudOff,
-  RefreshCw
+  RefreshCw,
+  Warehouse
 } from 'lucide-react';
-import { FarmSummary, AppUser, FarmStatus, cloudApi } from '../services/cloudSyncService';
+import { FarmSummary, AppUser, FarmStatus, cloudApi, formatEmployeeId } from '../services/cloudSyncService';
 import { formatRecordingWeekLabel } from '../utils/weightUpdateHelpers';
 import { ShedData, calculateFlockStats } from '../services/excelExportService';
 
@@ -61,6 +62,7 @@ export interface SupervisorDashboardProps {
   onOpenAuth: () => void;
   onLogout: () => void;
   onRenameFarm?: (farmId: string, newName: string) => Promise<void>;
+  onSilentReload?: () => Promise<void>;
   currentWeek?: string;
   onSwitchWeek?: (newWeek: string) => void;
   weekStatusMap?: Record<string, 'COMPLETED' | 'DRAFT'>;
@@ -102,6 +104,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   onOpenAuth,
   onLogout,
   onRenameFarm,
+  onSilentReload,
   currentWeek,
   onSwitchWeek,
   weekStatusMap,
@@ -127,8 +130,30 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   pendingSyncCount = 0,
 }) => {
   const userDisplayName = currentUser?.userName || currentUser?.name || 'Field Operator';
-  const userRole = currentUser?.role || 'In-Charge';
+  const rawRole = currentUser?.role || 'In-Charge';
+  const userRole = (rawRole === 'Supervisor' || rawRole === 'Incharge') ? 'In-Charge' : rawRole;
   const userInitial = (userDisplayName.trim().charAt(0) || 'U').toUpperCase();
+
+  // Silent Reload state
+  const [isReloading, setIsReloading] = useState(false);
+
+  const handleSilentReloadClick = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isReloading) return;
+    setIsReloading(true);
+    try {
+      if (onSilentReload) {
+        await onSilentReload();
+      }
+    } catch (err) {
+      console.warn('Silent reload error:', err);
+    } finally {
+      setTimeout(() => {
+        setIsReloading(false);
+      }, 400);
+    }
+  };
 
   // Modals state
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -222,8 +247,8 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             title="Open Profile & Session Details"
             aria-label="User Profile"
           >
-            <div className="w-8 h-8 rounded-lg text-white flex items-center justify-center font-black text-xs shadow-xs bg-emerald-600 group-hover:bg-emerald-500 transition shrink-0">
-              {userInitial}
+            <div className="w-8 h-8 rounded-lg text-white flex items-center justify-center shadow-xs bg-emerald-600 group-hover:bg-emerald-500 transition shrink-0">
+              <User className="w-4 h-4 text-white" />
             </div>
             <div className="text-left hidden xs:block">
               <span className="text-xs font-black text-slate-900 block leading-tight truncate max-w-[85px] sm:max-w-[120px]">
@@ -241,15 +266,18 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               type="button"
               onClick={() => setShowFarmDetailsModal(true)}
               className="flex items-center gap-2 px-3 py-2 bg-emerald-50 hover:bg-emerald-100/70 border border-emerald-200 rounded-xl transition active:scale-95 cursor-pointer shadow-2xs min-w-0 group"
-              title="View Farm Details & Active Recording Week"
-              aria-label="Farm Details"
+              title="Farm Info: View Assigned Farm Unit & Active Recording Week"
+              aria-label="Farm Info"
             >
               <div className="p-1 bg-white rounded-lg text-emerald-600 shadow-2xs border border-emerald-200/80 shrink-0">
-                <Building2 className="w-4 h-4 text-emerald-600 group-hover:scale-105 transition" />
+                <Warehouse className="w-4 h-4 text-emerald-600 group-hover:scale-105 transition" />
               </div>
               <div className="text-left min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="text-xs font-black text-emerald-950 truncate max-w-[110px] sm:max-w-[200px]">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wide text-emerald-800 flex items-center gap-1">
+                    Farm Info
+                  </span>
+                  <span className="text-xs font-black text-emerald-950 truncate max-w-[100px] sm:max-w-[180px]">
                     {activeFarm.name}
                   </span>
                   <span className="text-[9px] font-mono font-extrabold px-1.5 py-0.2 rounded-md bg-emerald-600 text-white shadow-2xs shrink-0">
@@ -276,19 +304,17 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             <span className="hidden sm:inline">Submissions</span>
           </button>
 
-          {/* Sync indicator */}
-          <div 
-            className="p-2 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-center shrink-0"
-            title={syncStatus === 'saving' ? 'Syncing...' : syncStatus === 'offline' ? 'Offline (saved locally)' : 'Cloud Synced'}
+          {/* Silent Reload Button (replaces orange crossed-out cloud icon) */}
+          <button 
+            type="button"
+            onClick={handleSilentReloadClick}
+            disabled={isReloading}
+            className="p-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0 active:scale-95 transition cursor-pointer text-slate-700 hover:text-emerald-600 disabled:opacity-60 shadow-2xs"
+            title="Reload latest weights & sheds"
+            aria-label="Reload latest data"
           >
-            {syncStatus === 'saving' ? (
-              <RefreshCw className="w-3.5 h-3.5 text-blue-500 animate-spin" />
-            ) : syncStatus === 'offline' ? (
-              <CloudOff className="w-3.5 h-3.5 text-amber-500" />
-            ) : (
-              <Cloud className="w-3.5 h-3.5 text-emerald-600" />
-            )}
-          </div>
+            <RefreshCw className={`w-3.5 h-3.5 transition-colors ${isReloading ? 'animate-spin text-emerald-600' : 'text-slate-600'}`} />
+          </button>
         </div>
       </div>
 
@@ -371,9 +397,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 };
 
                 const currentUserId = currentUser?.id;
-                const now = Date.now();
-                const lockTime = lock?.lastHeartbeatAt ? new Date(lock.lastHeartbeatAt).getTime() : 0;
-                const isLockActive = Boolean(lock?.locked && lock.lockedByUserId && (now - lockTime <= 120_000));
+                const isLockActive = Boolean(lock?.locked && lock.lockedByUserId);
                 const isLockedByMe = Boolean(isLockActive && lock.lockedByUserId === currentUserId);
                 const isLockedByOther = Boolean(isLockActive && lock.lockedByUserId !== currentUserId);
 
@@ -405,34 +429,6 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                           <span className={`font-black text-base truncate transition ${isLockedByOther ? 'text-slate-700' : 'text-slate-900 hover:text-emerald-600'}`}>
                             {s.name}
                           </span>
-                          {!isLockedByOther && onStartEditShed && (
-                            <div className="flex items-center gap-0.5 ml-1 shrink-0" onClick={e => e.stopPropagation()}>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onStartEditShed(s);
-                                }}
-                                className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md transition cursor-pointer"
-                                title="Rename Shed"
-                              >
-                                <Edit3 className="w-3.5 h-3.5" />
-                              </button>
-                              {sheds.length > 1 && onDeleteShed && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteShed(s.id, e);
-                                  }}
-                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
-                                  title="Delete Shed"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                            </div>
-                          )}
                         </div>
 
                         {/* Live Presence / Lock / Save Badge */}
@@ -694,8 +690,8 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
 
             {/* 1. User Profile Card matching Image 1 */}
             <div className="flex items-center gap-3 p-3.5 bg-slate-50 border border-slate-200 rounded-xl">
-              <div className="w-12 h-12 rounded-xl text-white flex items-center justify-center font-black text-lg shadow-sm bg-emerald-600 shrink-0">
-                {userInitial}
+              <div className="w-12 h-12 rounded-xl text-white flex items-center justify-center shadow-sm bg-emerald-600 shrink-0">
+                <User className="w-6 h-6 text-white" />
               </div>
               <div className="min-w-0 flex-1">
                 <h4 className="text-sm font-black text-slate-900 truncate">
@@ -703,10 +699,10 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 </h4>
                 <div className="flex items-center gap-1.5 mt-1">
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">
-                    {userRole} • Profile
+                    {currentUser?.role === 'In-Charge' ? 'In-Charge • Profile' : 'Supervisor • Profile'}
                   </span>
-                  <span className="text-[10px] text-slate-500 font-mono">
-                    ID: {currentUser?.id?.slice(0, 8) || 'active'}
+                  <span className="text-[10px] text-slate-500 font-mono font-bold">
+                    ID: {formatEmployeeId(currentUser)}
                   </span>
                 </div>
               </div>
@@ -785,7 +781,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             {/* Modal Header */}
             <div className="flex justify-between items-center pb-2 border-b border-slate-100">
               <div className="flex items-center gap-2">
-                <Building2 className="w-4 h-4 text-emerald-600" />
+                <Warehouse className="w-4 h-4 text-emerald-600" />
                 <h3 className="font-black text-sm text-slate-900">Farm Details & Active Week</h3>
               </div>
               <button 
@@ -843,7 +839,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <h2 className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2 break-words">
-                      <Building2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                      <Warehouse className="w-5 h-5 text-emerald-600 shrink-0" />
                       <span className="break-all">{activeFarm.name}</span>
                     </h2>
                     <button

@@ -32,9 +32,11 @@ import {
   AlertTriangle,
   Scale,
   History,
-  Search
+  Search,
+  User,
+  Warehouse
 } from 'lucide-react';
-import { FarmSummary, FarmBatch, AppUser, UserRole, cloudApi, FullFarmData, DeleteImpactResult, sanitizeErrorMessage } from '../services/cloudSyncService';
+import { FarmSummary, FarmBatch, AppUser, UserRole, cloudApi, FullFarmData, DeleteImpactResult, sanitizeErrorMessage, formatEmployeeId } from '../services/cloudSyncService';
 import { formatDateTimeIST } from '../utils/dateFormatter';
 
 export interface ManagerAdminDashboardProps {
@@ -339,7 +341,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       return;
     }
 
-    const isFieldRole = createRole === 'Supervisor' || createRole === 'In-Charge';
+    const isFieldRole = createRole === 'Supervisor';
     const cleanPhone = createPhone.replace(/\D/g, '');
 
     if (isFieldRole) {
@@ -495,9 +497,9 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
 
     try {
       const users = await cloudApi.getUsers();
-      // Eligible field operators: Supervisor and In-Charge / Incharge (strictly excluding master account)
+      // Eligible field operators: In-Charge (strictly excluding master account)
       const eligible = users.filter(u => 
-        (u.role === 'Supervisor' || u.role === 'In-Charge' || u.role === 'Incharge') &&
+        (u.role === 'In-Charge' || u.role === 'Incharge' || (u.role as string) === 'Supervisor') &&
         u.username?.toLowerCase() !== 'shreedhar' &&
         u.id !== 'user-master-shreedhar'
       );
@@ -700,8 +702,8 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
             className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition bg-white px-3 py-2 rounded-xl border border-slate-200/90 shadow-2xs min-w-0"
             title="View Session Details"
           >
-            <div className="w-8 h-8 rounded-lg text-white flex items-center justify-center font-black text-xs shadow-xs shrink-0 bg-sky-600">
-              {userDisplayName.charAt(0).toUpperCase()}
+            <div className="w-8 h-8 rounded-lg text-white flex items-center justify-center shadow-xs shrink-0 bg-sky-600">
+              <User className="w-4 h-4 text-white" />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
@@ -714,9 +716,14 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                   </span>
                 )}
               </div>
-              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border mt-0.5 bg-sky-50 text-sky-700 border-sky-200">
-                {userRole === 'Admin' ? 'Manager' : userRole}
-              </span>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded leading-tight inline-block border bg-sky-50 text-sky-700 border-sky-200">
+                  {userRole === 'In-Charge' ? 'In-Charge • Profile' : 'Manager • Profile'}
+                </span>
+                <span className="text-[9px] text-slate-500 font-mono font-bold">
+                  ID: {formatEmployeeId(currentUser)}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -793,7 +800,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
           <div className="flex items-center gap-2 flex-wrap flex-1 min-w-0">
             {/* Farm Selector */}
             <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl min-w-[170px]">
-              <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <Warehouse className="w-4 h-4 text-emerald-600 shrink-0" />
               <div className="flex flex-col min-w-0 flex-1">
                 <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider leading-none">Farm Unit</span>
                 <select
@@ -897,9 +904,9 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
           </span>
         </div>
         <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
-          <span className="text-[10px] uppercase font-bold text-slate-400 block">Active Unit</span>
-          <span className="text-xs md:text-sm font-black text-purple-700 truncate block mt-1">
-            {farms.find(f => f.id === activeFarmId)?.name || 'None'}
+          <span className="text-[10px] uppercase font-bold text-slate-400 block">Total Farms</span>
+          <span className="text-lg md:text-2xl font-black text-purple-700 font-mono mt-0.5">
+            {farms.length}
           </span>
         </div>
         <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 text-center shadow-xs hover:border-slate-300 transition">
@@ -915,7 +922,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-2 px-1 mb-3">
         <div className="flex items-center gap-2">
           <h3 className="text-xs sm:text-sm font-black uppercase tracking-wider text-slate-700">
-            Master Farm Roster ({farms.length} Active Units)
+            Master Farm Roster ({farms.length} Farms)
           </h3>
           <span className="hidden sm:inline-block text-[11px] text-slate-400 font-medium">
             • Tap any farm to view details & submissions
@@ -1052,7 +1059,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4 md:gap-5 overflow-y-auto flex-1 pb-6">
             {activeFarms.map((farm) => {
           const isCompleted = farm.status === 'COMPLETED';
-          // Filter to only eligible field operators (Supervisor, In-Charge, Incharge) and deduplicate
+          // Filter to only eligible field operators (In-Charge) and deduplicate
           const validOperators = (() => {
             if (!farm.assignedUserNames || !Array.isArray(farm.assignedUserNames)) return [];
             const seen = new Set<string>();
@@ -1083,11 +1090,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
           return (
             <div 
               key={farm.id}
-              className={`p-4 rounded-2xl border transition-all bg-white shadow-xs ${
-                activeFarmId === farm.id 
-                  ? 'border-slate-400 ring-2 ring-slate-400/20' 
-                  : 'border-slate-200 hover:border-slate-300'
-              }`}
+              className="p-4 rounded-2xl border transition-all bg-white shadow-xs border-slate-200 hover:border-slate-300"
             >
               {/* Unit Title and Status Pill */}
               <div className="flex items-start justify-between gap-2">
@@ -1183,7 +1186,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
               <div className="mt-2.5 p-2 bg-slate-50/80 rounded-xl border border-slate-100 text-[10px] space-y-1">
                 <div className="text-slate-600 flex items-center justify-between">
                   <span className="font-medium truncate pr-1">
-                    Last Submission: <strong className="text-slate-800">{farm.audit?.lastSubmittedBy || farm.audit?.submittedBy || (isCompleted ? 'Supervisor' : 'Draft Session')}</strong>
+                    Last Submission: <strong className="text-slate-800">{farm.audit?.lastSubmittedBy || farm.audit?.submittedBy || (isCompleted ? 'In-Charge' : 'Draft Session')}</strong>
                   </span>
                   <span className="font-mono text-slate-700 font-bold shrink-0">
                     {farm.audit?.lastSubmittedAt ? formatDateTimeIST(farm.audit.lastSubmittedAt) : (isCompleted ? 'Completed' : 'Draft')}
@@ -1233,24 +1236,9 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      onSelectFarm(farm.id);
-                    }}
-                    className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer text-center ${
-                      activeFarmId === farm.id
-                        ? 'bg-slate-200 text-slate-800'
-                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                    }`}
-                  >
-                    {activeFarmId === farm.id ? 'Active Unit' : 'Select Farm'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
                       handleOpenStartBatch(farm);
                     }}
-                    className="px-2.5 py-1.5 text-purple-700 hover:text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 shrink-0"
+                    className="flex-1 py-1.5 px-3 text-purple-700 hover:text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer flex items-center justify-center gap-1 shrink-0"
                     title={`Start New Batch for ${farm.name}`}
                   >
                     <Plus className="w-3.5 h-3.5" />
@@ -1385,7 +1373,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-center text-xs text-slate-400">
                   <p className="font-semibold text-slate-300">No field operators registered yet.</p>
                   <p className="text-[11px] text-slate-500 mt-1">
-                    Create Supervisor or In-Charge accounts under User Management to assign them to this farm.
+                    Create Supervisor accounts under User Management to assign them to this farm.
                   </p>
                 </div>
               ) : filteredOperators.length === 0 ? (
@@ -1629,15 +1617,13 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                             <span className="text-[10px] text-slate-400 font-mono">
                               @{user.username}
                             </span>
-                            {user.employeeCode && (
-                              <span className="text-[9px] font-mono font-bold bg-emerald-950/80 text-emerald-400 border border-emerald-800/80 px-1.5 py-0.2 rounded">
-                                {user.employeeCode}
-                              </span>
-                            )}
+                            <span className="text-[9px] font-mono font-bold bg-emerald-950/80 text-emerald-400 border border-emerald-800/80 px-1.5 py-0.2 rounded">
+                              {formatEmployeeId(user)}
+                            </span>
                           </div>
                           <div className="flex items-center gap-2 mt-1.5">
                             <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${roleColor}`}>
-                              {user.role === 'Admin' ? 'Manager' : (user.role === 'In-Charge' ? 'Incharge' : user.role)}
+                              {user.role === 'Admin' || user.role === 'Manager' ? 'Manager' : (user.role === 'In-Charge' || user.role === 'Incharge' ? 'In-Charge' : 'Supervisor')}
                             </span>
                             <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
                               isUserActive 
@@ -1836,13 +1822,13 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold focus:outline-none focus:border-emerald-500 cursor-pointer"
               >
                 <option value="Manager">Manager (Full Management Privileges & Assignments)</option>
-                <option value="Supervisor">Supervisor (Field Weighing & Draft Submissions)</option>
-                <option value="In-Charge">Incharge (Field Weighing & Draft Submissions)</option>
+                <option value="In-Charge">In-Charge (Executive Management & Reports)</option>
+                <option value="Supervisor">Supervisor (Field Weighing Workspace & Shed Weighing)</option>
               </select>
             </div>
 
             {/* Field Role: Auto-assigned Employee Code & Phone Number for Temporary Password */}
-            {createRole === 'Supervisor' || createRole === 'In-Charge' ? (
+            {createRole === 'Supervisor' ? (
               <>
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between">
                   <div>
@@ -2319,16 +2305,17 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                   {(() => {
                     const farmSubmissions = (viewingFarmDetails?.submissions && viewingFarmDetails.submissions.length > 0)
                       ? viewingFarmDetails.submissions
-                      : (viewingFarm.audit || (viewingFarm.submissionCount ?? 0) > 0)
+                      : (viewingFarm.audit && viewingFarm.audit.totalBirdsSubmitted)
                         ? [{
-                            id: 'batch-cloud-1',
-                            submittedAt: viewingFarm.audit?.lastSubmittedAt || viewingFarm.updatedAt,
-                            submittedBy: viewingFarm.audit?.lastSubmittedBy || viewingFarm.audit?.submittedBy || viewingFarm.assignedUserNames?.[0] || 'Field Operator',
+                            id: `audit-${viewingFarm.id}`,
+                            flockAge: viewingFarm.ageWeek || 'W1',
+                            submittedAt: viewingFarm.audit.lastSubmittedAt || viewingFarm.updatedAt,
+                            submittedBy: viewingFarm.audit.lastSubmittedBy || viewingFarm.audit.submittedBy || 'Supervisor',
                             status: viewingFarm.status || 'COMPLETED',
-                            totalBirdsSubmitted: viewingFarm.audit?.totalBirdsSubmitted || 87,
-                            femaleAvgWeight: viewingFarm.audit?.femaleAvgWeight,
-                            maleAvgWeight: viewingFarm.audit?.maleAvgWeight,
-                            uniformity: 84.5,
+                            totalBirdsSubmitted: viewingFarm.audit.totalBirdsSubmitted,
+                            femaleAvgWeight: viewingFarm.audit.femaleAvgWeight,
+                            maleAvgWeight: viewingFarm.audit.maleAvgWeight,
+                            uniformity: (viewingFarm.audit as any)?.uniformity || null,
                           }]
                         : [];
 
@@ -2505,7 +2492,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                               <Scale className="w-6 h-6 text-slate-600 mx-auto" />
                               <p className="text-xs text-slate-300 font-semibold">No batches submitted yet for this farm</p>
                               <p className="text-[11px] text-slate-500">
-                                Field operators (Supervisor or In-Charge) will populate this list upon completing weighing sessions.
+                                Field operators (In-Charge) will populate this list upon completing weighing sessions.
                               </p>
                             </div>
                           ) : (
@@ -2513,38 +2500,61 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
                               {farmSubmissions.map((sub: any, idx: number, arr: any[]) => {
                                 const dateStr = sub.submittedAt || sub.createdAt || sub.date;
                                 const formattedDate = dateStr ? formatDateTimeIST(dateStr) : 'Recorded';
-                                return (
-                                  <div 
-                                    key={sub.id || idx}
-                                    className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-2 hover:border-slate-700 transition"
-                                  >
-                                    <div className="flex items-start justify-between gap-2">
-                                      <div>
-                                        <div className="flex items-center gap-2">
-                                          <span className="font-black text-xs text-white">
-                                            Batch #{arr.length - idx}
-                                          </span>
-                                          <span className="text-[10px] font-mono text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                                            {sub.status || 'COMPLETED'}
-                                          </span>
+                                const submitterName = sub.submitterName || sub.user?.name || sub.submittedBy || sub.userName || 'Supervisor';
+                                const submitterCode = sub.submitterEmployeeCode || sub.user?.employeeCode || (sub.user?.username?.toUpperCase().startsWith('EMP') ? sub.user.username : '');
+                                  const weekDisplay = sub.flockAge || sub.week || (sub.metadata?.flockAge) || viewingFarm.ageWeek || 'W1';
+                                  const shedsDisplay = Array.isArray(sub.sheds) && sub.sheds.length > 0 
+                                    ? sub.sheds.map((s: any) => s.name).join(', ') 
+                                    : null;
+                                  return (
+                                    <div 
+                                      key={sub.id || idx}
+                                      className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-2 hover:border-slate-700 transition"
+                                    >
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div>
+                                          <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="font-black text-xs text-white">
+                                              Batch #{arr.length - idx}
+                                            </span>
+                                            <span className="text-[10px] font-mono text-purple-400 font-bold bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20">
+                                              Week: {weekDisplay}
+                                            </span>
+                                            <span className="text-[10px] font-mono text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                                              {sub.status === 'COMPLETED' ? '🔒 COMPLETED & LOCKED' : (sub.status || 'COMPLETED')}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400 flex-wrap">
+                                            <span className="flex items-center gap-1">
+                                              <Clock className="w-3 h-3 text-slate-500" />
+                                              <span>{formattedDate}</span>
+                                            </span>
+                                            <span>•</span>
+                                            <span>Farm: <strong className="text-slate-200">{sub.snapshotData?.farmName || sub.farmName || sub.metadata?.snapshotData?.farmName || sub.metadata?.farmName || sub.farm?.name || viewingFarm.name}</strong></span>
+                                            {shedsDisplay && (
+                                              <>
+                                                <span>•</span>
+                                                <span>Sheds: <strong className="text-slate-200">{shedsDisplay}</strong></span>
+                                              </>
+                                            )}
+                                            <span>•</span>
+                                            <span>Supervisor: <strong className="text-slate-200">{submitterName}{submitterCode ? ` (${submitterCode})` : ''}</strong></span>
+                                            {sub.id && (
+                                              <>
+                                                <span>•</span>
+                                                <span className="font-mono text-[10px] text-slate-500">Ref: {sub.id.substring(0, 8)}</span>
+                                              </>
+                                            )}
+                                          </div>
                                         </div>
-                                        <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400">
-                                          <Clock className="w-3 h-3 text-slate-500" />
-                                          <span>{formattedDate}</span>
-                                          <span>•</span>
-                                          <span>Farm: <strong className="text-slate-200">{sub.snapshotData?.farmName || sub.farmName || sub.metadata?.snapshotData?.farmName || sub.metadata?.farmName || sub.farm?.name || viewingFarm.name}</strong></span>
-                                          <span>•</span>
-                                          <span>Operator: <strong className="text-slate-200">{sub.submittedBy || sub.userName || 'Field Operator'}</strong></span>
-                                        </div>
-                                      </div>
 
-                                      <div className="text-right">
-                                        <span className="text-xs font-mono font-black text-white block">
-                                          {sub.totalBirdsSubmitted || sub.totalBirds || 0} birds
-                                        </span>
-                                        <span className="text-[10px] text-slate-400 font-medium">weighed</span>
+                                        <div className="text-right shrink-0">
+                                          <span className="text-xs font-mono font-black text-white block">
+                                            {sub.totalBirdsSubmitted || sub.totalBirds || 0} birds
+                                          </span>
+                                          <span className="text-[10px] text-slate-400 font-medium">weighed</span>
+                                        </div>
                                       </div>
-                                    </div>
 
                                     {/* Weights breakdown bar */}
                                     <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-900 text-center">
@@ -2587,17 +2597,7 @@ export const ManagerAdminDashboard: React.FC<ManagerAdminDashboardProps> = ({
             </div>
 
             {/* Footer Buttons */}
-            <div className="p-3 sm:p-4 border-t border-slate-800 flex items-center justify-between shrink-0 bg-slate-900">
-              <button
-                type="button"
-                onClick={() => {
-                  onSelectFarm(viewingFarm.id);
-                  setViewingFarm(null);
-                }}
-                className="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs px-4 py-2 rounded-xl transition cursor-pointer"
-              >
-                Set as Active Weighing Unit
-              </button>
+            <div className="p-3 sm:p-4 border-t border-slate-800 flex items-center justify-end shrink-0 bg-slate-900">
               <button
                 type="button"
                 onClick={() => {

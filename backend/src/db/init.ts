@@ -170,16 +170,68 @@ export async function syncDatabaseSchema(): Promise<{ success: boolean; message:
 
     console.log(`📊 [DB-INIT] Found ${inspection.existingTables.length} tables in PostgreSQL. Missing: ${inspection.missingTables.length}`);
 
-    // Ensure required schema columns (like Farm.isArchived and archivedAt) exist
+    // Ensure required schema columns exist
     try {
       try {
         await prisma.$executeRawUnsafe('ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
         await prisma.$executeRawUnsafe('ALTER TABLE "Farm" ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
+        await prisma.$executeRawUnsafe('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "employeeCode" TEXT');
+        await prisma.$executeRawUnsafe('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "phone" TEXT');
+        await prisma.$executeRawUnsafe('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "requiresPasswordChange" BOOLEAN DEFAULT false');
+        await prisma.$executeRawUnsafe('ALTER TABLE "Line" ADD COLUMN IF NOT EXISTS "gender" TEXT');
+        await prisma.$executeRawUnsafe('ALTER TABLE "SubmissionLine" ADD COLUMN IF NOT EXISTS "gender" TEXT');
       } catch {
         await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "isArchived" BOOLEAN NOT NULL DEFAULT false');
         await prisma.$executeRawUnsafe('ALTER TABLE farm ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3)');
+        await prisma.$executeRawUnsafe('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "employeeCode" TEXT');
+        await prisma.$executeRawUnsafe('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "phone" TEXT');
+        await prisma.$executeRawUnsafe('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "requiresPasswordChange" BOOLEAN DEFAULT false');
+        await prisma.$executeRawUnsafe('ALTER TABLE line ADD COLUMN IF NOT EXISTS "gender" TEXT');
+        await prisma.$executeRawUnsafe('ALTER TABLE submissionline ADD COLUMN IF NOT EXISTS "gender" TEXT');
       }
-      console.log('✅ [DB-INIT] Verified Farm.isArchived and Farm.archivedAt columns exist in PostgreSQL.');
+
+      // Safe Backfill: Ensure every existing user has a unique employeeCode
+      try {
+        const rawUsers = await prisma.$queryRaw<Array<{ id: string; username: string; employeeCode: string | null }>>`
+          SELECT id, username, "employeeCode" FROM "User" ORDER BY "createdAt" ASC
+        `;
+        let highestNum = 0;
+        const usedCodes = new Set<string>();
+
+        // Find existing assigned codes
+        for (const u of rawUsers) {
+          const code = u.employeeCode || (u.username.match(/^EMP\d+$/i) ? u.username.toUpperCase() : null);
+          if (code) {
+            const m = code.match(/^EMP(\d+)$/i);
+            if (m) {
+              const n = parseInt(m[1], 10);
+              if (n > highestNum) highestNum = n;
+            }
+          }
+        }
+
+        // Assign unique codes to any user lacking one or having duplicate
+        for (const u of rawUsers) {
+          let code = u.employeeCode ? u.employeeCode.trim().toUpperCase() : null;
+          if (!code && u.username.match(/^EMP\d+$/i)) {
+            code = u.username.toUpperCase();
+          }
+
+          if (!code || usedCodes.has(code)) {
+            highestNum++;
+            code = `EMP${String(highestNum).padStart(4, '0')}`;
+            await prisma.$executeRawUnsafe('UPDATE "User" SET "employeeCode" = $1 WHERE id = $2', code, u.id);
+          }
+          usedCodes.add(code);
+        }
+
+        // Enforce unique index
+        await prisma.$executeRawUnsafe('CREATE UNIQUE INDEX IF NOT EXISTS "User_employeeCode_key" ON "User"("employeeCode") WHERE "employeeCode" IS NOT NULL');
+      } catch (backfillErr: any) {
+        console.warn('⚠️ [DB-INIT] User employeeCode backfill notice:', backfillErr?.message || backfillErr);
+      }
+
+      console.log('✅ [DB-INIT] Verified all required schema columns and unique employeeCode index in PostgreSQL.');
     } catch (colErr: any) {
       console.warn('⚠️ [DB-INIT] Column migration notice:', colErr?.message || colErr);
     }

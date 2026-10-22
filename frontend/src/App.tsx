@@ -82,7 +82,8 @@ import {
   offlineQueue, 
   AppUser, 
   ActivityLogItem,
-  sanitizeErrorMessage
+  sanitizeErrorMessage,
+  formatEmployeeId
 } from './services/cloudSyncService';
 
 // Seasonal Target Benchmarks for all 24 Weeks
@@ -151,14 +152,21 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('home');
   const [showExitConfirm, setShowExitConfirm] = useState(false);
 
-  // Full-Screen Splash & Operations Loading State (2 Seconds)
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  // Full-Screen Splash & Operations Loading State (2 Seconds, Strictly Once per Session)
+  const [isInitialLoading, setIsInitialLoading] = useState(() => {
+    try {
+      return !sessionStorage.getItem('poultry_initial_loaded');
+    } catch {
+      return true;
+    }
+  });
   const [loadingMessage, setLoadingMessage] = useState('Calibrating Shed & Line Uniformity...');
   const [isExporting, setIsExporting] = useState(false);
   const [exportMessage, setExportMessage] = useState('Generating 13-Sheet Excel Workbook...');
 
-  // 2-Second Initial Splash Sequence
+  // 2-Second Initial Splash Sequence (Runs strictly ONCE per session)
   useEffect(() => {
+    if (!isInitialLoading) return;
     const t1 = setTimeout(() => {
       setLoadingMessage('Synchronizing 10 Sheds & Pen Records...');
     }, 650);
@@ -170,6 +178,9 @@ export default function App() {
     }, 1750);
     const t4 = setTimeout(() => {
       setIsInitialLoading(false);
+      try {
+        sessionStorage.setItem('poultry_initial_loaded', 'true');
+      } catch {}
     }, 2000);
 
     return () => {
@@ -178,7 +189,7 @@ export default function App() {
       clearTimeout(t3);
       clearTimeout(t4);
     };
-  }, []);
+  }, [isInitialLoading]);
 
   // Live System Clock
   const [liveTime, setLiveTime] = useState(new Date());
@@ -345,12 +356,11 @@ export default function App() {
       try {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === 'object' && parsed.isAuthenticated) {
-          const rawRole = parsed.userRole || parsed.role || 'Supervisor';
+          const rawRole = parsed.userRole || parsed.role || 'In-Charge';
           const normalizedRole: UserRole = 
             rawRole === 'Admin' ? 'Admin' :
             (rawRole === 'Manager' || rawRole === 'Farm Manager') ? 'Manager' :
-            (rawRole === 'In-Charge' || rawRole === 'Incharge') ? 'In-Charge' :
-            'Supervisor';
+            'In-Charge';
           const name = parsed.name || parsed.userName || 'Operator';
           return {
             id: parsed.id || 'u-user-1',
@@ -372,14 +382,14 @@ export default function App() {
 
   const currentUserRole: UserRole = useMemo(() => {
     if (!currentUser) return 'Supervisor';
-    const r = (currentUser.role || currentUser.userRole || '') as string;
-    if (r === 'Admin') return 'Admin';
-    if (r === 'Manager' || r === 'Farm Manager') return 'Manager';
-    if (r === 'In-Charge' || r === 'Incharge') return 'In-Charge';
+    const r = (currentUser.role || currentUser.userRole || '').toString().toUpperCase();
+    if (r === 'ADMIN') return 'Admin';
+    if (r === 'MANAGER' || r === 'FARM MANAGER') return 'Manager';
+    if (r === 'INCHARGE' || r === 'IN-CHARGE') return 'In-Charge';
     return 'Supervisor';
   }, [currentUser]);
 
-  const isFieldWorker = currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge';
+  const isFieldWorker = currentUserRole === 'Supervisor';
 
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -448,19 +458,12 @@ export default function App() {
     // Only return existing, active (non-deleted and non-archived) farms (Task 3)
     const activeFarms = (farmsList || []).filter(f => f && !f.isArchived && !(f as any).isDeleted);
 
-    if (currentUserRole === 'Admin') {
-      return activeFarms;
-    }
-    if (currentUserRole === 'Manager') {
-      const assignedIds = currentUser?.assignedFarms || [];
-      if (assignedIds.length > 0 && !assignedIds.includes('*')) {
-        return activeFarms.filter(f => assignedIds.includes(f.id) || assignedIds.includes(f.name));
-      }
+    if (currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'In-Charge') {
       return activeFarms;
     }
     const currentName = (currentUser?.userName || currentUser?.name || '').trim().toLowerCase();
     const currentUsername = (currentUser?.username || '').trim().toLowerCase();
-    const assignedIds = currentUser?.assignedFarms || [];
+    const assignedIds = (currentUser?.assignedFarms || []).concat(currentUser?.assignedFarmId ? [currentUser.assignedFarmId] : []);
 
     return activeFarms.filter(f => {
       // 1. Direct farm ID match from user's account assignedFarms
@@ -479,24 +482,36 @@ export default function App() {
     });
   }, [currentUserRole, currentUser, farmsList]);
 
-  // Auto-switch to assigned farm if current active farm is not in supervisor's accessible farms
+  // Supervisor Workspace Resolution:
+  // Never resolve a Supervisor's farm using a global activeFarmId or isActiveUnit flag.
+  // Always load the farm directly linked to the logged-in Supervisor's account.
   useEffect(() => {
-    if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
+    if (currentUserRole === 'Supervisor') {
       if (accessibleFarms.length > 0) {
-        const isCurrentActiveValid = accessibleFarms.some(f => f.id === activeFarmId);
-        if (!isCurrentActiveValid) {
-          switchFarm(accessibleFarms[0].id, true);
+        const assignedTarget = currentUser?.assignedFarmId || 
+          (currentUser?.assignedFarms?.find(af => af && af !== '*'));
+        
+        const targetFarm = (assignedTarget 
+          ? accessibleFarms.find(f => f.id === assignedTarget || f.name === assignedTarget)
+          : null) || accessibleFarms[0];
+
+        if (targetFarm && targetFarm.id !== activeFarmId) {
+          switchFarm(targetFarm.id, true);
         }
       }
     }
-  }, [accessibleFarms, activeFarmId, currentUserRole]);
+  }, [accessibleFarms, currentUser, currentUserRole]);
 
-  // Current active farm summary object (Strict isolation - returns null if supervisor has 0 assigned farms)
+  // Current active farm summary object (Direct resolution for Supervisor to their assigned farm)
   const currentActiveFarmSummary = useMemo(() => {
     let base: FarmSummary | null = null;
-    if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
+    if (currentUserRole === 'Supervisor') {
       if (accessibleFarms.length === 0) return null;
-      base = accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
+      const assignedTarget = currentUser?.assignedFarmId || 
+        (currentUser?.assignedFarms?.find(af => af && af !== '*'));
+      base = (assignedTarget 
+        ? accessibleFarms.find(f => f.id === assignedTarget || f.name === assignedTarget)
+        : null) || accessibleFarms[0] || null;
     } else {
       base = accessibleFarms.find(f => f.id === activeFarmId) || accessibleFarms[0] || null;
     }
@@ -531,11 +546,12 @@ export default function App() {
 
   // Login Success Handler (Stores JWT Token & User Profile, Auto-Routes by Role)
   const handleLoginSuccess = (user: AppUser, token: string) => {
-    const rawRole = user.role || user.userRole || 'Supervisor';
+    const rawRole = (user.role || user.userRole || 'Supervisor').toString().toUpperCase();
     const normalizedRole: UserRole = 
-      rawRole === 'Admin' ? 'Admin' :
-      rawRole === 'Manager' ? 'Manager' :
-      (rawRole === 'In-Charge' || rawRole === 'Incharge') ? 'In-Charge' : 'Supervisor';
+      rawRole === 'ADMIN' ? 'Admin' :
+      rawRole === 'MANAGER' ? 'Manager' :
+      (rawRole === 'INCHARGE' || rawRole === 'IN-CHARGE') ? 'In-Charge' :
+      'Supervisor';
 
     const authUser: AppUser = {
       ...user,
@@ -558,8 +574,8 @@ export default function App() {
   };
 
   const handleOpenNewFarmModal = () => {
-    if (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') {
-      showToast('Restricted: Manager or Admin permission required to create new farms.');
+    if (currentUserRole === 'Supervisor') {
+      showToast('Restricted: Manager or In-Charge permission required to create new farms.');
       return;
     }
     setShowNewFarmModal(true);
@@ -718,8 +734,9 @@ export default function App() {
         const weekDraftStr = localStorage.getItem(`poultry_draft_${activeId}_${activeWeek}`);
         if (weekDraftStr) {
           const parsedWeek = JSON.parse(weekDraftStr);
-          if (Array.isArray(parsedWeek?.sheds) && parsedWeek.sheds.length > 0) {
-            return parsedWeek.sheds;
+          const shedsArr = Array.isArray(parsedWeek?.sheds) ? parsedWeek.sheds : (Array.isArray(parsedWeek) ? parsedWeek : null);
+          if (shedsArr && shedsArr.length > 0) {
+            return shedsArr;
           }
         }
         const weekFarmStr = localStorage.getItem(`poultry_farm_${activeId}_${activeWeek}`);
@@ -767,7 +784,7 @@ export default function App() {
       case 'line_select':
         return 'part_select';
       case 'part_select':
-        return (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge') ? 'home' : 'shed_select';
+        return (currentUserRole === 'Supervisor') ? 'home' : 'shed_select';
       case 'shed_select':
         return 'home';
       case 'submit_page':
@@ -860,7 +877,7 @@ export default function App() {
     // Otherwise navigate smoothly without exit confirmation
     setShowExitConfirm(false);
 
-    if (targetScreen === 'setup' && (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge')) {
+    if (targetScreen === 'setup' && currentUserRole === 'Supervisor') {
       setCurrentScreen('home');
       currentScreenRef.current = 'home';
       showToast('Permission Denied: System configurations are restricted to Administrator and Manager.');
@@ -1034,7 +1051,7 @@ export default function App() {
 
   const navigateTo = (screen: ScreenType) => {
     // Permission guard (Req 1 & 6)
-    if (screen === 'setup' && (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge')) {
+    if (screen === 'setup' && currentUserRole === 'Supervisor') {
       showToast('Permission Denied: System configurations are restricted to Administrator and Manager.');
       return;
     }
@@ -1061,13 +1078,10 @@ export default function App() {
   const handleEnterShed = async (s: ShedData) => {
     const lock = shedLocks[s.id];
     const currentUserId = currentUser?.id;
-    const now = Date.now();
-    const lockTime = lock?.lastHeartbeatAt ? new Date(lock.lastHeartbeatAt).getTime() : 0;
     const isLockedByOther = Boolean(
       lock?.locked &&
       lock.lockedByUserId &&
-      lock.lockedByUserId !== currentUserId &&
-      (now - lockTime <= 120_000)
+      lock.lockedByUserId !== currentUserId
     );
 
     if (isLockedByOther) {
@@ -1087,6 +1101,8 @@ export default function App() {
       const res = await cloudApi.enterShed(s.id, {
         id: currentUser?.id,
         name: currentUser?.userName || currentUser?.name || currentUser?.username || 'Incharge',
+        week: ageWeek,
+        batchId: activeBatchId || undefined,
       });
 
       setActiveLockedShedId(s.id);
@@ -1317,14 +1333,15 @@ export default function App() {
     if (weekDraft) {
       try {
         const parsed = JSON.parse(weekDraft);
-        if (Array.isArray(parsed?.sheds) && parsed.sheds.length > 0) {
-          shedsRef.current = parsed.sheds;
-          setSheds(parsed.sheds);
-          if (parsed.sheds[0]) {
-            setSelectedShedId(parsed.sheds[0].id);
-            if (parsed.sheds[0].parts?.[0]) {
-              setSelectedPartId(parsed.sheds[0].parts[0].id);
-              if (parsed.sheds[0].parts[0].lines?.[0]) setSelectedLineId(parsed.sheds[0].parts[0].lines[0].id);
+        const shedsArr = Array.isArray(parsed?.sheds) ? parsed.sheds : (Array.isArray(parsed) ? parsed : null);
+        if (shedsArr && shedsArr.length > 0) {
+          shedsRef.current = shedsArr;
+          setSheds(shedsArr);
+          if (shedsArr[0]) {
+            setSelectedShedId(shedsArr[0].id);
+            if (shedsArr[0].parts?.[0]) {
+              setSelectedPartId(shedsArr[0].parts[0].id);
+              if (shedsArr[0].parts[0].lines?.[0]) setSelectedLineId(shedsArr[0].parts[0].lines[0].id);
             }
           }
         } else {
@@ -1492,6 +1509,8 @@ export default function App() {
     // 2. Set new active week
     setAgeWeek(cleanWeek);
     setShedLocks({});
+    setInputWeight('');
+    setInputWeightError(null);
     if (activeFarmId) {
       localStorage.setItem(`poultry_active_week_${activeFarmId}`, cleanWeek);
     }
@@ -1504,20 +1523,21 @@ export default function App() {
     if (localWeekDraft) {
       try {
         const parsed = JSON.parse(localWeekDraft);
-        if (Array.isArray(parsed?.sheds) && parsed.sheds.length > 0) {
-          shedsRef.current = parsed.sheds;
-          setSheds(parsed.sheds);
+        const shedsArr = Array.isArray(parsed?.sheds) ? parsed.sheds : (Array.isArray(parsed) ? parsed : null);
+        if (shedsArr && shedsArr.length > 0) {
+          shedsRef.current = shedsArr;
+          setSheds(shedsArr);
           setFarmStatus(localWeekStatus || 'DRAFT');
           if (localWeekAudit) {
             try { setFarmAudit(JSON.parse(localWeekAudit)); } catch { setFarmAudit(null); }
           } else {
             setFarmAudit(null);
           }
-          if (parsed.sheds[0]) {
-            setSelectedShedId(parsed.sheds[0].id);
-            if (parsed.sheds[0].parts?.[0]) {
-              setSelectedPartId(parsed.sheds[0].parts[0].id);
-              if (parsed.sheds[0].parts[0].lines?.[0]) setSelectedLineId(parsed.sheds[0].parts[0].lines[0].id);
+          if (shedsArr[0]) {
+            setSelectedShedId(shedsArr[0].id);
+            if (shedsArr[0].parts?.[0]) {
+              setSelectedPartId(shedsArr[0].parts[0].id);
+              if (shedsArr[0].parts[0].lines?.[0]) setSelectedLineId(shedsArr[0].parts[0].lines[0].id);
             }
           }
           showToast(`Switched to ${cleanWeek} (Draft restored)`);
@@ -1532,7 +1552,7 @@ export default function App() {
         setSyncStatus('refreshing');
         const cloudFarm = await cloudApi.getFarmDetails(activeFarmId, cleanWeek);
         if (cloudFarm && Array.isArray(cloudFarm.sheds) && cloudFarm.sheds.length > 0) {
-          const baseStructuralSheds = createEmptyWeeklySheds(shedsRef.current.length > 0 ? shedsRef.current : sheds);
+          const baseStructuralSheds = createEmptyWeeklySheds(shedsRef.current.length > 0 ? shedsRef.current : sheds, cleanWeek);
           const merged = mergeServerShedsWithLocalDraft(cloudFarm.sheds, baseStructuralSheds, activeFarmId, cleanWeek);
           shedsRef.current = merged;
           setSheds(merged);
@@ -1552,7 +1572,7 @@ export default function App() {
 
     // 5. Initialize clean empty sheds using base structure (all sheds, parts, lines with weights: [])
     const baseSheds = shedsRef.current.length > 0 ? shedsRef.current : sheds;
-    const emptyWeeklySheds = createEmptyWeeklySheds(baseSheds);
+    const emptyWeeklySheds = createEmptyWeeklySheds(baseSheds, cleanWeek);
     shedsRef.current = emptyWeeklySheds;
     setSheds(emptyWeeklySheds);
     setFarmStatus('DRAFT');
@@ -1770,26 +1790,65 @@ export default function App() {
     return () => clearInterval(pollInterval);
   }, [activeFarmId, ageWeek, lastServerUpdatedAt, inputWeight, syncStatus]);
 
-  // Real-Time Cross-Phone Shed Save & Lock Polling (Every 1.5s)
+  // Real-Time Cross-Phone Shed Save & Lock Polling (Every 800ms)
   const liveStatePollRef = useRef<any>(null);
   useEffect(() => {
     if (!activeFarmId || !ageWeek) return;
     const poll = async () => {
-      // Never interrupt active weighing or input
+      // Do not interrupt while actively entering bird weights on weigh_pad
       const activeScreen = currentScreenRef.current;
-      if (activeScreen === 'weigh_pad' || activeScreen === 'part_select' || activeScreen === 'line_select') return;
+      if (activeScreen === 'weigh_pad') return;
       try {
-        const data = await cloudApi.getLiveState(activeFarmId, ageWeek);
+        const data = await cloudApi.getLiveState(activeFarmId, ageWeek, activeBatchId || undefined);
         if (data?.locks) {
           setShedLocks(prev => ({ ...prev, ...data.locks }));
+
+          // Automatically sync saved shed weights across all in-charges in real time!
+          let hasShedChanges = false;
+          const currentSheds = shedsRef.current || [];
+          const updatedSheds = currentSheds.map(s => {
+            const lk = data.locks[s.id];
+            if (!lk) return s;
+            if (lk.savedStatus === 'SAVED' && lk.weights && Array.isArray(lk.weights)) {
+              const currentTotal = (s.parts || []).flatMap(p => (p.lines || []).flatMap(l => l.weights || [])).length;
+              if (currentTotal !== lk.totalBirdCount || (s as any).savedStatus !== 'SAVED') {
+                hasShedChanges = true;
+                const weightsMap = new Map<string, number[]>(
+                  lk.weights.map((item: any) => [String(item.lineId), item.weights || []])
+                );
+                return {
+                  ...s,
+                  savedStatus: 'SAVED',
+                  savedByUserName: lk.savedByUserName,
+                  totalBirdCount: lk.totalBirdCount,
+                  parts: (s.parts || []).map(p => ({
+                    ...p,
+                    lines: (p.lines || []).map(l => ({
+                      ...l,
+                      weights: weightsMap.has(String(l.id)) ? weightsMap.get(String(l.id))! : (l.weights || [])
+                    }))
+                  }))
+                };
+              }
+            }
+            return s;
+          });
+
+          if (hasShedChanges) {
+            shedsRef.current = updatedSheds;
+            setSheds(updatedSheds);
+            try {
+              localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: updatedSheds, updatedAt: Date.now() }));
+            } catch {}
+          }
         }
       } catch {}
     };
-    liveStatePollRef.current = setInterval(poll, 1500);
+    liveStatePollRef.current = setInterval(poll, 800);
     return () => {
       if (liveStatePollRef.current) clearInterval(liveStatePollRef.current);
     };
-  }, [activeFarmId, ageWeek, farmStatus]);
+  }, [activeFarmId, ageWeek, activeBatchId, farmStatus]);
 
   // Manual Pull-To-Refresh from Cloud
   const handleManualRefresh = async () => {
@@ -1995,7 +2054,7 @@ export default function App() {
       }));
       shedsRef.current = next;
       try {
-        localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify(next));
+        localStorage.setItem(`poultry_draft_${activeFarmId}_${ageWeek}`, JSON.stringify({ sheds: next, updatedAt: Date.now() }));
       } catch {}
       return next;
     });
@@ -2381,6 +2440,7 @@ export default function App() {
 
   // Helper to transition session to editable DRAFT state
   const markSessionAsDraft = useCallback((_reason?: string) => {
+    if (farmStatus === 'COMPLETED') return;
     const now = new Date();
     const draftTimestamp = `Date(${formatDateDMY(now)}) - Time(${formatTime12H(now)})`;
     const editorName = currentUser?.userName || currentUser?.name || 'Suresh Kumar';
@@ -2636,8 +2696,17 @@ export default function App() {
       localStorage.setItem(`poultry_status_${activeFarmId}_${nextWeekStr}`, 'DRAFT');
 
       // Guarantee 100% empty state for next week: retain sheds/parts/lines layout, reset weights to [] and status to PENDING
-      const nextWeekCleanSheds = createEmptyWeeklySheds(shedsRef.current);
+      const nextWeekCleanSheds = createEmptyWeeklySheds(shedsRef.current, nextWeekStr);
       localStorage.setItem(`poultry_draft_${activeFarmId}_${nextWeekStr}`, JSON.stringify({ sheds: nextWeekCleanSheds, updatedAt: Date.now() }));
+
+      // Cleanly transition active week state to the fresh next week
+      setAgeWeek(nextWeekStr);
+      shedsRef.current = nextWeekCleanSheds;
+      setSheds(nextWeekCleanSheds);
+      setFarmStatus('DRAFT');
+      setShedLocks({});
+      setInputWeight('');
+      setInputWeightError(null);
 
       showToast(`🎉 Overall Farm Final Submission Complete! Week ${ageWeek} finalized. Week ${nextWeekStr} unlocked.`);
       setShowOverallSubmitConfirmModal(false);
@@ -2710,12 +2779,10 @@ export default function App() {
         return;
       }
 
-      // Guard: Confirmation if editing a previously completed record
+      // Guard: Strict one-time submission lock
       if (farmStatus === 'COMPLETED') {
-        const confirmReopen = window.confirm(
-          'This farm record was COMPLETED & SUBMITTED.\n\nAdding or modifying weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
-        );
-        if (!confirmReopen) return;
+        showToast("This week's body-weight submission has already been completed and locked.");
+        return;
       }
 
       // 1. Synchronously get latest state from shedsRef to prevent rapid-click race conditions
@@ -2763,10 +2830,8 @@ export default function App() {
     if (idx < 0 || idx >= currentLine.weights.length) return;
 
     if (farmStatus === 'COMPLETED') {
-      const confirmReopen = window.confirm(
-        'This farm record was COMPLETED & SUBMITTED.\n\nDeleting weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
-      );
-      if (!confirmReopen) return;
+      showToast("This week's body-weight submission has already been completed and locked.");
+      return;
     }
 
     // 1. Synchronously get latest state from shedsRef to prevent rapid-click race conditions
@@ -2793,10 +2858,8 @@ export default function App() {
     if (!currentShed || !currentPart || !currentLine || currentLine.weights.length === 0) return;
 
     if (farmStatus === 'COMPLETED') {
-      const confirmReopen = window.confirm(
-        'This farm record was COMPLETED & SUBMITTED.\n\nClearing weights will mark the session as DRAFT until all lines are weighed and re-submitted.\n\nDo you want to continue?'
-      );
-      if (!confirmReopen) return;
+      showToast("This week's body-weight submission has already been completed and locked.");
+      return;
     }
 
     if (window.confirm(`Clear all ${currentLine.weights.length} weights in ${currentLine.name}?`)) {
@@ -2816,6 +2879,11 @@ export default function App() {
   // --- FINAL SUBMISSION: COMPLETE FARM WEIGHING (status: 'COMPLETED') ---
   const handleCompleteFarmSubmission = async () => {
     if (isSubmittingBatch) return;
+
+    if (farmStatus === 'COMPLETED') {
+      showToast("This week's body-weight submission has already been completed and locked.");
+      return;
+    }
 
     // 1. Full Farm Completion Check: Block submission if any line has < 10 weights
     if (!completionStats.isFarm100PercentWeighed || completionStats.incompleteLines.length > 0) {
@@ -2842,13 +2910,17 @@ export default function App() {
       ), 0
     );
 
-    // 3. Calculate Female & Male Act Body Weights across active farm
+    // 3. Calculate Female & Male Act Body Weights across active farm using line-level gender
     const femaleWeights = sheds
-      .filter(s => s.type === 'Female')
-      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights || [])));
+      .flatMap(s => s.parts.flatMap(p => p.lines.filter(l => {
+        const g = (l.gender || (s.type === 'Male' ? 'MALE' : 'FEMALE')).toUpperCase();
+        return g === 'FEMALE';
+      }).flatMap(l => l.weights || [])));
     const maleWeights = sheds
-      .filter(s => s.type === 'Male')
-      .flatMap(s => s.parts.flatMap(p => p.lines.flatMap(l => l.weights || [])));
+      .flatMap(s => s.parts.flatMap(p => p.lines.filter(l => {
+        const g = (l.gender || (s.type === 'Male' ? 'MALE' : 'FEMALE')).toUpperCase();
+        return g === 'MALE';
+      }).flatMap(l => l.weights || [])));
     const femaleAvg = femaleWeights.length > 0 
       ? Math.round(femaleWeights.reduce((a, b) => a + b, 0) / femaleWeights.length) 
       : 0;
@@ -2966,6 +3038,16 @@ export default function App() {
       }
     } catch (err: any) {
       console.warn('Batch upload failed:', err);
+      if (err?.status === 409 || err?.locked || err?.message?.includes('already been completed and locked')) {
+        setFarmStatus('COMPLETED');
+        if (activeFarmId) {
+          localStorage.setItem(`poultry_status_${activeFarmId}_${ageWeek}`, 'COMPLETED');
+          localStorage.setItem(`poultry_status_${activeFarmId}`, 'COMPLETED');
+        }
+        setSyncStatus('synced');
+        showToast("This week's body-weight submission has already been completed and locked.");
+        return;
+      }
       // FAILED UPLOAD: Preserve draft locally! DO NOT mark completed!
       setFarmStatus('UPLOAD_FAILED');
       localStorage.setItem(`poultry_status_${activeFarmId}`, 'UPLOAD_FAILED');
@@ -3260,7 +3342,13 @@ export default function App() {
 
   const executeDeleteLine = (lineId: number | string) => {
     if (!activeShed || !activePart) return;
-    const remaining = activePart.lines.filter(l => String(l.id) !== String(lineId));
+    const rawRemaining = activePart.lines.filter(l => String(l.id) !== String(lineId));
+    // Auto-reindex lines sequentially so numbering starts from Line 1 without gaps
+    const remaining = rawRemaining.map((line, idx) => ({
+      ...line,
+      name: `Line ${idx + 1}`,
+      lineNumber: idx + 1,
+    }));
     setSheds(prev => prev.map(s => {
       if (s.id !== activeShed.id) return s;
       return {
@@ -3520,7 +3608,7 @@ export default function App() {
         <div className={`w-full min-h-screen bg-slate-50 flex flex-col relative pb-8 transition-all duration-300 overflow-x-hidden ${
           !isAuthenticated
             ? 'w-full max-w-md mx-auto px-4 bg-transparent'
-            : (currentUserRole === 'Supervisor' || currentUserRole === 'In-Charge')
+            : (currentUserRole === 'Supervisor')
               ? 'max-w-md mx-auto px-2 sm:px-3 shadow-2xl border-x border-slate-200'
               : 'max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 border-x border-slate-200/80 shadow-xl'
         }`}>
@@ -3533,8 +3621,8 @@ export default function App() {
         {/* 1. DUAL DASHBOARD ARCHITECTURE (Req 1 & 5)                */}
         {/* ========================================================= */}
         {currentScreen === 'home' && (
-          currentUserRole === 'Admin' || currentUserRole === 'Manager' ? (
-            // Dashboard B: Executive Overview (Manager & Admin)
+          currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'In-Charge' ? (
+            // Dashboard B: Executive Overview (Manager & In-Charge)
             <ManagerAdminDashboard
               currentUser={currentUser}
               farms={farmsList}
@@ -3596,6 +3684,7 @@ export default function App() {
                 completionStats={completionStats}
                 farmStatus={farmStatus}
                 formattedDateTime={formattedDateTime}
+                onSilentReload={handleManualRefresh}
                 onSelectFarm={(farmId) => {
                   switchFarm(farmId);
                 }}
@@ -3828,9 +3917,7 @@ export default function App() {
                   };
 
                   const currentUserId = currentUser?.id;
-                  const now = Date.now();
-                  const lockTime = lock?.lastHeartbeatAt ? new Date(lock.lastHeartbeatAt).getTime() : 0;
-                  const isLockActive = Boolean(lock?.locked && lock.lockedByUserId && (now - lockTime <= 120_000));
+                  const isLockActive = Boolean(lock?.locked && lock.lockedByUserId);
                   const isLockedByMe = Boolean(isLockActive && lock.lockedByUserId === currentUserId);
                   const isLockedByOther = Boolean(isLockActive && lock.lockedByUserId !== currentUserId);
 
@@ -3860,34 +3947,6 @@ export default function App() {
                             <span className={`font-black text-base truncate transition ${isLockedByOther ? 'text-slate-700' : 'text-slate-900 hover:text-emerald-600'}`}>
                               {s.name}
                             </span>
-                            {!isLockedByOther && (
-                              <div className="flex items-center gap-0.5 ml-1 shrink-0" onClick={e => e.stopPropagation()}>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleStartEditShed(s);
-                                  }}
-                                  className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md transition cursor-pointer"
-                                  title="Rename Shed"
-                                >
-                                  <Edit3 className="w-3.5 h-3.5" />
-                                </button>
-                                {sheds.length > 1 && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeleteShed(s.id, e);
-                                    }}
-                                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
-                                    title="Delete Shed"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
-                              </div>
-                            )}
                           </div>
 
                           {/* Live Presence / Lock / Save Badge (Exact required format) */}
@@ -3923,7 +3982,7 @@ export default function App() {
                         {isLockedByOther && (
                           <div className="text-[11px] text-amber-800 bg-amber-100/60 px-2.5 py-1 rounded-lg border border-amber-200/80 mb-1 flex items-center justify-between gap-1">
                             <span>🔒 In use by <strong>{lock.lockedByUserName}</strong></span>
-                            {(currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'Supervisor') && (
+                            {(currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'In-Charge') && (
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -3996,12 +4055,6 @@ export default function App() {
                 })
               )}
 
-              <button
-                onClick={() => setShowAddShedModal(true)}
-                className="col-span-full py-3.5 bg-white hover:bg-slate-50 text-emerald-700 rounded-2xl text-xs font-bold flex items-center justify-center gap-1.5 border border-dashed border-emerald-300 transition cursor-pointer shadow-xs"
-              >
-                <Plus className="w-4 h-4" /> Add New Shed
-              </button>
             </div>
 
             {/* STAGE 2 & 3: LIVE TOTAL FARM PROGRESS BANNER & MASTER "SUBMIT OVERALL FARM" BUTTON (PAGE BOTTOM) */}
@@ -4552,7 +4605,7 @@ export default function App() {
                         }`}
                         title="Set Line to Female"
                       >
-                        ♀ F ({stdWeightFemale}g)
+                        ♀ F
                       </button>
                       <button
                         type="button"
@@ -4566,7 +4619,7 @@ export default function App() {
                         }`}
                         title="Set Line to Male"
                       >
-                        ♂ M ({stdWeightMale}g)
+                        ♂ M
                       </button>
                     </div>
                   </div>
@@ -4576,9 +4629,11 @@ export default function App() {
                   <span className="text-xs font-mono font-black px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
                     {activeLine.weights.length} Birds Entered
                   </span>
-                  <span className="text-[10px] font-mono font-bold px-2 py-1 rounded-lg bg-slate-100 text-slate-700 border border-slate-200">
-                    STD: {activeStd}g
-                  </span>
+                  {!isFieldWorker && (
+                    <span className="text-[10px] font-mono font-bold px-2 py-1 rounded-lg bg-slate-100 text-slate-700 border border-slate-200">
+                      STD: {activeStd}g
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -4770,6 +4825,12 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-medium">
                     <tr className="hover:bg-slate-50/70 transition">
+                      <td className="py-2 px-3 font-semibold text-slate-600">Sample Count (Birds Weighed)</td>
+                      <td className="py-2 px-3 font-mono font-bold text-pink-600">{consolidated.fStats.count} birds</td>
+                      <td className="py-2 px-3 font-mono font-bold text-blue-600">{consolidated.mStats.count} birds</td>
+                      <td className="py-2 px-3 text-[11px] text-slate-500">Sampled bird count</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/70 transition">
                       <td className="py-2 px-3 font-semibold text-slate-600">Standard Target Weight</td>
                       <td className="py-2 px-3 font-mono font-bold text-pink-600">{stdWeightFemale}g</td>
                       <td className="py-2 px-3 font-mono font-bold text-blue-600">{stdWeightMale}g</td>
@@ -4777,43 +4838,63 @@ export default function App() {
                     </tr>
                     <tr className="hover:bg-slate-50/70 transition bg-emerald-50/20">
                       <td className="py-2 px-3 font-semibold text-slate-800">Actual Average Body Weight</td>
-                      <td className="py-2 px-3 font-mono font-black text-emerald-600 text-sm">{consolidated.fStats.avg}g</td>
-                      <td className="py-2 px-3 font-mono font-black text-emerald-600 text-sm">{consolidated.mStats.avg}g</td>
+                      <td className="py-2 px-3 font-mono font-black text-emerald-600 text-sm">
+                        {consolidated.fStats.count > 0 ? `${consolidated.fStats.avg}g` : '—'}
+                      </td>
+                      <td className="py-2 px-3 font-mono font-black text-emerald-600 text-sm">
+                        {consolidated.mStats.count > 0 ? `${consolidated.mStats.avg}g` : '—'}
+                      </td>
                       <td className="py-2 px-3 text-[11px] font-bold text-emerald-700">Field Weighed Act WT</td>
                     </tr>
                     <tr className="hover:bg-slate-50/70 transition">
                       <td className="py-2 px-3 font-semibold text-slate-600">Difference vs Target</td>
-                      <td className={`py-2 px-3 font-mono font-bold ${consolidated.fStats.diff >= 0 ? 'text-emerald-600' : 'text-amber-600'}`}>
-                        {consolidated.fStats.diff > 0 ? `+${consolidated.fStats.diff}` : consolidated.fStats.diff}g
+                      <td className={`py-2 px-3 font-mono font-bold ${consolidated.fStats.count > 0 ? (consolidated.fStats.diff >= 0 ? 'text-emerald-600' : 'text-amber-600') : 'text-slate-400'}`}>
+                        {consolidated.fStats.count > 0 ? (consolidated.fStats.diff > 0 ? `+${consolidated.fStats.diff}g` : `${consolidated.fStats.diff}g`) : '—'}
                       </td>
-                      <td className={`py-2 px-3 font-mono font-bold ${consolidated.mStats.diff >= 0 ? 'text-emerald-600' : 'text-amber-600'}`}>
-                        {consolidated.mStats.diff > 0 ? `+${consolidated.mStats.diff}` : consolidated.mStats.diff}g
+                      <td className={`py-2 px-3 font-mono font-bold ${consolidated.mStats.count > 0 ? (consolidated.mStats.diff >= 0 ? 'text-emerald-600' : 'text-amber-600') : 'text-slate-400'}`}>
+                        {consolidated.mStats.count > 0 ? (consolidated.mStats.diff > 0 ? `+${consolidated.mStats.diff}g` : `${consolidated.mStats.diff}g`) : '—'}
                       </td>
                       <td className="py-2 px-3 text-[11px] text-slate-500">Variance from standard</td>
                     </tr>
                     <tr className="hover:bg-slate-50/70 transition">
                       <td className="py-2 px-3 font-semibold text-slate-600">Uniformity (S% ±10%)</td>
-                      <td className="py-2 px-3 font-mono font-black text-amber-600">{consolidated.fStats.sPct}%</td>
-                      <td className="py-2 px-3 font-mono font-black text-amber-600">{consolidated.mStats.sPct}%</td>
+                      <td className="py-2 px-3 font-mono font-black text-amber-600">
+                        {consolidated.fStats.count > 0 ? `${consolidated.fStats.sPct}%` : '—'}
+                      </td>
+                      <td className="py-2 px-3 font-mono font-black text-amber-600">
+                        {consolidated.mStats.count > 0 ? `${consolidated.mStats.sPct}%` : '—'}
+                      </td>
                       <td className="py-2 px-3">
-                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
-                          consolidated.fStats.sPct >= 80 ? 'bg-emerald-100 text-emerald-800' :
-                          consolidated.fStats.sPct >= 70 ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'
-                        }`}>
-                          {consolidated.fStats.sPct >= 80 ? 'EXCELLENT' : consolidated.fStats.sPct >= 70 ? 'ACCEPTABLE' : 'MODERATE'}
-                        </span>
+                        {consolidated.fStats.count > 0 ? (
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                            consolidated.fStats.sPct >= 80 ? 'bg-emerald-100 text-emerald-800' :
+                            consolidated.fStats.sPct >= 70 ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {consolidated.fStats.sPct >= 80 ? 'EXCELLENT' : consolidated.fStats.sPct >= 70 ? 'ACCEPTABLE' : 'MODERATE'}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">—</span>
+                        )}
                       </td>
                     </tr>
                     <tr className="hover:bg-slate-50/70 transition">
                       <td className="py-2 px-3 font-semibold text-slate-600">CV % (F-Factor)</td>
-                      <td className="py-2 px-3 font-mono font-bold text-sky-600">{consolidated.fStats.cv}%</td>
-                      <td className="py-2 px-3 font-mono font-bold text-sky-600">{consolidated.mStats.cv}%</td>
+                      <td className="py-2 px-3 font-mono font-bold text-sky-600">
+                        {consolidated.fStats.count > 0 ? `${consolidated.fStats.cv}%` : '—'}
+                      </td>
+                      <td className="py-2 px-3 font-mono font-bold text-sky-600">
+                        {consolidated.mStats.count > 0 ? `${consolidated.mStats.cv}%` : '—'}
+                      </td>
                       <td className="py-2 px-3 text-[11px] text-slate-500">Coefficient of variation</td>
                     </tr>
                     <tr className="hover:bg-slate-50/70 transition">
                       <td className="py-2 px-3 font-semibold text-slate-600">Weight Range (Min – Max)</td>
-                      <td className="py-2 px-3 font-mono text-slate-700">{consolidated.fStats.min}g – {consolidated.fStats.max}g</td>
-                      <td className="py-2 px-3 font-mono text-slate-700">{consolidated.mStats.min}g – {consolidated.mStats.max}g</td>
+                      <td className="py-2 px-3 font-mono text-slate-700">
+                        {consolidated.fStats.count > 0 ? `${consolidated.fStats.min}g – ${consolidated.fStats.max}g` : '—'}
+                      </td>
+                      <td className="py-2 px-3 font-mono text-slate-700">
+                        {consolidated.mStats.count > 0 ? `${consolidated.mStats.min}g – ${consolidated.mStats.max}g` : '—'}
+                      </td>
                       <td className="py-2 px-3 text-[11px] text-slate-500">Min to max spread</td>
                     </tr>
                   </tbody>
@@ -4846,12 +4927,6 @@ export default function App() {
               >
                 <ArrowLeft className="w-4 h-4"/> Home
               </button>
-              <button
-                onClick={() => setShowAddShedModal(true)}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 active:scale-95 cursor-pointer shadow-xs"
-              >
-                <Plus className="w-3.5 h-3.5"/> Add Shed
-              </button>
             </div>
 
             <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 px-1 mb-2">
@@ -4869,23 +4944,6 @@ export default function App() {
                       }`}>
                         {s.type}
                       </span>
-                    </div>
-
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handleStartEditShed(s)}
-                        className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg text-xs cursor-pointer"
-                      >
-                        <Edit2 className="w-3.5 h-3.5"/>
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          handleDeleteShed(s.id, e);
-                        }}
-                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5"/>
-                      </button>
                     </div>
                   </div>
 
@@ -5280,12 +5338,12 @@ export default function App() {
               {currentUser ? (
                 <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-3">
                   <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-                    <div className={`w-12 h-12 rounded-2xl text-white flex items-center justify-center font-black text-lg shadow-md ${
+                    <div className={`w-12 h-12 rounded-2xl text-white flex items-center justify-center shadow-md ${
                       currentUserRole === 'Admin' ? 'bg-purple-600 shadow-purple-600/30' :
                       currentUserRole === 'Manager' ? 'bg-sky-600 shadow-sky-600/30' :
                       'bg-emerald-600 shadow-emerald-600/30'
                     }`}>
-                      {(currentUser.userName || currentUser.name).charAt(0).toUpperCase()}
+                      <User className="w-6 h-6 text-white" />
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center gap-1.5">
@@ -5298,11 +5356,15 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-1.5 mt-1">
                         <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
-                          currentUserRole === 'Admin' ? 'bg-purple-50 text-purple-700 border-purple-200' :
-                          currentUserRole === 'Manager' ? 'bg-sky-50 text-sky-700 border-sky-200' :
+                          currentUserRole === 'Admin' || currentUserRole === 'Manager' ? 'bg-sky-50 text-sky-700 border-sky-200' :
+                          currentUserRole === 'In-Charge' ? 'bg-teal-50 text-teal-700 border-teal-200' :
                           'bg-emerald-50 text-emerald-700 border-emerald-200'
                         }`}>
-                          {currentUserRole}
+                          {currentUserRole === 'In-Charge' ? 'In-Charge • Profile' :
+                           currentUserRole === 'Supervisor' ? 'Supervisor • Profile' : 'Manager • Profile'}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-mono font-bold">
+                          ID: {formatEmployeeId(currentUser)}
                         </span>
                       </div>
                     </div>
@@ -5332,9 +5394,14 @@ export default function App() {
                           🔵 Operational Oversight: Add/edit flock data, sheds, lines, and submit batches. Read-only cloud endpoint.
                         </p>
                       )}
+                      {currentUserRole === 'In-Charge' && (
+                        <p className="text-teal-800 font-semibold">
+                          🟢 In-Charge Oversight: Manager Dashboard access, manage farms, batches, assign Supervisors, and download reports.
+                        </p>
+                      )}
                       {currentUserRole === 'Supervisor' && (
                         <p className="text-emerald-800 font-semibold">
-                          🟢 Field Operations: Enter bird weights, stage drafts, edit lines, submit completed batches. Read-only cloud link.
+                          🟢 Field Operations: Enter bird weights, manage parts & lines, save sheds with sub-second sync, and submit overall farm.
                         </p>
                       )}
                     </div>
@@ -5951,9 +6018,9 @@ export default function App() {
               {/* Farm Switcher within Audit Modal */}
               <div>
                 <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">
-                  {['Supervisor', 'In-Charge', 'Incharge'].includes(currentUserRole) ? 'Assigned Farm Unit' : 'Audit Target Farm (Switch Location)'}
+                  {currentUserRole === 'Supervisor' ? 'Assigned Farm Unit' : 'Audit Target Farm (Switch Location)'}
                 </label>
-                {['Supervisor', 'In-Charge', 'Incharge'].includes(currentUserRole) ? (
+                {currentUserRole === 'Supervisor' ? (
                   <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-100 border border-slate-200 rounded-xl">
                     <div className="flex items-center gap-2">
                       <Lock className="w-3.5 h-3.5 text-slate-500" />
@@ -6268,7 +6335,7 @@ export default function App() {
                   Choose Another Shed
                 </button>
 
-                {(currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'Supervisor') && (
+                {(currentUserRole === 'Admin' || currentUserRole === 'Manager' || currentUserRole === 'In-Charge') && (
                   <button
                     type="button"
                     onClick={() => handleForceUnlock(collisionModalData.shedId, collisionModalData.shedName)}

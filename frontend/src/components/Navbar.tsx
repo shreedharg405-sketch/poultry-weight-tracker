@@ -229,7 +229,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             {/* API Status Badge */}
             <div
-              title={isBackendConnected ? 'Connected to Render / Express API' : 'Operating in offline local cache mode'}
+              title={isBackendConnected ? 'Connected to Cloudflare D1 Database' : 'Operating in offline local cache mode'}
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${
                 isBackendConnected
                   ? isLight 

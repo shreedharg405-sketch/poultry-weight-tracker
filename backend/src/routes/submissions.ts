@@ -165,6 +165,76 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
     });
   }
 
+  // 2b. Enforce One-Time Submission System: Check if this week's scope is already completed & locked
+  const effectiveScopeWeek = (flockAge || 'W18').trim().toUpperCase();
+  if (isPostgresConfigured()) {
+    try {
+      const existingCompleted = await prisma.submission.findFirst({
+        where: {
+          farmId,
+          flockAge: { equals: effectiveScopeWeek, mode: 'insensitive' },
+          status: 'COMPLETED',
+        },
+        include: {
+          farm: { select: { name: true } },
+          user: { select: { id: true, name: true, username: true, role: true, employeeCode: true } },
+          sheds: {
+            orderBy: { order: 'asc' },
+            include: {
+              parts: {
+                orderBy: { order: 'asc' },
+                include: { lines: true }
+              }
+            }
+          }
+        }
+      });
+
+      if (existingCompleted) {
+        if (idempotencyKey && existingCompleted.idempotencyKey === idempotencyKey.trim()) {
+          return res.status(200).json({
+            success: true,
+            status: 'COMPLETED',
+            message: 'Batch weighing already committed.',
+            submission: existingCompleted,
+            isIdempotentReplay: true,
+          });
+        }
+        return res.status(409).json({
+          error: "This week's body-weight submission has already been completed and locked.",
+          message: "This week's body-weight submission has already been completed and locked.",
+          locked: true,
+          submission: existingCompleted,
+        });
+      }
+    } catch (checkErr: any) {
+      console.warn('⚠️ [DB] Existing completed submission check warning:', checkErr?.message || checkErr);
+    }
+  } else {
+    const memCompleted = memorySubmissions.find(s => 
+      s.farmId === farmId && 
+      s.flockAge?.trim().toUpperCase() === effectiveScopeWeek && 
+      s.status === 'COMPLETED'
+    );
+    if (memCompleted) {
+      if (idempotencyKey && memCompleted.idempotencyKey === idempotencyKey.trim()) {
+        return res.status(200).json({
+          success: true,
+          status: 'COMPLETED',
+          message: 'Batch weighing already committed.',
+          submission: memCompleted,
+          isIdempotentReplay: true,
+        });
+      }
+      return res.status(409).json({
+        error: "This week's body-weight submission has already been completed and locked.",
+        message: "This week's body-weight submission has already been completed and locked.",
+        locked: true,
+        submission: memCompleted,
+      });
+    }
+  }
+
   // 3. Completeness & Hierarchy Validation: Query real configured sheds for this farm
   let configuredSheds: any[] = [];
   if (isPostgresConfigured()) {
@@ -275,6 +345,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
 
       for (const line of lines) {
         const lineName = line.name || 'Line';
+        const isLineMale = (line.gender && String(line.gender).toUpperCase() === 'MALE') || (!line.gender && shed.type === 'Male');
         const weights = Array.isArray(line.weights) ? line.weights : [];
 
         // Poultry standard: A line must have at least 10 valid bird weights to be complete
@@ -294,7 +365,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
               });
             }
             allWeights.push(num);
-            if (isMale) {
+            if (isLineMale) {
               maleWeights.push(num);
             } else {
               femaleWeights.push(num);
@@ -392,12 +463,14 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
               const lineAvg = lineWeights.length > 0
                 ? Math.round(lineWeights.reduce((a, b) => a + b, 0) / lineWeights.length)
                 : 0;
+              const isLineMale = (l.gender && String(l.gender).toUpperCase() === 'MALE') || (!l.gender && s.type === 'Male');
 
               const subLine = await tx.submissionLine.create({
                 data: {
                   submissionPartId: subPart.id,
                   lineId: l.id ? String(l.id) : null,
                   name: l.name,
+                  gender: isLineMale ? 'MALE' : 'FEMALE',
                   weights: lineWeights,
                   birdCount: lineWeights.length,
                   avgWeight: lineAvg,
@@ -413,7 +486,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
                   shedName: s.name,
                   partName: p.name,
                   lineName: l.name,
-                  sex: s.type || 'Female',
+                  sex: isLineMale ? 'Male' : 'Female',
                   sampleSequence: wIdx + 1,
                   weightGrams: w,
                   createdAt: now,
@@ -562,6 +635,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
       const lines = Array.isArray(p.lines) ? p.lines : [];
       for (const l of lines) {
         const weights: number[] = l.weights || [];
+        const isLineMale = (l.gender && String(l.gender).toUpperCase() === 'MALE') || (!l.gender && s.type === 'Male');
         for (let i = 0; i < weights.length; i++) {
           memoryBirdWeights.push({
             id: `bw-${crypto.randomUUID()}`,
@@ -571,7 +645,7 @@ submissionRouter.post('/submissions', requireAuth, async (req: AuthenticatedRequ
             shedName: s.name,
             partName: p.name,
             lineName: l.name,
-            sex: s.type || 'Female',
+            sex: isLineMale ? 'Male' : 'Female',
             sampleSequence: i + 1,
             weightGrams: weights[i],
             createdAt: now,
@@ -669,6 +743,9 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
           farm: {
             select: { name: true }
           },
+          user: {
+            select: { id: true, name: true, username: true, role: true, employeeCode: true }
+          },
           sheds: {
             orderBy: { order: 'asc' },
             include: {
@@ -691,9 +768,11 @@ submissionRouter.get('/submissions', requireAuth, async (req: AuthenticatedReque
       const formatted = submissions.map((sub: any) => {
         const meta = sub.metadata || {};
         const snapshotFarmName = meta.farmName || meta.snapshotData?.farmName || sub.farmName || sub.farm?.name || 'Farm';
+        const submitterEmpCode = sub.user?.employeeCode || (sub.user?.username?.toUpperCase().startsWith('EMP') ? sub.user.username : undefined);
         return {
           ...sub,
           farmName: snapshotFarmName,
+          submitterEmployeeCode: submitterEmpCode,
           snapshotData: {
             ...(meta.snapshotData || {}),
             farmName: snapshotFarmName,
@@ -965,6 +1044,14 @@ submissionRouter.put('/submissions/:id', requireAuth, async (req: AuthenticatedR
         return res.status(403).json({ error: 'Access denied: You are not authorized to update this submission.' });
       }
 
+      // Preserve existing Admin and Manager administrative correction mechanism while blocking normal supervisor resubmission:
+      if (existing.status === 'COMPLETED' && user.role !== 'Admin' && user.role !== 'Manager') {
+        return res.status(403).json({
+          error: "This week's body-weight submission has already been completed and locked. Supervisors cannot modify completed submissions.",
+          locked: true,
+        });
+      }
+
       let totalBirds = existing.totalBirds;
       let femaleAvgWeight = existing.femaleAvgWeight;
       let maleAvgWeight = existing.maleAvgWeight;
@@ -977,12 +1064,12 @@ submissionRouter.put('/submissions/:id', requireAuth, async (req: AuthenticatedR
         const maleWeights: number[] = [];
 
         sheds.forEach((shed: any) => {
-          const isMale = shed.type === 'Male';
           (shed.parts || []).forEach((part: any) => {
             (part.lines || []).forEach((line: any) => {
+              const isLineMale = (line.gender && String(line.gender).toUpperCase() === 'MALE') || (!line.gender && shed.type === 'Male');
               const weights = Array.isArray(line.weights) ? line.weights.map(Number).filter((w: number) => !isNaN(w) && w > 0) : [];
               allWeights.push(...weights);
-              if (isMale) maleWeights.push(...weights);
+              if (isLineMale) maleWeights.push(...weights);
               else femaleWeights.push(...weights);
             });
           });
@@ -1025,10 +1112,12 @@ submissionRouter.put('/submissions/:id', requireAuth, async (req: AuthenticatedR
                 const cleanWeights = Array.isArray(l.weights) ? l.weights.map(Number).filter((w: number) => !isNaN(w) && w > 0) : [];
                 const lineAvg = cleanWeights.length ? Math.round(cleanWeights.reduce((a: number, b: number) => a + b, 0) / cleanWeights.length) : null;
 
+                const isLineMale = (l.gender && String(l.gender).toUpperCase() === 'MALE') || (!l.gender && s.type === 'Male');
                 const createdLine = await tx.submissionLine.create({
                   data: {
                     submissionPartId: createdPart.id,
                     name: l.name || `Line ${lIdx + 1}`,
+                    gender: isLineMale ? 'MALE' : 'FEMALE',
                     weights: cleanWeights,
                     birdCount: cleanWeights.length,
                     avgWeight: lineAvg,
@@ -1044,7 +1133,7 @@ submissionRouter.put('/submissions/:id', requireAuth, async (req: AuthenticatedR
                       shedName: s.name,
                       partName: p.name,
                       lineName: l.name,
-                      sex: s.type || 'Female',
+                      sex: isLineMale ? 'Male' : 'Female',
                       sampleSequence: wIdx + 1,
                       weightGrams: w,
                     }))

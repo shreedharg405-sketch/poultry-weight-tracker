@@ -73,14 +73,9 @@ export const SubmissionUpdateScreen: React.FC<SubmissionUpdateScreenProps> = ({
   // Validation state
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  // Check authorization
+  // Check authorization - only Admin and Manager can perform administrative corrections
   const isAuthorizedRole = useMemo(() => {
-    return (
-      currentUserRole === 'Admin' ||
-      currentUserRole === 'Manager' ||
-      currentUserRole === 'Supervisor' ||
-      currentUserRole === 'In-Charge'
-    );
+    return currentUserRole === 'Admin' || currentUserRole === 'Manager';
   }, [currentUserRole]);
 
   // Load existing submission data

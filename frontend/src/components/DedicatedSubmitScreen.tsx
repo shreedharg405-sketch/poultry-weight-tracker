@@ -228,14 +228,14 @@ export const DedicatedSubmitScreen: React.FC<DedicatedSubmitScreenProps> = ({
             <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
             <div>
               <h4 className="text-xs font-black text-emerald-950">
-                Batch Submitted & Uploaded Successfully!
+                This week's body-weight submission has already been completed and locked.
               </h4>
               <p className="text-[11px] text-emerald-800 mt-0.5">
-                Every individual bird weight and flock measurement has been saved and verified.
+                All bird weights and flock measurements are locked and preserved for viewing and reporting.
                 {farmAudit?.lastSubmittedAt && ` Submitted at: ${formatDateTimeIST(farmAudit.lastSubmittedAt)}`}
               </p>
               <div className="mt-2 text-[10px] font-bold text-emerald-700 bg-emerald-100/60 px-2 py-1 rounded-md inline-block">
-                ✓ Submission Confirmed • Official Worksheet Ready
+                🔒 Submission Locked • Official Worksheet Available for Download
               </div>
             </div>
           </div>

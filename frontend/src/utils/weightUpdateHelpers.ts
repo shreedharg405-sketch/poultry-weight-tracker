@@ -109,10 +109,11 @@ export function applyLineWeightClear(
  * Clones the structural sheds of a farm, resetting all line weights to empty [].
  * Preserves all shed, part, and line IDs, names, types, and ordering.
  */
-export function createEmptyWeeklySheds(baseSheds: ShedData[]): ShedData[] {
+export function createEmptyWeeklySheds(baseSheds: ShedData[], week?: string): ShedData[] {
   if (!Array.isArray(baseSheds)) return [];
   return baseSheds.map(s => ({
     ...s,
+    _week: week,
     savedStatus: 'PENDING' as any,
     savedByUserName: undefined,
     savedByUserId: undefined,
@@ -525,6 +526,7 @@ export function mergeServerShedsWithLocalDraft(
 
     return {
       ...serverShed,
+      _week: week || (localShed as any)?._week,
       savedStatus: isWeekSaved ? 'SAVED' : 'PENDING',
       savedByUserName: isWeekSaved ? ((matchedDraftShed as any)?.savedByUserName || (serverShed as any).savedByUserName) : undefined,
       totalBirdCount: isWeekSaved ? ((matchedDraftShed as any)?.totalBirdCount || (serverShed as any).totalBirdCount || 0) : 0,

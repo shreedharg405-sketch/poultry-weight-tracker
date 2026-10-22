@@ -1169,8 +1169,10 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
                           (sl.name && l.name && sl.name.trim().toLowerCase() === l.name.trim().toLowerCase())
                         );
                         const subWeights = matchingLine && Array.isArray(matchingLine.weights) && matchingLine.weights.length > 0 ? matchingLine.weights : [];
+                        const effectiveLineGender = (matchingLine as any)?.gender || l.gender || (s.type === 'Male' ? 'MALE' : 'FEMALE');
                         return {
                           ...l,
+                          gender: effectiveLineGender,
                           weights: subWeights
                         };
                       })
@@ -1320,8 +1322,10 @@ farmRouter.get('/farms/:id', async (req: Request, res: Response) => {
                       sl.order === lIdx
                     );
                     const subWeights = matchingLine && Array.isArray(matchingLine.weights) && matchingLine.weights.length > 0 ? matchingLine.weights : [];
+                    const effectiveLineGender = (matchingLine as any)?.gender || (l as any).gender || (s.type === 'Male' ? 'MALE' : 'FEMALE');
                     return {
                       ...l,
+                      gender: effectiveLineGender,
                       weights: subWeights
                     };
                   })
@@ -2039,149 +2043,19 @@ farmRouter.post('/sheds', async (req: Request, res: Response) => {
 });
 
 // --------------------------------------------------------------------------
-// 7. DELETE /api/sheds/:shedId - Delete shed (Cascade deleting parts, lines & weights)
+// 7. DELETE /api/sheds/:shedId - Permanently locked after farm creation
 // --------------------------------------------------------------------------
 farmRouter.delete('/sheds/:shedId', async (req: Request, res: Response) => {
-  const shedId = req.params.shedId;
-  const user = await getAuthUserFromRequest(req);
-  if (!user) {
-    return res.status(401).json({ error: 'Authentication required. Please log in.' });
-  }
-
-  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
-
-  if (isPostgresConfigured()) {
-    try {
-      const shed = await prisma.shed.findUnique({
-        where: { id: shedId },
-        include: { farm: true }
-      });
-      if (!shed) {
-        return res.status(404).json({ error: 'Shed not found in database' });
-      }
-
-      const authCheck = checkFarmAuthorization(user, shed.farmId, shed.farm?.name);
-      if (!authCheck.authorized) {
-        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-      }
-
-
-
-      // Prisma cascade deletion cleanly deletes parts and lines belonging strictly to this shed
-      await prisma.shed.delete({ where: { id: shedId } });
-      await touchFarm(shed.farmId);
-      return res.json({ success: true, deletedShedId: shedId });
-    } catch (err: any) {
-      console.error('❌ [DB] PostgreSQL delete shed error:', err?.message || err);
-      return sendSafe503(res);
-    }
-  }
-
-  for (const farm of memoryFarms) {
-    const sIdx = farm.sheds.findIndex(s => s.id === shedId);
-    if (sIdx !== -1) {
-      const authCheck = checkFarmAuthorization(user, farm.id, farm.name);
-      if (!authCheck.authorized) {
-        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-      }
-
-      farm.sheds.splice(sIdx, 1);
-      farm.updatedAt = new Date();
-      return res.json({ success: true, deletedShedId: shedId });
-    }
-  }
-  return res.status(404).json({ error: 'Shed not found' });
+  return res.status(403).json({ error: 'Sheds are permanently locked at farm creation and cannot be deleted.' });
 });
 
 // --------------------------------------------------------------------------
-// 8. PUT /api/sheds/:shedId - Edit shed name/type
+// 8. PUT /api/sheds/:shedId - Permanently locked after farm creation
 // --------------------------------------------------------------------------
 farmRouter.put('/sheds/:shedId', async (req: Request, res: Response) => {
-  const shedId = req.params.shedId;
-  const user = await getAuthUserFromRequest(req);
-  if (!user) {
-    return res.status(401).json({ error: 'Authentication required. Please log in.' });
-  }
-
-  const { name, type } = req.body;
-  const validGender = type !== undefined ? (type === 'Male' ? 'Male' : 'Female') : undefined;
-  const trimmedName = name !== undefined ? String(name).trim() : undefined;
-  const queryWeek = (req.query.week || req.body?.week || req.query.flockAge || req.body?.flockAge) as string | undefined;
-
-  if (trimmedName !== undefined && trimmedName.length === 0) {
-    return res.status(400).json({ error: 'Shed name cannot be blank.' });
-  }
-
-  if (isPostgresConfigured()) {
-    try {
-      const currentShed = await prisma.shed.findUnique({
-        where: { id: shedId },
-        include: { farm: true }
-      });
-      if (!currentShed) {
-        return res.status(404).json({ error: 'Shed not found' });
-      }
-
-      const authCheck = checkFarmAuthorization(user, currentShed.farmId, currentShed.farm?.name);
-      if (!authCheck.authorized) {
-        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-      }
-
-
-
-      if (trimmedName && trimmedName.toLowerCase() !== currentShed.name.toLowerCase()) {
-        const dup = await prisma.shed.findFirst({
-          where: {
-            farmId: currentShed.farmId,
-            id: { not: shedId },
-            name: { equals: trimmedName, mode: 'insensitive' }
-          }
-        });
-        if (dup) {
-          return res.status(400).json({ error: `A shed named "${trimmedName}" already exists on this farm.` });
-        }
-      }
-
-      const updated = await prisma.shed.update({
-        where: { id: shedId },
-        data: {
-          ...(trimmedName && { name: trimmedName }),
-          ...(validGender && { type: validGender }),
-        },
-        include: {
-          parts: { include: { lines: true } }
-        }
-      });
-      await touchFarm(updated.farmId);
-      return res.json(updated);
-    } catch (err: any) {
-      console.error('❌ [DB] PostgreSQL update shed error:', err?.message || err);
-      return sendSafe503(res);
-    }
-  }
-
-  for (const farm of memoryFarms) {
-    const s = farm.sheds.find(shed => shed.id === shedId);
-    if (s) {
-      const authCheck = checkFarmAuthorization(user, farm.id, farm.name);
-      if (!authCheck.authorized) {
-        return res.status(403).json({ error: authCheck.error || 'Access denied to unassigned farm.' });
-      }
-
-      if (trimmedName && trimmedName.toLowerCase() !== s.name.toLowerCase()) {
-        const dup = farm.sheds.find(other => other.id !== shedId && other.name.toLowerCase() === trimmedName.toLowerCase());
-        if (dup) {
-          return res.status(400).json({ error: `A shed named "${trimmedName}" already exists on this farm.` });
-        }
-        s.name = trimmedName;
-      }
-      if (validGender) s.type = validGender;
-      farm.updatedAt = new Date();
-      return res.json(s);
-    }
-  }
-  return res.status(404).json({ error: 'Shed not found' });
+  return res.status(403).json({ error: 'Sheds are permanently locked at farm creation and cannot be renamed.' });
 });
+
 
 // --------------------------------------------------------------------------
 // 8b. Shed Concurrency Locking, Heartbeat, Leave & Force-Unlock Endpoints
@@ -4149,31 +4023,50 @@ farmRouter.put('/farms/:id/sync', async (req: Request, res: Response) => {
 // --------------------------------------------------------------------------
 export async function getNextEmployeeCode(): Promise<string> {
   let highestNum = 0;
+  const takenCodes = new Set<string>();
 
   if (isPostgresConfigured()) {
     try {
-      const users = await prisma.user.findMany({ select: { username: true } });
+      const users = await prisma.user.findMany({ 
+        select: { username: true, employeeCode: true } 
+      });
       for (const u of users) {
-        const match = u.username.match(/^EMP(\d+)$/i);
-        if (match) {
-          const num = parseInt(match[1], 10);
-          if (num > highestNum) highestNum = num;
+        const candidates = [u.employeeCode, u.username].filter(Boolean) as string[];
+        for (const c of candidates) {
+          const clean = c.trim().toUpperCase();
+          takenCodes.add(clean);
+          const match = clean.match(/^EMP(\d+)$/i);
+          if (match) {
+            const num = parseInt(match[1], 10);
+            if (num > highestNum) highestNum = num;
+          }
         }
       }
-    } catch {}
-  }
-
-  for (const u of memoryUsers) {
-    const code = u.employeeCode || u.username;
-    const match = code.match(/^EMP(\d+)$/i);
-    if (match) {
-      const num = parseInt(match[1], 10);
-      if (num > highestNum) highestNum = num;
+    } catch (err: any) {
+      console.warn('getNextEmployeeCode Postgres query warning:', err?.message || err);
     }
   }
 
-  const nextNum = Math.max(highestNum + 1, 1);
-  return `EMP${String(nextNum).padStart(4, '0')}`;
+  for (const u of memoryUsers) {
+    const candidates = [u.employeeCode, u.username].filter(Boolean) as string[];
+    for (const c of candidates) {
+      const clean = c.trim().toUpperCase();
+      takenCodes.add(clean);
+      const match = clean.match(/^EMP(\d+)$/i);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > highestNum) highestNum = num;
+      }
+    }
+  }
+
+  let nextNum = Math.max(highestNum + 1, 1);
+  let generated = `EMP${String(nextNum).padStart(4, '0')}`;
+  while (takenCodes.has(generated.toUpperCase())) {
+    nextNum++;
+    generated = `EMP${String(nextNum).padStart(4, '0')}`;
+  }
+  return generated;
 }
 
 // --------------------------------------------------------------------------
@@ -4374,6 +4267,9 @@ farmRouter.get('/auth/users', async (_req: Request, res: Response) => {
         select: { 
           id: true, 
           username: true, 
+          employeeCode: true,
+          phone: true,
+          requiresPasswordChange: true,
           name: true, 
           email: true, 
           role: true, 
@@ -4521,26 +4417,49 @@ farmRouter.post('/auth/users', async (req: Request, res: Response) => {
 
   if (isPostgresConfigured()) {
     try {
-      const existing = await prisma.user.findFirst({
-        where: {
-          OR: [
-            { username: { equals: cleanUsername, mode: 'insensitive' as const } },
-            ...(employeeCode ? [{ username: { equals: employeeCode, mode: 'insensitive' as const } }] : [])
-          ]
+      let attempts = 0;
+      let finalEmpCode = employeeCode;
+      let effectiveUsername = cleanUsername;
+      while (attempts < 5) {
+        const existing = await prisma.user.findFirst({
+          where: {
+            OR: [
+              { username: { equals: effectiveUsername, mode: 'insensitive' as const } },
+              ...(finalEmpCode ? [
+                { username: { equals: finalEmpCode, mode: 'insensitive' as const } },
+                { employeeCode: { equals: finalEmpCode, mode: 'insensitive' as const } },
+              ] : [])
+            ]
+          }
+        });
+        if (existing) {
+          if (finalEmpCode && (userRole === 'Supervisor' || userRole === 'In-Charge') && !req.body.employeeCode) {
+            // Collision on auto-generated code, generate next
+            finalEmpCode = await getNextEmployeeCode();
+            if (!req.body.username && !req.body.employeeId) {
+              effectiveUsername = finalEmpCode;
+            }
+            attempts++;
+            continue;
+          }
+          return res.status(409).json({ error: `Username or Employee Code "${effectiveUsername}" is already taken.` });
         }
-      });
-      if (existing) {
-        return res.status(409).json({ error: `Username or Employee Code "${cleanUsername}" is already taken.` });
+        break;
       }
+
+      employeeCode = finalEmpCode;
 
       const created = await prisma.user.create({
         data: {
           id: crypto.randomUUID(),
-          username: cleanUsername,
+          username: effectiveUsername,
           name: cleanName,
-          email: `${cleanUsername.toLowerCase()}@farm.local`,
+          email: `${effectiveUsername.toLowerCase()}@farm.local`,
           password: hashedPassword,
           role: userRole,
+          employeeCode: employeeCode || (effectiveUsername.toUpperCase().startsWith('EMP') ? effectiveUsername.toUpperCase() : null),
+          phone: cleanPhone || null,
+          requiresPasswordChange,
           status: 'ACTIVE',
           assignedFarms: farmList,
         }

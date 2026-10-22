@@ -191,7 +191,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onCanc
                   type="text"
                   value={username}
                   onChange={(e) => { setUsername(e.target.value); setError(null); }}
-                  placeholder="e.g. EMP0001 or username..."
+                  placeholder="e.g. EMP0008 or username..."
                   required
                   autoFocus
                   autoCapitalize="characters"
@@ -200,7 +200,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onCanc
                 />
               </div>
               <span className="text-[10px] text-slate-400 mt-1 block font-medium">
-                Supervisors and In-Charges can sign in with their EMP code (e.g. EMP0001)
+                In-Charges can sign in with their EMP code (e.g. EMP0008)
               </span>
             </div>
 

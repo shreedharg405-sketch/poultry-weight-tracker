@@ -14,6 +14,9 @@ model User {
   email         String?  @unique
   password      String   // Hashed password
   role          String   @default("Supervisor") // "Admin" | "Manager" | "Supervisor" | "In-Charge"
+  employeeCode  String?  @unique
+  phone         String?
+  requiresPasswordChange Boolean @default(false)
   status        String   @default("ACTIVE") // "ACTIVE" | "INACTIVE"
   assignedFarms String[] @default([])
   createdAt     DateTime @default(now())
@@ -90,6 +93,7 @@ model Line {
   partId    String
   part      Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
   name      String
+  gender    String?
   weights   Float[]
 }
 
@@ -172,6 +176,7 @@ model SubmissionLine {
   submissionPart   SubmissionPart @relation(fields: [submissionPartId], references: [id], onDelete: Cascade)
   lineId           String?
   name             String
+  gender           String?
   weights          Float[]
   birdCount        Int            @default(0)
   avgWeight        Float?
